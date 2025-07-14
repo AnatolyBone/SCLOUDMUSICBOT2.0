@@ -1,0 +1,27 @@
+import fs from 'fs';
+import path from 'path';
+
+export function cleanCache(cacheDir) {
+  fs.readdir(cacheDir, (err, files) => {
+    if (err) {
+      console.error('Ошибка чтения директории кэша:', err);
+      return;
+    }
+    files.forEach(file => {
+      const filePath = path.join(cacheDir, file);
+      fs.stat(filePath, (err, stats) => {
+        if (err) {
+          console.error('Ошибка получения статистики файла:', err);
+          return;
+        }
+        // Удаляем файлы старше 1 часа
+        if (Date.now() - stats.mtimeMs > 3600 * 1000) {
+          fs.unlink(filePath, err => {
+            if (err) console.error('Ошибка удаления файла из кэша:', err);
+            else console.log(`🗑 Удалён файл из кэша: ${file}`);
+          });
+        }
+      });
+    });
+  });
+}
