@@ -9,8 +9,4 @@ class BotService {
   }
 }
 
-// В файле index.js
-import BotService from './services/botService';
-
-const botService = new BotService(bot);
-botService.start();
+export default BotService;
