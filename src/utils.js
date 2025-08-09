@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { supabase } from './db.js';
+import { supabase } from '../db.js';
 
 // Функция для получения названия тарифа
 export function getTariffName(limit) {
