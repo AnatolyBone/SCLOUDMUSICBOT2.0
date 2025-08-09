@@ -89,6 +89,10 @@ export async function cleanupCache(directory, maxAgeMinutes = 60) {
 }
 
 // Индексатор
+// src/utils.js
+export function startIndexer() {
+  // Логика индексирования
+}
 export async function getUrlsToIndex() {
   try {
     const { data, error } = await supabase
