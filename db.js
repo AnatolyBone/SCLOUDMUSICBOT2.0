@@ -414,9 +414,6 @@ export async function resetAllSubscriptionBonuses() {
     }
     
     console.log(`[Admin] Успешно сброшен бонус за подписку для ${count || 0} пользователей.`);
-    return { success: true, count: count || 0 };
-  } catch (e) {
-    console.error('🔴 Критическая ошибка при массовом сбросе бонусов:', e);
     return { success: false, error: e };
   }
 }
