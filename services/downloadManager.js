@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import pTimeout, { TimeoutError } from 'p-timeout';
 
-import { TaskQueue } from '../lib/TaskQueue.js';
+import { TaskQueue } from '../src/lib/TaskQueue.js';
 import { getRedisClient, bot } from '../index.js';       // <— ВАЖНО: берём bot здесь
 import { T } from '../config/texts.js';
 import {
@@ -18,11 +18,11 @@ import {
 // --- Конфигурация ---
 const CONFIG = {
   TELEGRAM_FILE_LIMIT_MB: 49,
-  MAX_PLAYLIST_TRACKS_FREE: 10,
+  MAX_PLAYLIST_TRACKS_FREE: 15, // Увеличено с 10
   TRACK_TITLE_LIMIT: 100,
-  MAX_CONCURRENT_DOWNLOADS: 1,
-  METADATA_FETCH_TIMEOUT_MS: 45000,
-  YTDL_RETRIES: 3,
+  MAX_CONCURRENT_DOWNLOADS: 3, // Увеличено с 1
+  METADATA_FETCH_TIMEOUT_MS: 30000, // Уменьшено с 45000
+  YTDL_RETRIES: 2, // Уменьшено с 3
   SOCKET_TIMEOUT: 120,
 };
 
@@ -58,6 +58,12 @@ function getYtdlErrorMessage(err) {
   if (err.stderr?.includes('404')) return 'Трек не найден (ошибка 404).';
   if (err.message?.includes('timed out')) return 'Сервис отвечает слишком долго.';
   return 'Не удалось получить метаданные.';
+}
+
+// Добавить в downloadManager.js
+function isGoPlus(trackInfo) {
+  return trackInfo.format_id?.includes('preview') || 
+         trackInfo.duration < 60;
 }
 
 // --- Воркер для загрузки ---
@@ -129,6 +135,11 @@ async function getTracksInfo(url) {
     ytdl(url, { dumpSingleJson: true, retries: CONFIG.YTDL_RETRIES, "socket-timeout": CONFIG.SOCKET_TIMEOUT }),
     { milliseconds: CONFIG.METADATA_FETCH_TIMEOUT_MS, message: 'Превышен таймаут получения метаданных.' }
   );
+
+  // Фильтрация по умолчанию для Go+ треков
+  if (isGoPlus(info)) {
+    throw new Error('Трек доступен только для SoundCloud Go+ подписчиков');
+  }
 
   const isPlaylist = Array.isArray(info.entries) && info.entries.length > 0;
   const tracks = isPlaylist
