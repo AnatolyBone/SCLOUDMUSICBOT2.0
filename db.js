@@ -1,5 +1,3 @@
-// db.js
-
 import { Pool } from 'pg';
 import { createClient } from '@supabase/supabase-js';
 import json2csv from 'json-2-csv';
@@ -273,6 +271,7 @@ export async function getDownloadsByDate(days = 30) {
   for (const r of rows) byDate[r.date] = Number(r.count) || 0;
   return byDate;
 }
+
 export async function getActiveUsersByDate() {
   const { rows } = await query(`SELECT TO_CHAR(last_active, 'YYYY-MM-DD') as date, COUNT(DISTINCT id) as count FROM users WHERE last_active >= CURRENT_DATE - INTERVAL '30 days' GROUP BY date ORDER BY date`);
   return rows.reduce((acc, row) => ({ ...acc, [row.date]: parseInt(row.count, 10) }), {});
@@ -326,6 +325,7 @@ export async function getExpiringUsersPaginatedCount() {
   `);
   return parseInt(rows[0].count, 10);
 }
+
 export async function getLastMonths(n = 6) {
   const months = [];
   const now = new Date();
@@ -360,7 +360,6 @@ export async function getDashboardStats() {
   
   const r = rows[0] || {};
   return {
-    // ↓↓↓ ИМЕНА ПОЛЕЙ — как в dashboard.ejs
     total_users: parseInt(r.total_users || 0, 10),
     total_downloads: parseInt(r.total_downloads || 0, 10),
     active_today: parseInt(r.active_today || 0, 10),
@@ -414,6 +413,9 @@ export async function resetAllSubscriptionBonuses() {
     }
     
     console.log(`[Admin] Успешно сброшен бонус за подписку для ${count || 0} пользователей.`);
+    return { success: true };
+  } catch (e) {
+    console.error('❌ Критическая ошибка при сбросе бонусов:', e.message);
     return { success: false, error: e };
   }
 }
