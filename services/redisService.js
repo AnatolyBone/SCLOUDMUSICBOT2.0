@@ -1,4 +1,3 @@
-// redisService.js
 import { createClient } from 'redis';
 
 class RedisService {
@@ -6,16 +5,26 @@ class RedisService {
     this.client = null;
   }
 
+  // Метод для подключения к Redis
   async connect() {
     if (!this.client) {
-      this.client = createClient({ url: process.env.REDIS_URL });
-      await this.client.connect();
+      try {
+        this.client = createClient({ url: process.env.REDIS_URL });
+        await this.client.connect();
+        console.log('✅ Redis подключен');
+      } catch (error) {
+        console.error('❌ Ошибка подключения к Redis:', error.message);
+        throw new Error('Не удалось подключиться к Redis');
+      }
     }
     return this.client;
   }
 
+  // Метод для получения клиента Redis
   getClient() {
-    if (!this.client) throw new Error('Redis client is not initialized');
+    if (!this.client) {
+      throw new Error('Redis client is not initialized');
+    }
     return this.client;
   }
 }
