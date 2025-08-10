@@ -53,13 +53,14 @@ app.get('/', (_req, res) => res.type('text').send('OK'));
 app.use('/static', express.static(path.join(__dirname, 'public', 'static')));
 
 // Redis Client
-const redisService = new RedisService();
-let redisClient = null;
+
+const redisService = new RedisService(); // Создаете экземпляр RedisService
+await redisService.connect();  // Подключаем Redis
+const redisClient = redisService.getClient();  // Получаем клиент Redis
 
 // Доступно из других модулей
 function getRedisClient() {
-  if (!redisClient) throw new Error('Redis клиент ещё не инициализирован');
-  return redisClient;
+  return redisClient; // Возвращаем уже подключенный клиент Redis
 }
 
 // ===== Утилиты =====
@@ -68,8 +69,7 @@ async function startApp() {
     // Подгружаем тексты из БД до регистрации хендлеров
     await loadTexts();
 
-    // Redis
-    redisClient = await redisService.connect();
+    // Redis уже подключен через redisService
     console.log('✅ Redis подключён');
 
     if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir);
@@ -84,7 +84,7 @@ async function startApp() {
       ADMIN_PASSWORD,
       SESSION_SECRET,
       STORAGE_CHANNEL_ID,
-      redis: redisClient,
+      redis: redisClient, // Используем redisClient
     });
 
     // Телеграм-бот
