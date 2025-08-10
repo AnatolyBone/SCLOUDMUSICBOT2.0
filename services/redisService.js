@@ -1,5 +1,4 @@
-// services/redisService.js
-
+// redisService.js
 import { createClient } from 'redis';
 
 class RedisService {
@@ -21,5 +20,4 @@ class RedisService {
   }
 }
 
-export default new RedisService();
-//test
+export default RedisService;
