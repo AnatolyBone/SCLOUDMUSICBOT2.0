@@ -1,43 +1,97 @@
 // config/texts.js
+
 import { supabase } from '../db.js';
 
-const defaults = {
-  start: '👋 Пришли ссылку на трек или плейлист с SoundCloud.',
+// --- Системные ключи, которые НЕЛЬЗЯ редактировать в админке ---
+const systemKeys = {
   menu: '📋 Меню',
   upgrade: '🔓 Расширить лимит',
   mytracks: '🎵 Мои треки',
   help: 'ℹ️ Помощь',
-  error: '❌ Ошибка',
-  noTracks: 'Сегодня нет треков.',
-  limitReached:
-    '🚫 Лимит достигнут ❌\n\n💡 Чтобы качать больше треков, переходи на тариф Plus или выше и качай без ограничений.',
-  upgradeInfo:
-    '🚀 Обновленные тарифы!\n\n🆓 Free — 5 треков/день\n🎯 Plus — 30 треков/день — 119₽/мес\n💪 Pro — 100 треков/день, плейлисты — 199₽/мес\n💎 Unlimited — безлимит — 299₽/мес\n\n👉 Покупка: https://boosty.to/anatoly_bone/donate\n✉️ После оплаты: @anatolybone\n📣 Новости: @SCM_BLOG',
-  helpInfo:
-    'ℹ️ Пришли ссылку — получишь mp3.\n🔓 «Расширить» — оплата тарифа.\n🎵 «Мои треки» — список за сегодня.\n📣 Канал: @SCM_BLOG',
 };
+
+// --- Тексты, которые МОЖНО редактировать в админке ---
+const editableTexts = {
+  // Приветствия
+  start: '👋 Снова здравствуйте! Пришлите ссылку на трек.', 
+  start_new_user: 
+    `<b>Добро пожаловать в SCloudMusicBot!</b>\n\n` +
+    `Я помогу вам скачать любимые треки и <b>плейлисты</b> с SoundCloud в MP3.\n\n` +
+    `<b>Мои главные возможности:</b>\n\n` +
+    `📥 <b>1. Скачивание по ссылке</b>\n` +
+    `Просто отправьте мне ссылку на трек или целый плейлист, и я начну загрузку.\n\n` +
+    `🔎 <b>2. Поиск музыки прямо в чате</b>\n` +
+    `В любом другом чате (или здесь) начните вводить <code>@SCloudMusicBot</code> и через пробел название трека. Вы сможете найти и отправить музыку, не выходя из переписки в любом чате!`,
+
+  // Информация о тарифах и помощь
+  upgradeInfo:
+    `<b>🚀 Хочешь больше треков?</b>\n\n` +
+    `<b>🆓 Free</b> — 5 🟢\n` +
+    `<b>🎯 Plus</b> — 30 (119₽)\n` +
+    `<b>💪 Pro</b> — 100 (199₽)\n` +
+    `<b>💎 Unlimited</b> — безлимит (299₽)\n\n` +
+    `👉 Донат: <a href="https://boosty.to/anatoly_bone/donate">boosty.to/anatoly_bone/donate</a>\n` +
+    `✉️ После оплаты напиши: @anatolybone\n\n` +
+    `📣 Новости и фишки: @SCMBLOG`,
+  helpInfo:
+    'ℹ️ Пришли ссылку — получишь mp3.\n' +
+    '🔓 «Расширить» — информация о тарифах.\n' +
+    '🎵 «Мои треки» — список за сегодня.\n' +
+    '📣 Канал: @SCM_BLOG',
+
+  // Шаблоны для динамического меню
+  menu_header: '👋 Привет, {first_name}!\n<b>Твой профиль:</b>',
+  menu_referral_block: '🙋‍♂️ <b>Приглашено друзей:</b> <i>{referral_count}</i>\n🔗 <b>Твоя ссылка для бонусов:</b>\n<code>{referral_link}</code>',
+  menu_bonus_block: '🎁 <b>Бонус!</b> Подпишись на {channel_link} и получи <b>+7 дней тарифа Plus</b> бесплатно!',
+  menu_footer: 'Просто отправь мне ссылку, и я скачаю трек!',
+
+  // Системные сообщения
+  error: '❌ Произошла непредвиденная ошибка.',
+  noTracks: 'Вы еще не скачивали треков сегодня.',
+  limitReached: '🚫 Дневной лимит загрузок исчерпан.',
+  blockedMessage: '❌ Ваш аккаунт заблокирован администратором.',
+
+  // Уведомления об истечении подписки (используем плейсхолдеры: {name}, {days}, {days_word})
+  exp_3d: '👋 Привет, {name}!\nВаша подписка истекает через {days} {days_word}.\nНе забудьте продлить её, чтобы сохранить доступ ко всем возможностям!\n\nНажмите /premium, чтобы посмотреть тарифы.',
+  exp_1d: '👋 Привет, {name}!\nВаша подписка истекает завтра.\nПродлите заранее, чтобы не потерять доступ. Нажмите /premium.',
+  exp_0d: '⚠️ Привет, {name}!\nВаша подписка истекает сегодня.\nПродлите сейчас: /premium',
+};
+
+// --- Внутренняя логика (остается без изменений) ---
+
+const defaults = { ...systemKeys, ...editableTexts };
+
+export function getEditableTexts() {
+  const currentTexts = allTextsSync();
+  const result = {};
+  for (const key in editableTexts) {
+    result[key] = currentTexts[key] ?? editableTexts[key];
+  }
+  return result;
+}
 
 let cache = { ...defaults };
 let lastLoad = 0;
-const TTL_MS = 60 * 1000; // обновляем кэш не чаще раза в минуту
+const TTL_MS = 60 * 1000;
 
 export async function loadTexts(force = false) {
   const now = Date.now();
   if (!force && now - lastLoad < TTL_MS) return cache;
-
-  const { data, error } = await supabase.from('bot_texts').select('key,value');
-  if (error) {
-    console.error('[texts] Ошибка загрузки из Supabase:', error.message);
-    return cache;
+  try {
+    const { data, error } = await supabase.from('bot_texts').select('key,value');
+    if (error) {
+      console.error('[texts] Ошибка загрузки из Supabase:', error.message);
+      return cache;
+    }
+    const map = { ...defaults };
+    for (const row of data || []) {
+      if (row?.key && typeof row.value === 'string') map[row.key] = row.value;
+    }
+    cache = map;
+    lastLoad = now;
+  } catch (e) {
+    console.error('[texts] Критическая ошибка при загрузке текстов:', e.message);
   }
-
-  const map = { ...defaults };
-  for (const row of data || []) {
-    if (row?.key && typeof row.value === 'string') map[row.key] = row.value;
-  }
-
-  cache = map;
-  lastLoad = now;
   return cache;
 }
 
@@ -58,4 +112,10 @@ export async function setText(key, value) {
   cache[key] = value;
   lastLoad = 0;
   return true;
+}
+
+// Подстановка плейсхолдеров {name}, {days}, {days_word} и т.д.
+export function Tf(key, params = {}) {
+  const s = T(key) || '';
+  return s.replace(/\{(\w+)\}/g, (_, k) => (params[k] ?? ''));
 }
