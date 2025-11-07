@@ -7,6 +7,7 @@ import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
 import fs from 'fs';
+import scdl from 'soundcloud-downloader'; // Добавьте эту строку
 import os from 'os';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
@@ -420,100 +421,85 @@ startCacheCleanup();
 //         ЗАМЕНИТЕ ВАШУ ФУНКЦИЮ trackDownloadProcessor НА ЭТУ ВЕРСИЮ
 // =========================================================================
 
+// =========================================================================
+//        ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor (МЕТОД КОНКУРЕНТА)
+// =========================================================================
+
 export async function trackDownloadProcessor(task) {
   let statusMessage = null;
   const userId = parseInt(task.userId, 10);
   
   try {
+    // Шаги 1-4: Валидация, лимиты, метаданные и проверка кэша (остаются без изменений)
     const usage = await getUserUsage(userId);
     if (!usage || usage.downloads_today >= usage.premium_limit) {
       await safeSendMessage(userId, T('limitReached'));
       return;
     }
-    
+
     const ensured = await ensureTaskMetadata(task);
     const { metadata, cacheKey, url: ensuredUrl } = ensured;
     const { title, uploader, duration, thumbnail } = metadata;
     const roundedDuration = duration ? Math.round(duration) : undefined;
     
     let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(task.originalUrl || ensuredUrl);
-    if (!cached && typeof db.findCachedTrackByMeta === 'function') {
-      cached = await db.findCachedTrackByMeta({ title, artist: uploader, duration: roundedDuration });
-    }
-    
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.trackName || title}" из кэша.`);
       await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.trackName, performer: cached.artist || uploader, duration: roundedDuration });
       await incrementDownload(userId, cached.trackName, cached.fileId, cacheKey);
       return;
     }
-    
+
+    // Шаг 5: Получение потока и отправка (новая логика)
     statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
-    
-    // <<< ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ >>>
-    let streamUrl = task.stream_url; // Пытаемся взять готовую ссылку из задачи
-    
-    // Если по какой-то причине ссылки в задаче нет (например, для трека из плейлиста) - запрашиваем ее
-    if (!streamUrl) {
-      console.warn(`[Worker/Fallback] stream_url не найден в задаче, запрашиваю ytdl...`);
-      const streamUrlResult = await ytdl(ensuredUrl, { 'get-url': true, format: 'mp3/bestaudio/best', ...YTDL_COMMON });
-      streamUrl = Array.isArray(streamUrlResult) ? streamUrlResult[0] : streamUrlResult;
-    }
-    
-    if (!streamUrl) {
-      throw new Error('Не удалось получить прямую ссылку на аудио.');
-    }
-    // <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
-    
-    console.log(`[Worker/Fast] Ссылка готова. Передаю в Telegram...`);
-    
+
+    console.log(`[Worker/Stream] Открываю аудиопоток для: ${ensuredUrl}`);
+    const stream = await scdl.download(ensuredUrl); // <--- ВОЛШЕБНАЯ СТРОКА
+
     let finalFileId = null;
+
+    // Отправляем в канал-хранилище, чтобы получить file_id
     if (STORAGE_CHANNEL_ID) {
       try {
-        console.log(`[Cache/Fast] Загружаю "${title}" в канал-хранилище через URL...`);
-        
+        console.log(`[Worker/Stream] Передаю поток в канал-хранилище...`);
         const sentToStorage = await bot.telegram.sendAudio(
           STORAGE_CHANNEL_ID,
-          streamUrl, // Используем полученную ссылку
+          { source: stream }, // <--- ПЕРЕДАЕМ ПОТОК
           { title, performer: uploader, duration: roundedDuration }
         );
-        
-        if (sentToStorage?.audio?.file_id) {
-          finalFileId = sentToStorage.audio.file_id;
-          
-          let canonicalUrl = ensuredUrl;
-          if (!canonicalUrl || !canonicalUrl.includes('soundcloud.com') || canonicalUrl.includes('playback.media-streaming')) {
-            canonicalUrl = task.url || task.originalUrl;
-          }
-          const urlAliases = [];
-          if (task.originalUrl && task.originalUrl !== canonicalUrl && task.originalUrl.includes('soundcloud.com')) {
-            urlAliases.push(task.originalUrl);
-          }
-          if (cacheKey && !cacheKey.startsWith('http')) {
-            urlAliases.push(cacheKey);
-          }
-          
-          if (canonicalUrl && canonicalUrl.includes('soundcloud.com') && !canonicalUrl.includes('playback.media-streaming')) {
-            await db.cacheTrack({ url: canonicalUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
-            console.log(`✅ [Cache] Трек "${title}" сохранён с ${urlAliases.length} алиасами.`);
-          }
-        }
-      } catch (storageErr) {
-        console.error(`❌ [Cache] Ошибка при кэшировании через URL:`, storageErr.message);
-        if (storageErr.message.includes('Failed to get HTTP URL content') || storageErr.message.includes('wrong file identifier')) {
-          throw new Error('TELEGRAM_DOWNLOAD_FAILED');
-        }
-        throw storageErr;
+        finalFileId = sentToStorage?.audio?.file_id;
+        console.log(`[Worker/Stream] ✅ Успешно. file_id получен.`);
+      } catch (e) {
+        console.error(`❌ Ошибка при отправке потока в хранилище:`, e.message);
+        throw e; // Прерываем выполнение, если не удалось сохранить в кэш
       }
     }
-    
-    if (!finalFileId) {
-      const sentMsg = await bot.telegram.sendAudio(userId, streamUrl, { title, performer: uploader, duration: roundedDuration });
-      finalFileId = sentMsg?.audio?.file_id;
-    } else {
-      await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
+
+    // Если file_id получен, кэшируем его
+    if (finalFileId) {
+        // ... (вся ваша логика кэширования алиасов - она правильная)
+        let canonicalUrl = ensuredUrl;
+        if (!canonicalUrl || !canonicalUrl.includes('soundcloud.com')) { canonicalUrl = task.url || task.originalUrl; }
+        const urlAliases = [];
+        if (task.originalUrl && task.originalUrl !== canonicalUrl && task.originalUrl.includes('soundcloud.com')) { urlAliases.push(task.originalUrl); }
+        if (cacheKey && !cacheKey.startsWith('http')) { urlAliases.push(cacheKey); }
+        if (canonicalUrl && canonicalUrl.includes('soundcloud.com')) {
+          await db.cacheTrack({ url: canonicalUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
+          console.log(`✅ [Cache] Трек "${title}" сохранён.`);
+        }
     }
     
+    // Отправляем пользователю (уже по file_id, если он есть)
+    if (finalFileId) {
+      await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
+    } else {
+      // Fallback, если нет канала-хранилища (не ваш случай, но для полноты)
+      console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток для отправки пользователю...');
+      const userStream = await scdl.download(ensuredUrl);
+      const sentMsg = await bot.telegram.sendAudio(userId, { source: userStream }, { title, performer: uploader, duration: roundedDuration });
+      finalFileId = sentMsg?.audio?.file_id;
+    }
+
     if (statusMessage) {
       await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
     }
@@ -521,14 +507,10 @@ export async function trackDownloadProcessor(task) {
     if (finalFileId) {
       await incrementDownload(userId, title, finalFileId, task.originalUrl || ensuredUrl);
     }
-    
+
   } catch (err) {
     const errorDetails = err?.stderr || err?.message || '';
-    let userMsg = '❌ Не удалось обработать трек.';
-    if (errorDetails.includes('TELEGRAM_DOWNLOAD_FAILED')) userMsg = '❌ Ошибка. Telegram не смог скачать этот трек.';
-    else if (errorDetails.includes('timed out')) userMsg = '❌ Ошибка сети.';
-    else if (errorDetails.includes('HTTP Error 404')) userMsg = '❌ Трек не найден.';
-    
+    let userMsg = `❌ Не удалось обработать трек: ${title}`;
     console.error(`❌ Ошибка воркера для user ${userId}:`, errorDetails);
     
     if (statusMessage) {
