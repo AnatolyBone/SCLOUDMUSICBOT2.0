@@ -419,6 +419,7 @@ startCacheCleanup();
 
 // =========================================================================
 // =========================================================================
+// =========================================================================
 //        ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ trackDownloadProcessor
 // =========================================================================
 
@@ -427,25 +428,31 @@ export async function trackDownloadProcessor(task) {
   const userId = parseInt(task.userId, 10);
   
   try {
-    // Шаги 1-4: Валидация, лимиты, метаданные и проверка кэша (остаются без изменений)
     const usage = await getUserUsage(userId);
     if (!usage || usage.downloads_today >= usage.premium_limit) {
       await safeSendMessage(userId, T('limitReached'));
       return;
     }
 
+    // `ensureTaskMetadata` вернет нам объект metadata с полной ссылкой
     const ensured = await ensureTaskMetadata(task);
-    const { metadata, cacheKey } = ensured; // Убираем ensuredUrl, он может быть неверным
-    // <<< ИЗМЕНЕНИЕ №1: Получаем все нужные поля из metadata >>>
+    const { metadata, cacheKey } = ensured;
+    
+    // Проверяем, что metadata существует, прежде чем извлекать из него поля
+    if (!metadata) {
+      throw new Error('Не удалось получить метаданные для задачи.');
+    }
+    
+    // Извлекаем поля из валидного объекта metadata
     const { title, uploader, duration, thumbnail, webpage_url: fullUrl } = metadata;
     const roundedDuration = duration ? Math.round(duration) : undefined;
     
-    // Проверка наличия полной ссылки
+    // Проверка наличия полной ссылки, необходимой для scdl
     if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
-      throw new Error(`Не удалось получить полную ссылку на трек. Получено: ${fullUrl}`);
+      throw new Error(`Не удалось получить полную ссылку на трек из метаданных. Получено: ${fullUrl}`);
     }
     
-    // Проверка кэша (без изменений)
+    // Проверка кэша
     let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(fullUrl);
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.trackName || title}" из кэша.`);
@@ -454,12 +461,10 @@ export async function trackDownloadProcessor(task) {
       return;
     }
 
-    // Шаг 5: Получение потока и отправка (новая логика)
     statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
 
-    // <<< ИЗМЕНЕНИЕ №2: Используем только полную ссылку fullUrl >>>
     console.log(`[Worker/Stream] Открываю аудиопоток для: ${fullUrl}`);
-    const stream = await scdl.download(fullUrl); // ИСПОЛЬЗУЕМ ПОЛНУЮ ССЫЛКУ
+    const stream = await scdl.download(fullUrl); // Используем полную ссылку
 
     let finalFileId = null;
 
@@ -507,9 +512,9 @@ export async function trackDownloadProcessor(task) {
     }
 
   } catch (err) {
-    // <<< ИЗМЕНЕНИЕ №3: Надежный блок обработки ошибок >>>
+    // Надежный блок обработки ошибок
     const errorDetails = err?.stderr || err?.message || 'Неизвестная ошибка';
-    // Используем optional chaining (`?.`), чтобы не было ошибки, если task или metadata отсутствуют
+    // Безопасно получаем название трека через optional chaining
     const trackTitle = task?.metadata?.title ? `: "${task.metadata.title}"` : '';
     let userMsg = `❌ Не удалось обработать трек${trackTitle}`;
     
