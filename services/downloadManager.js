@@ -13,9 +13,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
-
-// <<< ИЗМЕНЕНИЕ №1: Импортируем новый инструмент >>>
-import scdl from 'soundcloud-downloader';
+import SoundCloud from 'soundcloud-downloader';
 import ytdl from 'youtube-dl-exec';
 
 import { bot } from '../bot.js';
@@ -136,6 +134,10 @@ async function ensureTaskMetadata(task) {
 }
 
 // <<< ИЗМЕНЕНИЕ №3: ФИНАЛЬНЫЙ КОД ВОРКЕРА, ИСПОЛЬЗУЮЩИЙ `soundcloud-downloader` >>>
+// =========================================================================
+//        ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor (С ПРАВИЛЬНЫМ ИМПОРТОМ)
+// =========================================================================
+
 export async function trackDownloadProcessor(task) {
   let statusMessage = null;
   const userId = parseInt(task.userId, 10);
@@ -170,13 +172,19 @@ export async function trackDownloadProcessor(task) {
     statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
 
     console.log(`[Worker/Stream] Открываю аудиопоток для: ${fullUrl}`);
-    const stream = await scdl.download(fullUrl);
+    // <<< ИСПРАВЛЕНИЕ ЗДЕСЬ >>>
+    const stream = await SoundCloud.download(fullUrl); // Используем SoundCloud с большой буквы
 
     let finalFileId = null;
+
     if (STORAGE_CHANNEL_ID) {
       try {
         console.log(`[Worker/Stream] Передаю поток в канал-хранилище...`);
-        const sentToStorage = await bot.telegram.sendAudio(STORAGE_CHANNEL_ID, { source: stream }, { title, performer: uploader, duration: roundedDuration });
+        const sentToStorage = await bot.telegram.sendAudio(
+          STORAGE_CHANNEL_ID,
+          { source: stream },
+          { title, performer: uploader, duration: roundedDuration }
+        );
         finalFileId = sentToStorage?.audio?.file_id;
         console.log(`[Worker/Stream] ✅ Успешно. file_id получен.`);
       } catch (e) {
@@ -189,15 +197,18 @@ export async function trackDownloadProcessor(task) {
         const urlAliases = [];
         if (task.originalUrl && task.originalUrl !== fullUrl && task.originalUrl.includes('soundcloud.com')) { urlAliases.push(task.originalUrl); }
         if (cacheKey && !cacheKey.startsWith('http')) { urlAliases.push(cacheKey); }
-        await db.cacheTrack({ url: fullUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
-        console.log(`✅ [Cache] Трек "${title}" сохранён.`);
+        if (fullUrl && fullUrl.includes('soundcloud.com')) {
+          await db.cacheTrack({ url: fullUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
+          console.log(`✅ [Cache] Трек "${title}" сохранён.`);
+        }
     }
     
     if (finalFileId) {
       await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
     } else {
       console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток...');
-      const userStream = await scdl.download(fullUrl);
+      // <<< ИСПРАВЛЕНИЕ И ЗДЕСЬ >>>
+      const userStream = await SoundCloud.download(fullUrl);
       const sentMsg = await bot.telegram.sendAudio(userId, { source: userStream }, { title, performer: uploader, duration: roundedDuration });
       finalFileId = sentMsg?.audio?.file_id;
     }
