@@ -7,7 +7,6 @@ import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
 import fs from 'fs';
-import { downloadAndStreamTrack } from './streamingDownloader.js';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
@@ -467,145 +466,157 @@ export async function trackDownloadProcessor(task) {
       return; // Выход, задача выполнена из кэша
     }
 
-// 5. Скачивание (STREAMING + FALLBACK)
-statusMessage = await safeSendMessage(userId, `⏳ Начинаю скачивание: "${title}"`);
+    // 5. Скачивание
+    statusMessage = await safeSendMessage(userId, `⏳ Начинаю скачивание: "${title}"`);
+    const sizeCheck = await checkFileSize(ensuredUrl);
+    if (!sizeCheck.ok && sizeCheck.reason === 'FILE_TOO_LARGE') {
+      throw new Error('FILE_TOO_LARGE');
+    }
 
-let streamResult = null;
+    const tempFileName = `${trackId || 'track'}-${crypto.randomUUID()}.mp3`;
+    tempFilePath = path.join(cacheDir, tempFileName);
+    const ytdlArgs = canCopyMp3(ext, acodec)
+      ? { output: tempFilePath, 'embed-thumbnail': true, 'add-metadata': true, ...YTDL_COMMON }
+      : { output: tempFilePath, 'extract-audio': true, 'audio-format': 'mp3', 'embed-thumbnail': true, 'add-metadata': true, ...YTDL_COMMON };
+    
+    await ytdl(ensuredUrl, ytdlArgs);
+
+    if (!fs.existsSync(tempFilePath) || (await fs.promises.stat(tempFilePath)).size > MAX_FILE_SIZE_BYTES) {
+      throw new Error('FILE_TOO_LARGE');
+    }
+
+    if (statusMessage) {
+      await bot.telegram.editMessageText(userId, statusMessage.message_id, undefined, `✅ Скачал. Отправляю...`).catch(() => {});
+    }
+// ========================================
+// 6. Отправка и кэширование
+// ========================================
+const safeFilename = `${sanitizeFilename(title)}.mp3`;
 let finalFileId = null;
 
-// 🚀 ПРОБУЕМ STREAMING (БЫСТРО - как Python-бот!)
-try {
-  console.log('[Worker] 🚀 Пробую streaming...');
-  
-  if (statusMessage) {
-    await bot.telegram.editMessageText(
-      userId, 
-      statusMessage.message_id, 
-      undefined, 
-      `⚡ Стриминг: "${title}"`
-    ).catch(() => {});
-  }
-  
-  streamResult = await downloadAndStreamTrack(userId, ensuredUrl, metadata);
-  
-  if (streamResult?.success && streamResult.fileId) {
-    console.log('[Worker] ⚡ Streaming успешен!');
-    finalFileId = streamResult.fileId;
-  }
-  
-} catch (streamErr) {
-  console.warn('[Worker] ⚠️ Streaming не сработал:', streamErr.message);
-  streamResult = null;
-}
-
-// ❌ FALLBACK на диск (если стрим упал)
-if (!streamResult?.success) {
-  console.log('[Worker] 📀 Fallback: скачиваю на диск...');
-  
-  if (statusMessage) {
-    await bot.telegram.editMessageText(
-      userId, 
-      statusMessage.message_id, 
-      undefined, 
-      `⏳ Скачиваю: "${title}"`
-    ).catch(() => {});
-  }
-  
-  const sizeCheck = await checkFileSize(ensuredUrl);
-  if (!sizeCheck.ok && sizeCheck.reason === 'FILE_TOO_LARGE') {
-    throw new Error('FILE_TOO_LARGE');
-  }
-
-  const tempFileName = `${trackId || 'track'}-${crypto.randomUUID()}.mp3`;
-  tempFilePath = path.join(cacheDir, tempFileName);
-  
-  const ytdlArgs = canCopyMp3(ext, acodec)
-    ? { output: tempFilePath, 'embed-thumbnail': true, 'add-metadata': true, ...YTDL_COMMON }
-    : { output: tempFilePath, 'extract-audio': true, 'audio-format': 'mp3', 'embed-thumbnail': true, 'add-metadata': true, ...YTDL_COMMON };
-  
-  await ytdl(ensuredUrl, ytdlArgs);
-
-  if (!fs.existsSync(tempFilePath) || (await fs.promises.stat(tempFilePath)).size > MAX_FILE_SIZE_BYTES) {
-    throw new Error('FILE_TOO_LARGE');
-  }
-
-  if (statusMessage) {
-    await bot.telegram.editMessageText(
-      userId, 
-      statusMessage.message_id, 
-      undefined, 
-      `✅ Скачал. Отправляю...`
-    ).catch(() => {});
-  }
-  
-  // 📤 ОТПРАВКА С ДИСКА (только если был fallback)
-  const safeFilename = `${sanitizeFilename(title)}.mp3`;
-  
-  if (STORAGE_CHANNEL_ID) {
-    try {
-      console.log(`[Cache] Загружаю "${title}" в канал-хранилище...`);
-      
-      const sentToStorage = await bot.telegram.sendAudio(
-        STORAGE_CHANNEL_ID,
-        { source: fs.createReadStream(tempFilePath), filename: safeFilename },
-        { title, performer: uploader, duration: roundedDuration }
-      );
-      
-      if (sentToStorage?.audio?.file_id) {
-        finalFileId = sentToStorage.audio.file_id;
-        
-        // Кэширование (твой существующий код)
-        const canonicalUrl = ensuredUrl;
-        const urlAliases = [];
-        
-        if (task.originalUrl && task.originalUrl !== canonicalUrl && task.originalUrl.includes('soundcloud.com')) {
-          urlAliases.push(task.originalUrl);
-        }
-        
-        if (task.url && task.url !== canonicalUrl && task.url !== task.originalUrl && task.url.includes('soundcloud.com')) {
-          urlAliases.push(task.url);
-        }
-        
-        if (cacheKey && !cacheKey.startsWith('http')) {
-          urlAliases.push(cacheKey);
-        }
-        
-        if (canonicalUrl && canonicalUrl.includes('soundcloud.com') && !canonicalUrl.includes('playback.media-streaming')) {
-          await db.cacheTrack({
-            url: canonicalUrl,
-            fileId: finalFileId,
-            title,
-            artist: uploader,
-            duration: roundedDuration,
-            thumbnail,
-            aliases: urlAliases
-          });
-          
-          console.log(`✅ [Cache] Трек "${title}" сохранён с ${urlAliases.length} алиасами.`);
-        }
-      }
-    } catch (storageErr) {
-      console.error(`❌ [Cache] Ошибка:`, storageErr.message);
-    }
-  }
-
-  // Отправка пользователю
-  if (finalFileId) {
-    await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
-  } else {
-    const sentMsg = await bot.telegram.sendAudio(
-      userId, 
-      { source: fs.createReadStream(tempFilePath), filename: safeFilename }, 
+if (STORAGE_CHANNEL_ID) {
+  try {
+    console.log(`[Cache] Загружаю "${title}" в канал-хранилище...`);
+    
+    const sentToStorage = await bot.telegram.sendAudio(
+      STORAGE_CHANNEL_ID,
+      { source: fs.createReadStream(tempFilePath), filename: safeFilename },
       { title, performer: uploader, duration: roundedDuration }
     );
-    finalFileId = sentMsg?.audio?.file_id;
+    
+    if (sentToStorage?.audio?.file_id) {
+      finalFileId = sentToStorage.audio.file_id;
+      
+      // ========================================
+      // ✅ ФОРМИРОВАНИЕ АЛИАСОВ (БЕЗ ДУБЛИРОВАНИЯ!)
+      // ========================================
+      
+      // 1. Определяем канонический URL
+      let canonicalUrl = ensuredUrl;
+      
+      if (!canonicalUrl || !canonicalUrl.includes('soundcloud.com') ||
+          canonicalUrl.includes('playback.media-streaming')) {
+        canonicalUrl = task.url || task.originalUrl;
+      }
+      
+      // 2. DEBUG: Что пришло в задаче
+      console.log(`[Cache/Debug] 🔍 Входные данные задачи:`, {
+        'task.originalUrl': task.originalUrl,
+        'task.url': task.url,
+        'ensuredUrl': ensuredUrl,
+        'canonicalUrl': canonicalUrl,
+        'cacheKey': cacheKey
+      });
+      
+      // 3. Собираем алиасы (ОДНО объявление!)
+      const urlAliases = [];
+      
+      // Добавляем оригинальную короткую ссылку
+      console.log(`[Cache/Debug] 📝 Проверяю task.originalUrl:`, {
+        'exists': !!task.originalUrl,
+        'value': task.originalUrl,
+        'isDifferent': task.originalUrl !== canonicalUrl,
+        'hasSoundcloud': task.originalUrl?.includes('soundcloud.com')
+      });
+      
+      if (task.originalUrl &&
+          task.originalUrl !== canonicalUrl &&
+          task.originalUrl.includes('soundcloud.com')) {
+        urlAliases.push(task.originalUrl);
+        console.log(`[Cache/Debug] ➕ Добавлен алиас originalUrl: ${task.originalUrl}`);
+      } else {
+        console.warn(`[Cache/Debug] ⚠️ originalUrl НЕ добавлен:`, task.originalUrl);
+      }
+      
+      // Добавляем task.url (если отличается)
+      if (task.url &&
+          task.url !== canonicalUrl &&
+          task.url !== task.originalUrl &&
+          task.url.includes('soundcloud.com')) {
+        urlAliases.push(task.url);
+        console.log(`[Cache/Debug] ➕ Добавлен алиас task.url: ${task.url}`);
+      }
+      
+      // Добавляем cacheKey (sc:ID)
+      if (cacheKey && !cacheKey.startsWith('http')) {
+        urlAliases.push(cacheKey);
+        console.log(`[Cache/Debug] ➕ Добавлен алиас cacheKey: ${cacheKey}`);
+      }
+      
+      console.log(`[Cache/Debug] 💾 Итого алиасов: ${urlAliases.length}`, urlAliases);
+      
+      // 4. Сохраняем ТОЛЬКО если URL валиден
+      if (canonicalUrl && canonicalUrl.includes('soundcloud.com') && 
+          !canonicalUrl.includes('playback.media-streaming')) {
+        
+        await db.cacheTrack({
+          url: canonicalUrl,
+          fileId: finalFileId,
+          title,
+          artist: uploader,
+          duration: roundedDuration,
+          thumbnail,
+          aliases: urlAliases  // ← ИСПОЛЬЗУЕМ НОВОЕ ИМЯ
+        });
+        
+        console.log(`✅ [Cache] Трек "${title}" сохранён с ${urlAliases.length} алиасами.`);
+        
+      } else {
+        console.warn('[Cache] ⚠️ Невалидный canonicalUrl, кэш НЕ сохранён:', canonicalUrl);
+      }
+    }
+  } catch (storageErr) {
+    console.error(`❌ [Cache] Ошибка при кэшировании:`, storageErr.message);
   }
 }
 
-// 🗑️ ОЧИСТКА (общая для обоих путей)
-if (statusMessage) {
-  await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
+// Отправка пользователю
+if (finalFileId) {
+  await bot.telegram.sendAudio(
+    userId, 
+    finalFileId, 
+    { title, performer: uploader, duration: roundedDuration }
+  );
+} else {
+  console.warn('[Worker] Отправляю файл как поток (кэширование не удалось).');
+  const sentMsg = await bot.telegram.sendAudio(
+    userId, 
+    { source: fs.createReadStream(tempFilePath), filename: safeFilename }, 
+    { title, performer: uploader, duration: roundedDuration }
+  );
+  finalFileId = sentMsg?.audio?.file_id;
 }
+    // Удаляем статус-сообщение
+    if (statusMessage) {
+      await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
+    }
+    
+    // Логируем скачивание
+    if (finalFileId) {
+      await incrementDownload(userId, title, finalFileId, task.originalUrl || ensuredUrl);
+    }
+
+  } catch (err) {
     // ========================================
     // 7. Обработка ошибок
     // ========================================
