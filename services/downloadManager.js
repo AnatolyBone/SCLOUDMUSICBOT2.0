@@ -418,10 +418,7 @@ startCacheCleanup();
 // ========================= CORE WORKER (ОБНОВЛЕННАЯ БЫСТРАЯ ВЕРСИЯ) =========================
 
 // =========================================================================
-//         ЗАМЕНИТЕ ВАШУ ФУНКЦИЮ trackDownloadProcessor НА ЭТУ ВЕРСИЮ
-// =========================================================================
-
-// =========================================================================
+//         ЗАМЕНИТЕ ВАШУ ФУНКЦИЮ // =========================================================================
 //        ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor (МЕТОД КОНКУРЕНТА)
 // =========================================================================
 
@@ -430,7 +427,7 @@ export async function trackDownloadProcessor(task) {
   const userId = parseInt(task.userId, 10);
   
   try {
-    // Шаги 1-4: Валидация, лимиты, метаданные и проверка кэша (остаются без изменений)
+    // Шаги 1-4: Валидация, лимиты, метаданные и проверка кэша (остаются без изменений, это ваш хороший код)
     const usage = await getUserUsage(userId);
     if (!usage || usage.downloads_today >= usage.premium_limit) {
       await safeSendMessage(userId, T('limitReached'));
@@ -454,7 +451,7 @@ export async function trackDownloadProcessor(task) {
     statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
 
     console.log(`[Worker/Stream] Открываю аудиопоток для: ${ensuredUrl}`);
-    const stream = await scdl.download(ensuredUrl); // <--- ВОЛШЕБНАЯ СТРОКА
+    const stream = await scdl.download(ensuredUrl); // <--- ВОТ ОН, МЕТОД КОНКУРЕНТА
 
     let finalFileId = null;
 
@@ -464,7 +461,7 @@ export async function trackDownloadProcessor(task) {
         console.log(`[Worker/Stream] Передаю поток в канал-хранилище...`);
         const sentToStorage = await bot.telegram.sendAudio(
           STORAGE_CHANNEL_ID,
-          { source: stream }, // <--- ПЕРЕДАЕМ ПОТОК
+          { source: stream }, // <--- ПЕРЕДАЕМ ПОТОК ДАННЫХ
           { title, performer: uploader, duration: roundedDuration }
         );
         finalFileId = sentToStorage?.audio?.file_id;
@@ -477,7 +474,6 @@ export async function trackDownloadProcessor(task) {
 
     // Если file_id получен, кэшируем его
     if (finalFileId) {
-        // ... (вся ваша логика кэширования алиасов - она правильная)
         let canonicalUrl = ensuredUrl;
         if (!canonicalUrl || !canonicalUrl.includes('soundcloud.com')) { canonicalUrl = task.url || task.originalUrl; }
         const urlAliases = [];
