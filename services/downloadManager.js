@@ -10,6 +10,7 @@ import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
 import fs from 'fs';
+import scdl from 'soundcloud-downloader';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
