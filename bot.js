@@ -548,13 +548,7 @@ bot.action(/pl_download_all:|pl_download_10:/, async (ctx) => {
             source: 'soundcloud',
             url: track.webpage_url || track.url,
             originalUrl: track.webpage_url || track.url,
-            metadata: {
-                id: track.id,
-                title: track.title,
-                uploader: track.uploader,
-                duration: track.duration,
-                thumbnail: track.thumbnail
-            },
+            metadata: track, // <--- ИСПРАВЛЕНИЕ! Передаем ВЕСЬ объект track как metadata
         });
     }
     
@@ -700,13 +694,8 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
             source: 'soundcloud',
             url: track.webpage_url || track.url,
             originalUrl: track.webpage_url || track.url,
-            metadata: {
-                id: track.id,
-                title: track.title,
-                uploader: track.uploader,
-                duration: track.duration,
-                thumbnail: track.thumbnail
-            },
+            metadata: track,
+            
         });
     }
     
