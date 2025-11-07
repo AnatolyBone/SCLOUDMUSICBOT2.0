@@ -868,11 +868,18 @@ async function handleSoundCloudUrl(ctx, url) {
                 ...generateInitialPlaylistMenu(playlistId, data.entries.length)
             });
             
-        } else {
-            // ОДИНОЧНЫЙ ТРЕК — передаём в enqueue (там будет проверка кэша)
-            await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
-            enqueue(ctx, ctx.from.id, url);
-        }
+        // ...
+} else {
+    // ОДИНОЧНЫЙ ТРЕК — передаём в enqueue СРАЗУ С МЕТАДАННЫМИ
+    await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
+    
+    // Передаем в enqueue не просто URL, а объект с уже полученными данными!
+    enqueue(ctx, ctx.from.id, url, {
+        isSingleTrack: true,
+        metadata: data // <--- data уже содержит все, что нам нужно!
+    });
+}
+// ..
         
     } catch (error) {
         console.error('Ошибка handleSoundCloudUrl:', error.message);
