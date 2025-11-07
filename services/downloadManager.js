@@ -572,63 +572,62 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
     console.log(`[Enqueue/START] 🚀 Запуск для user ${userId}, URL: ${url}`);
     
     try {
-      // <<< НОВЫЙ БЛОК: "БЫСТРЫЙ ПУТЬ" ДЛЯ ОДИНОЧНЫХ ТРЕКОВ >>>
-      if (earlyData.isSingleTrack && earlyData.metadata) {
-        console.log('[Enqueue/FastPath] Использую готовые метаданные для одиночного трека.');
-        
-        // Проверяем лимит пользователя ПЕРЕД постановкой в очередь
-        const user = await getUser(userId);
-        if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-            console.log(`[Enqueue/FastPath] ⛔ Лимит для user ${userId} исчерпан. Отмена.`);
-            // Отправляем сообщение с бонусом, если он доступен
-            const bonusAvailable = Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used);
-            const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-            const bonusText = bonusAvailable ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.` : '';
-            const text = `${T('limitReached')}${bonusText}`;
-            const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-            if (bonusAvailable) {
-              extra.reply_markup = { inline_keyboard: [[Markup.button.callback('✅ Я подписался, забрать бонус', 'check_subscription')]] };
-            }
-            await safeSendMessage(userId, text, extra);
-            return;
+     // <<< ПРАВИЛЬНЫЙ КОД >>>
+if (earlyData.isSingleTrack && earlyData.metadata) {
+    console.log('[Enqueue/FastPath] Использую готовые метаданные для одиночного трека.');
+    
+    // Проверяем лимит пользователя ПЕРЕД постановкой в очередь
+    const user = await db.getUser(userId); // <--- ИСПРАВЛЕНО! Добавлен префикс "db."
+    if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
+        console.log(`[Enqueue/FastPath] ⛔ Лимит для user ${userId} исчерпан. Отмена.`);
+        // Отправляем сообщение с бонусом, если он доступен
+        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used);
+        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+        const bonusText = bonusAvailable ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.` : '';
+        const text = `${T('limitReached')}${bonusText}`;
+        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+        if (bonusAvailable) {
+          extra.reply_markup = { inline_keyboard: [[Markup.button.callback('✅ Я подписался, забрать бонус', 'check_subscription')]] };
         }
+        await safeSendMessage(userId, text, extra);
+        return;
+    }
 
-        const metadata = extractMetadataFromInfo(earlyData.metadata);
-        // Извлекаем stream_url, который уже был получен в bot.js!
-        const streamUrl = earlyData.metadata.url; 
+    const metadata = extractMetadataFromInfo(earlyData.metadata);
+    // Извлекаем stream_url, который уже был получен в bot.js!
+    const streamUrl = earlyData.metadata.url; 
 
-        if (!metadata || !streamUrl) {
-          throw new Error('Не удалось извлечь метаданные или stream_url из earlyData.');
-        }
+    if (!metadata || !streamUrl) {
+      throw new Error('Не удалось извлечь метаданные или stream_url из earlyData.');
+    }
 
-        // Даже на быстром пути проверим кэш, вдруг трек уже скачан
-        const cached = await db.findCachedTrack(metadata.webpage_url || url);
-        if (cached?.fileId) {
-            console.log(`[Enqueue/FastPath] ⚡ FAST CACHE HIT! Мгновенная отправка: ${cached.trackName}`);
-            await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.trackName, performer: cached.artist });
-            await incrementDownload(userId, cached.trackName, cached.fileId, metadata.webpage_url || url);
-            return;
-        }
+    // Даже на быстром пути проверим кэш, вдруг трек уже скачан
+    const cached = await db.findCachedTrack(metadata.webpage_url || url); // <--- ИСПРАВЛЕНО! Добавлен префикс "db."
+    if (cached?.fileId) {
+        console.log(`[Enqueue/FastPath] ⚡ FAST CACHE HIT! Мгновенная отправка: ${cached.trackName}`);
+        await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.trackName, performer: cached.artist });
+        await incrementDownload(userId, cached.trackName, cached.fileId, metadata.webpage_url || url);
+        return;
+    }
 
-        console.log('[Enqueue/FastPath] Кэш не найден. Ставлю задачу в очередь с готовой stream_url.');
-        
-        const task = {
-          userId,
-          url: metadata.webpage_url || url,
-          originalUrl: url,
-          source: 'soundcloud',
-          cacheKey: getCacheKey(metadata, url),
-          metadata: metadata,
-          stream_url: streamUrl // <--- ПЕРЕДАЕМ ГОТОВУЮ ССЫЛКУ В ЗАДАЧУ!
-        };
+    console.log('[Enqueue/FastPath] Кэш не найден. Ставлю задачу в очередь с готовой stream_url.');
+    
+    const task = {
+      userId,
+      url: metadata.webpage_url || url,
+      originalUrl: url,
+      source: 'soundcloud',
+      cacheKey: getCacheKey(metadata, url),
+      metadata: metadata,
+      stream_url: streamUrl // <--- ПЕРЕДАЕМ ГОТОВУЮ ССЫЛКУ В ЗАДАЧУ!
+    };
 
-        const priority = user.premium_limit || 5;
-        downloadQueue.add({ ...task, priority });
-        
-        await safeSendMessage(userId, `✅ Трек "${metadata.title}" добавлен в очередь.`);
-        return; // ВЫХОДИМ, чтобы не выполнять медленную логику ниже
-      }
-      // <<< КОНЕЦ НОВОГО БЛОКА >>>
+    const priority = user.premium_limit || 5;
+    downloadQueue.add({ ...task, priority });
+    
+    await safeSendMessage(userId, `✅ Трек "${metadata.title}" добавлен в очередь.`);
+    return; // ВЫХОДИМ, чтобы не выполнять медленную логику ниже
+}
 
 
       // =========================================================================
