@@ -415,10 +415,9 @@ startCacheCleanup();
 /**
  * Основной воркер для обработки задачи загрузки трека
  */
-// ========================= CORE WORKER =========================
+// ========================= CORE WORKER (ОБНОВЛЕННАЯ БЫСТРАЯ ВЕРСИЯ) =========================
 
 export async function trackDownloadProcessor(task) {
-  let tempFilePath = null;
   let statusMessage = null;
   const userId = parseInt(task.userId, 10);
   
@@ -439,10 +438,10 @@ export async function trackDownloadProcessor(task) {
     // 3. Получение метаданных
     const ensured = await ensureTaskMetadata(task);
     const { metadata, cacheKey, url: ensuredUrl } = ensured;
-    const { title, uploader, id: trackId, duration, thumbnail, ext, acodec } = metadata;
+    const { title, uploader, duration, thumbnail } = metadata;
     const roundedDuration = duration ? Math.round(duration) : undefined;
     
-    // 4. Проверка кэша
+    // 4. Проверка кэша (эта логика остается, она идеальна)
     let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(task.originalUrl || ensuredUrl);
     if (!cached && typeof db.findCachedTrackByMeta === 'function') {
       cached = await db.findCachedTrackByMeta({ title, artist: uploader, duration: roundedDuration });
@@ -450,181 +449,126 @@ export async function trackDownloadProcessor(task) {
 
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.trackName || title}" из кэша.`);
-      
-      const performer = cached.artist || uploader || 'Unknown Artist';
-      
       await bot.telegram.sendAudio(
         userId,
         cached.fileId,
         {
           title: cached.trackName || title,
-          performer: performer,
+          performer: cached.artist || uploader || 'Unknown Artist',
           duration: roundedDuration
         }
       );
       await incrementDownload(userId, cached.trackName || title, cached.fileId, cacheKey);
-      return; // Выход, задача выполнена из кэша
+      return;
     }
 
-    // 5. Скачивание
-    statusMessage = await safeSendMessage(userId, `⏳ Начинаю скачивание: "${title}"`);
-    const sizeCheck = await checkFileSize(ensuredUrl);
-    if (!sizeCheck.ok && sizeCheck.reason === 'FILE_TOO_LARGE') {
-      throw new Error('FILE_TOO_LARGE');
-    }
-
-    const tempFileName = `${trackId || 'track'}-${crypto.randomUUID()}.mp3`;
-    tempFilePath = path.join(cacheDir, tempFileName);
-    const ytdlArgs = canCopyMp3(ext, acodec)
-      ? { output: tempFilePath, 'embed-thumbnail': true, 'add-metadata': true, ...YTDL_COMMON }
-      : { output: tempFilePath, 'extract-audio': true, 'audio-format': 'mp3', 'embed-thumbnail': true, 'add-metadata': true, ...YTDL_COMMON };
+    // 5. Получение прямой ссылки (ВМЕСТО СКАЧИВАНИЯ)
+    statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
     
-    await ytdl(ensuredUrl, ytdlArgs);
+    console.log(`[Worker/Fast] Получаю прямую ссылку для: ${ensuredUrl}`);
+    const streamUrlResult = await ytdl(ensuredUrl, {
+      'get-url': true,
+      format: 'mp3/bestaudio/best',
+      ...YTDL_COMMON
+    });
 
-    if (!fs.existsSync(tempFilePath) || (await fs.promises.stat(tempFilePath)).size > MAX_FILE_SIZE_BYTES) {
-      throw new Error('FILE_TOO_LARGE');
-    }
-
-    if (statusMessage) {
-      await bot.telegram.editMessageText(userId, statusMessage.message_id, undefined, `✅ Скачал. Отправляю...`).catch(() => {});
-    }
-// ========================================
-// 6. Отправка и кэширование
-// ========================================
-const safeFilename = `${sanitizeFilename(title)}.mp3`;
-let finalFileId = null;
-
-if (STORAGE_CHANNEL_ID) {
-  try {
-    console.log(`[Cache] Загружаю "${title}" в канал-хранилище...`);
+    const streamUrl = Array.isArray(streamUrlResult) ? streamUrlResult[0] : streamUrlResult;
     
-    const sentToStorage = await bot.telegram.sendAudio(
-      STORAGE_CHANNEL_ID,
-      { source: fs.createReadStream(tempFilePath), filename: safeFilename },
-      { title, performer: uploader, duration: roundedDuration }
-    );
+    if (!streamUrl || typeof streamUrl !== 'string') {
+      throw new Error('Не удалось получить прямую ссылку на аудио.');
+    }
     
-    if (sentToStorage?.audio?.file_id) {
-      finalFileId = sentToStorage.audio.file_id;
-      
-      // ========================================
-      // ✅ ФОРМИРОВАНИЕ АЛИАСОВ (БЕЗ ДУБЛИРОВАНИЯ!)
-      // ========================================
-      
-      // 1. Определяем канонический URL
-      let canonicalUrl = ensuredUrl;
-      
-      if (!canonicalUrl || !canonicalUrl.includes('soundcloud.com') ||
-          canonicalUrl.includes('playback.media-streaming')) {
-        canonicalUrl = task.url || task.originalUrl;
-      }
-      
-      // 2. DEBUG: Что пришло в задаче
-      console.log(`[Cache/Debug] 🔍 Входные данные задачи:`, {
-        'task.originalUrl': task.originalUrl,
-        'task.url': task.url,
-        'ensuredUrl': ensuredUrl,
-        'canonicalUrl': canonicalUrl,
-        'cacheKey': cacheKey
-      });
-      
-      // 3. Собираем алиасы (ОДНО объявление!)
-      const urlAliases = [];
-      
-      // Добавляем оригинальную короткую ссылку
-      console.log(`[Cache/Debug] 📝 Проверяю task.originalUrl:`, {
-        'exists': !!task.originalUrl,
-        'value': task.originalUrl,
-        'isDifferent': task.originalUrl !== canonicalUrl,
-        'hasSoundcloud': task.originalUrl?.includes('soundcloud.com')
-      });
-      
-      if (task.originalUrl &&
-          task.originalUrl !== canonicalUrl &&
-          task.originalUrl.includes('soundcloud.com')) {
-        urlAliases.push(task.originalUrl);
-        console.log(`[Cache/Debug] ➕ Добавлен алиас originalUrl: ${task.originalUrl}`);
-      } else {
-        console.warn(`[Cache/Debug] ⚠️ originalUrl НЕ добавлен:`, task.originalUrl);
-      }
-      
-      // Добавляем task.url (если отличается)
-      if (task.url &&
-          task.url !== canonicalUrl &&
-          task.url !== task.originalUrl &&
-          task.url.includes('soundcloud.com')) {
-        urlAliases.push(task.url);
-        console.log(`[Cache/Debug] ➕ Добавлен алиас task.url: ${task.url}`);
-      }
-      
-      // Добавляем cacheKey (sc:ID)
-      if (cacheKey && !cacheKey.startsWith('http')) {
-        urlAliases.push(cacheKey);
-        console.log(`[Cache/Debug] ➕ Добавлен алиас cacheKey: ${cacheKey}`);
-      }
-      
-      console.log(`[Cache/Debug] 💾 Итого алиасов: ${urlAliases.length}`, urlAliases);
-      
-      // 4. Сохраняем ТОЛЬКО если URL валиден
-      if (canonicalUrl && canonicalUrl.includes('soundcloud.com') && 
-          !canonicalUrl.includes('playback.media-streaming')) {
+    console.log(`[Worker/Fast] Ссылка получена. Передаю в Telegram...`);
+
+    // 6. Отправка и кэширование
+    let finalFileId = null;
+
+    if (STORAGE_CHANNEL_ID) {
+      try {
+        console.log(`[Cache/Fast] Загружаю "${title}" в канал-хранилище через URL...`);
         
-        await db.cacheTrack({
-          url: canonicalUrl,
-          fileId: finalFileId,
-          title,
-          artist: uploader,
-          duration: roundedDuration,
-          thumbnail,
-          aliases: urlAliases  // ← ИСПОЛЬЗУЕМ НОВОЕ ИМЯ
-        });
+        // Отправляем в канал-хранилище, передавая URL НАПРЯМУЮ!
+        const sentToStorage = await bot.telegram.sendAudio(
+          STORAGE_CHANNEL_ID,
+          streamUrl, // <--- ВОТ ОНА, МАГИЯ!
+          { title, performer: uploader, duration: roundedDuration }
+        );
         
-        console.log(`✅ [Cache] Трек "${title}" сохранён с ${urlAliases.length} алиасами.`);
-        
-      } else {
-        console.warn('[Cache] ⚠️ Невалидный canonicalUrl, кэш НЕ сохранён:', canonicalUrl);
+        if (sentToStorage?.audio?.file_id) {
+          finalFileId = sentToStorage.audio.file_id;
+          
+          // Вся ваша логика кэширования и алиасов остается без изменений
+          let canonicalUrl = ensuredUrl;
+          if (!canonicalUrl || !canonicalUrl.includes('soundcloud.com') || canonicalUrl.includes('playback.media-streaming')) {
+            canonicalUrl = task.url || task.originalUrl;
+          }
+          const urlAliases = [];
+          if (task.originalUrl && task.originalUrl !== canonicalUrl && task.originalUrl.includes('soundcloud.com')) {
+            urlAliases.push(task.originalUrl);
+          }
+          if (task.url && task.url !== canonicalUrl && task.url !== task.originalUrl && task.url.includes('soundcloud.com')) {
+            urlAliases.push(task.url);
+          }
+          if (cacheKey && !cacheKey.startsWith('http')) {
+            urlAliases.push(cacheKey);
+          }
+
+          if (canonicalUrl && canonicalUrl.includes('soundcloud.com') && !canonicalUrl.includes('playback.media-streaming')) {
+            await db.cacheTrack({
+              url: canonicalUrl,
+              fileId: finalFileId,
+              title,
+              artist: uploader,
+              duration: roundedDuration,
+              thumbnail,
+              aliases: urlAliases
+            });
+            console.log(`✅ [Cache] Трек "${title}" сохранён с ${urlAliases.length} алиасами.`);
+          } else {
+            console.warn('[Cache] ⚠️ Невалидный canonicalUrl, кэш НЕ сохранён:', canonicalUrl);
+          }
+        }
+      } catch (storageErr) {
+        console.error(`❌ [Cache] Ошибка при кэшировании через URL:`, storageErr.message);
+        if (storageErr.message.includes('Failed to get HTTP URL content') || storageErr.message.includes('wrong file identifier')) {
+          throw new Error('TELEGRAM_DOWNLOAD_FAILED');
+        }
+        throw storageErr;
       }
     }
-  } catch (storageErr) {
-    console.error(`❌ [Cache] Ошибка при кэшировании:`, storageErr.message);
-  }
-}
 
-// Отправка пользователю
-if (finalFileId) {
-  await bot.telegram.sendAudio(
-    userId, 
-    finalFileId, 
-    { title, performer: uploader, duration: roundedDuration }
-  );
-} else {
-  console.warn('[Worker] Отправляю файл как поток (кэширование не удалось).');
-  const sentMsg = await bot.telegram.sendAudio(
-    userId, 
-    { source: fs.createReadStream(tempFilePath), filename: safeFilename }, 
-    { title, performer: uploader, duration: roundedDuration }
-  );
-  finalFileId = sentMsg?.audio?.file_id;
-}
-    // Удаляем статус-сообщение
+    if (!finalFileId) {
+      console.warn('[Worker] Отправляю файл пользователю напрямую (кэширование не удалось).');
+      const sentMsg = await bot.telegram.sendAudio(
+        userId, 
+        streamUrl, // И здесь тоже используем URL
+        { title, performer: uploader, duration: roundedDuration }
+      );
+      finalFileId = sentMsg?.audio?.file_id;
+    }
+
+    if (finalFileId) {
+      await bot.telegram.sendAudio(
+        userId, 
+        finalFileId, 
+        { title, performer: uploader, duration: roundedDuration }
+      );
+    }
+
     if (statusMessage) {
       await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
     }
     
-    // Логируем скачивание
     if (finalFileId) {
       await incrementDownload(userId, title, finalFileId, task.originalUrl || ensuredUrl);
     }
 
   } catch (err) {
-    // ========================================
     // 7. Обработка ошибок
-    // ========================================
     const errorDetails = err?.stderr || err?.message || '';
     let userMsg = '❌ Не удалось обработать трек.';
     
-    if (errorDetails.includes('FILE_TOO_LARGE')) userMsg = '❌ Файл слишком большой.';
-    else if (errorDetails.includes('UNSAFE_URL')) userMsg = '❌ Небезопасная ссылка.';
+    if (errorDetails.includes('TELEGRAM_DOWNLOAD_FAILED')) userMsg = '❌ Ошибка. Telegram не смог скачать этот трек. Возможно, он защищен.';
     else if (errorDetails.includes('timed out')) userMsg = '❌ Ошибка сети.';
     else if (errorDetails.includes('HTTP Error 404')) userMsg = '❌ Трек не найден.';
     
@@ -637,12 +581,7 @@ if (finalFileId) {
     }
     
   } finally {
-    // ========================================
-    // 8. Очистка
-    // ========================================
-    if (tempFilePath) {
-      fs.promises.unlink(tempFilePath).catch(() => {});
-    }
+    // 8. Очистка временных файлов больше не нужна!
   }
 }
 // ========================= DOWNLOAD QUEUE =========================
