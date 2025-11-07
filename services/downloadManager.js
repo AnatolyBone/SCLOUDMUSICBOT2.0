@@ -42,14 +42,13 @@ const FFMPEG_AVAILABLE =
 // services/downloadManager.js
 
 const YTDL_COMMON = {
+  'format': 'bestaudio[ext=mp3]/bestaudio[ext=opus]/bestaudio', // <--- ДОБАВЛЕНО!
   'ffmpeg-location': ffmpegPath || undefined,
   'user-agent': FAKE_USER_AGENT,
   proxy: PROXY_URL || undefined,
   retries: 3,
   'socket-timeout': YTDL_TIMEOUT,
   'no-warnings': true,
-  
-  // === ✅ ДОБАВЬ ЭТУ СТРОКУ ===
   'extractor-args': 'soundcloud:player_client_id=CLIENT_ID'
 };
 
