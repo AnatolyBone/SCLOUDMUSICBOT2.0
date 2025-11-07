@@ -200,16 +200,18 @@ async function getUserUsage(userId) {
 /**
  * Извлекает метаданные трека из ответа youtube-dl
  */
+// <<< ИСПРАВЛЕННЫЙ КОД >>>
 function extractMetadataFromInfo(info) {
   const e = Array.isArray(info?.entries) ? info.entries[0] : info;
   if (!e) return null;
-
+  
   const ext = e.ext || e.requested_downloads?.[0]?.ext || null;
   const acodec = e.acodec || e.requested_downloads?.[0]?.acodec || null;
   const filesize = e.filesize || e.filesize_approx || e.requested_downloads?.[0]?.filesize || null;
-
+  
   return {
     id: e.id,
+    webpage_url: e.webpage_url, // <--- ВОТ ОНО, ИСПРАВЛЕНИЕ!
     title: sanitizeFilename(e.title || 'Unknown Title'),
     uploader: e.uploader || 'Unknown Artist',
     duration: e.duration,
@@ -219,7 +221,6 @@ function extractMetadataFromInfo(info) {
     filesize
   };
 }
-
 /**
  * Проверяет безопасность URL (защита от SSRF)
  */
