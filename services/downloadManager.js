@@ -418,8 +418,8 @@ startCacheCleanup();
 // ========================= CORE WORKER (ОБНОВЛЕННАЯ БЫСТРАЯ ВЕРСИЯ) =========================
 
 // =========================================================================
-//         ЗАМЕНИТЕ ВАШУ ФУНКЦИЮ // =========================================================================
-//        ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor (МЕТОД КОНКУРЕНТА)
+// =========================================================================
+//        ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ trackDownloadProcessor
 // =========================================================================
 
 export async function trackDownloadProcessor(task) {
@@ -427,7 +427,7 @@ export async function trackDownloadProcessor(task) {
   const userId = parseInt(task.userId, 10);
   
   try {
-    // Шаги 1-4: Валидация, лимиты, метаданные и проверка кэша (остаются без изменений, это ваш хороший код)
+    // Шаги 1-4: Валидация, лимиты, метаданные и проверка кэша (остаются без изменений)
     const usage = await getUserUsage(userId);
     if (!usage || usage.downloads_today >= usage.premium_limit) {
       await safeSendMessage(userId, T('limitReached'));
@@ -435,11 +435,18 @@ export async function trackDownloadProcessor(task) {
     }
 
     const ensured = await ensureTaskMetadata(task);
-    const { metadata, cacheKey, url: ensuredUrl } = ensured;
-    const { title, uploader, duration, thumbnail } = metadata;
+    const { metadata, cacheKey } = ensured; // Убираем ensuredUrl, он может быть неверным
+    // <<< ИЗМЕНЕНИЕ №1: Получаем все нужные поля из metadata >>>
+    const { title, uploader, duration, thumbnail, webpage_url: fullUrl } = metadata;
     const roundedDuration = duration ? Math.round(duration) : undefined;
     
-    let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(task.originalUrl || ensuredUrl);
+    // Проверка наличия полной ссылки
+    if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
+      throw new Error(`Не удалось получить полную ссылку на трек. Получено: ${fullUrl}`);
+    }
+    
+    // Проверка кэша (без изменений)
+    let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(fullUrl);
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.trackName || title}" из кэша.`);
       await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.trackName, performer: cached.artist || uploader, duration: roundedDuration });
@@ -450,48 +457,43 @@ export async function trackDownloadProcessor(task) {
     // Шаг 5: Получение потока и отправка (новая логика)
     statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
 
-    console.log(`[Worker/Stream] Открываю аудиопоток для: ${ensuredUrl}`);
-    const stream = await scdl.download(ensuredUrl); // <--- ВОТ ОН, МЕТОД КОНКУРЕНТА
+    // <<< ИЗМЕНЕНИЕ №2: Используем только полную ссылку fullUrl >>>
+    console.log(`[Worker/Stream] Открываю аудиопоток для: ${fullUrl}`);
+    const stream = await scdl.download(fullUrl); // ИСПОЛЬЗУЕМ ПОЛНУЮ ССЫЛКУ
 
     let finalFileId = null;
 
-    // Отправляем в канал-хранилище, чтобы получить file_id
     if (STORAGE_CHANNEL_ID) {
       try {
         console.log(`[Worker/Stream] Передаю поток в канал-хранилище...`);
         const sentToStorage = await bot.telegram.sendAudio(
           STORAGE_CHANNEL_ID,
-          { source: stream }, // <--- ПЕРЕДАЕМ ПОТОК ДАННЫХ
+          { source: stream },
           { title, performer: uploader, duration: roundedDuration }
         );
         finalFileId = sentToStorage?.audio?.file_id;
         console.log(`[Worker/Stream] ✅ Успешно. file_id получен.`);
       } catch (e) {
         console.error(`❌ Ошибка при отправке потока в хранилище:`, e.message);
-        throw e; // Прерываем выполнение, если не удалось сохранить в кэш
+        throw e;
       }
     }
 
-    // Если file_id получен, кэшируем его
     if (finalFileId) {
-        let canonicalUrl = ensuredUrl;
-        if (!canonicalUrl || !canonicalUrl.includes('soundcloud.com')) { canonicalUrl = task.url || task.originalUrl; }
         const urlAliases = [];
-        if (task.originalUrl && task.originalUrl !== canonicalUrl && task.originalUrl.includes('soundcloud.com')) { urlAliases.push(task.originalUrl); }
+        if (task.originalUrl && task.originalUrl !== fullUrl && task.originalUrl.includes('soundcloud.com')) { urlAliases.push(task.originalUrl); }
         if (cacheKey && !cacheKey.startsWith('http')) { urlAliases.push(cacheKey); }
-        if (canonicalUrl && canonicalUrl.includes('soundcloud.com')) {
-          await db.cacheTrack({ url: canonicalUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
+        if (fullUrl && fullUrl.includes('soundcloud.com')) {
+          await db.cacheTrack({ url: fullUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
           console.log(`✅ [Cache] Трек "${title}" сохранён.`);
         }
     }
     
-    // Отправляем пользователю (уже по file_id, если он есть)
     if (finalFileId) {
       await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
     } else {
-      // Fallback, если нет канала-хранилища (не ваш случай, но для полноты)
-      console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток для отправки пользователю...');
-      const userStream = await scdl.download(ensuredUrl);
+      console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток...');
+      const userStream = await scdl.download(fullUrl);
       const sentMsg = await bot.telegram.sendAudio(userId, { source: userStream }, { title, performer: uploader, duration: roundedDuration });
       finalFileId = sentMsg?.audio?.file_id;
     }
@@ -501,12 +503,16 @@ export async function trackDownloadProcessor(task) {
     }
     
     if (finalFileId) {
-      await incrementDownload(userId, title, finalFileId, task.originalUrl || ensuredUrl);
+      await incrementDownload(userId, title, finalFileId, task.originalUrl || fullUrl);
     }
 
   } catch (err) {
-    const errorDetails = err?.stderr || err?.message || '';
-    let userMsg = `❌ Не удалось обработать трек: ${title}`;
+    // <<< ИЗМЕНЕНИЕ №3: Надежный блок обработки ошибок >>>
+    const errorDetails = err?.stderr || err?.message || 'Неизвестная ошибка';
+    // Используем optional chaining (`?.`), чтобы не было ошибки, если task или metadata отсутствуют
+    const trackTitle = task?.metadata?.title ? `: "${task.metadata.title}"` : '';
+    let userMsg = `❌ Не удалось обработать трек${trackTitle}`;
+    
     console.error(`❌ Ошибка воркера для user ${userId}:`, errorDetails);
     
     if (statusMessage) {
