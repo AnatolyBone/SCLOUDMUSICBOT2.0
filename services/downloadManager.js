@@ -138,6 +138,10 @@ async function ensureTaskMetadata(task) {
 //        ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor (С ПРАВИЛЬНЫМ ИМПОРТОМ)
 // =========================================================================
 
+// =========================================================================
+//        ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor (С ПРАВИЛЬНЫМ ВЫЗОВОМ)
+// =========================================================================
+
 export async function trackDownloadProcessor(task) {
   let statusMessage = null;
   const userId = parseInt(task.userId, 10);
@@ -173,7 +177,7 @@ export async function trackDownloadProcessor(task) {
 
     console.log(`[Worker/Stream] Открываю аудиопоток для: ${fullUrl}`);
     // <<< ИСПРАВЛЕНИЕ ЗДЕСЬ >>>
-    const stream = await SoundCloud.download(fullUrl); // Используем SoundCloud с большой буквы
+    const stream = await scdl.default.download(fullUrl);
 
     let finalFileId = null;
 
@@ -208,7 +212,7 @@ export async function trackDownloadProcessor(task) {
     } else {
       console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток...');
       // <<< ИСПРАВЛЕНИЕ И ЗДЕСЬ >>>
-      const userStream = await SoundCloud.download(fullUrl);
+      const userStream = await scdl.default.download(fullUrl);
       const sentMsg = await bot.telegram.sendAudio(userId, { source: userStream }, { title, performer: uploader, duration: roundedDuration });
       finalFileId = sentMsg?.audio?.file_id;
     }
