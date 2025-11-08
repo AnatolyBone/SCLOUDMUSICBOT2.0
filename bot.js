@@ -885,64 +885,52 @@ async function handleSoundCloudUrl(ctx, url) {
         }
     }
 }
+// =====================================================================
+//      ЗАМЕНИТЕ ВЕСЬ ОБРАБОТЧИК bot.on('text',...) НА ЭТОТ
+// =====================================================================
+
 bot.on('text', async (ctx) => {
-                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
-                if (isShuttingDown()) { // ПРАВИЛЬНО: скобок нет
-                    console.log('[Shutdown] Отклонен новый запрос, так как идет завершение работы.');
-                    return;
-                }
-                
-                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
-                if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) { // ПРАВИЛЬНО: и здесь тоже нет
-                    return await ctx.reply('⏳ Бот на плановом обслуживании. Новые запросы временно не принимаются. Пожалуйста, попробуйте через 5-10 минут.');
-                }
+    // 1. Стандартные проверки
+    if (isShuttingDown()) {
+        return; // Игнорируем новые запросы при выключении
+    }
+    if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) {
+        return await ctx.reply('⏳ Бот на плановом обслуживании. Попробуйте через 5-10 минут.');
+    }
     if (ctx.chat.type !== 'private') {
-        console.log(`[Ignore] Сообщение из не-приватного чата (${ctx.chat.type}) было проигнорировано.`);
-        return;
+        return; // Работаем только в личных сообщениях
     }
     
     const text = ctx.message.text;
-    if (text.startsWith('/')) return;
-    if (Object.values(allTextsSync()).includes(text)) return;
+    // Игнорируем команды и кнопки меню
+    if (text.startsWith('/') || Object.values(allTextsSync()).includes(text)) {
+        return;
+    }
     
+    // 2. Ищем ссылку в сообщении
     const urlMatch = text.match(/(https?:\/\/[^\s]+)/g);
     if (!urlMatch) {
-        return await ctx.reply('Пожалуйста, отправьте мне ссылку.');
+        return await ctx.reply('Пожалуйста, отправьте мне ссылку на трек из SoundCloud или Spotify.');
     }
     
-   const url = urlMatch[0];
-
-if (url.includes('soundcloud.com')) {
-  // РАННИЙ ЧЕК ЛИМИТА: до любого анализа ссылки
-  const user = await getUser(ctx.from.id); // resetDailyLimitIfNeeded уже отработал в middleware
-  if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-    const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-    const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-    const bonusText = bonusAvailable
-      ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-      : '';
-
-    const extra = {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    };
-    if (bonusAvailable) {
-      extra.reply_markup = {
-        inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
-      };
+    const url = urlMatch[0];
+    
+    // 3. МАРШРУТИЗАЦИЯ: Определяем, куда отправить ссылку
+    if (url.includes('soundcloud.com')) {
+        // Для SoundCloud просто ставим задачу в очередь.
+        // Воркер сам получит метаданные и проверит лимиты.
+        enqueue(ctx, ctx.from.id, url, {
+            source: 'soundcloud',
+            originalUrl: url,
+            metadata: null // metadata будет получено внутри воркера
+        });
+        
+    } else if (url.includes('open.spotify.com')) {
+        // Для Spotify вызываем специальный обработчик,
+        // который сначала получит метаданные, а потом поставит задачи в очередь.
+        spotifyEnqueue(ctx, ctx.from.id, url);
+        
+    } else {
+        await ctx.reply('Я поддерживаю ссылки только с SoundCloud и Spotify.');
     }
-
-    await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
-    return; // ВАЖНО: не запускаем анализ ссылки
-  }
-
-  // Лимит не достигнут — продолжаем обычную логику
-  handleSoundCloudUrl(ctx, url);
-} else if (url.includes('open.spotify.com')) {
-    // Вызываем наш spotifyManager
-    spotifyEnqueue(ctx, ctx.from.id, url);
-} else {
-  // Обновляем текст, чтобы не упоминать Spotify
-  await ctx.reply('Я умею скачивать треки из SoundCloud. Поддержка других платформ в разработке!');
-}
 });
