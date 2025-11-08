@@ -24,14 +24,14 @@ import { getSetting } from './settingsManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
+ytdl.setYtdlBinary(path.join(__dirname, 'bin', 'yt-dlp'));
 const TEMP_DIR = path.join(os.tmpdir(), 'sc-cache');
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 2;
 const YTDL_COMMON = {
   'format': 'bestaudio[ext=mp3]/bestaudio[ext=opus]/bestaudio',
-  'ffmpeg-location': '/usr/bin/ffmpeg', // <--- ИСПРАВЛЕНИЕ! Жестко прописываем путь
+  'ffmpeg-location': ffmpegPath, // <--- ИСПРАВЛЕНИЕ! Жестко прописываем путь
   'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
   proxy: PROXY_URL,
   retries: 3,
