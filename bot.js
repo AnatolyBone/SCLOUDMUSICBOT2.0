@@ -939,8 +939,8 @@ if (url.includes('soundcloud.com')) {
   // Лимит не достигнут — продолжаем обычную логику
   handleSoundCloudUrl(ctx, url);
 } else if (url.includes('open.spotify.com')) {
-  // Просто отвечаем пользователю, что функция временно недоступна
-  await ctx.reply('🛠 К сожалению, скачивание из Spotify временно на техническом обслуживании. Мы работаем над этим!');
+    // Вызываем наш spotifyManager
+    spotifyEnqueue(ctx, ctx.from.id, url);
 } else {
   // Обновляем текст, чтобы не упоминать Spotify
   await ctx.reply('Я умею скачивать треки из SoundCloud. Поддержка других платформ в разработке!');
