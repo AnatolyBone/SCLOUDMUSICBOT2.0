@@ -164,13 +164,12 @@ function applyUserLimits(tracks, user, isPlaylist) {
 }
 
 async function sendCachedTracks(tracks, userId) {
-  const urls = tracks.map(t => t.url);
-  const cachedTracksMap = await findCachedTracksByUrls(urls);
   const tasksToDownload = [];
   let sentFromCacheCount = 0;
-
+  
+  // Проверяем кэш для каждого трека индивидуально
   for (const track of tracks) {
-    const cached = cachedTracksMap.get(track.url);
+    const cached = await db.findCachedTrack(track.url); // Используем findCachedTrack, который у вас точно есть
     if (cached) {
       try {
         await bot.telegram.sendAudio(userId, cached.fileId, { title: track.trackName, performer: track.uploader });
@@ -178,15 +177,19 @@ async function sendCachedTracks(tracks, userId) {
         await incrementDownloads(userId);
         sentFromCacheCount++;
       } catch (err) {
-        if (err.description?.includes('FILE_REFERENCE_EXPIRED')) tasksToDownload.push(track);
-        else console.error(`[Cache] Ошибка для ${userId}: ${err.message}`);
+        if (err.description?.includes('FILE_REFERENCE_EXPIRED')) {
+          console.warn(`[Cache] Устаревший file_id для ${track.url}, добавляю в очередь на скачивание.`);
+          tasksToDownload.push(track);
+        }
       }
     } else {
       tasksToDownload.push(track);
     }
   }
-
-  if (sentFromCacheCount) await safeSendMessage(userId, `✅ ${sentFromCacheCount} трек(ов) из кэша.`);
+  
+  if (sentFromCacheCount > 0) {
+    await safeSendMessage(userId, `✅ ${sentFromCacheCount} трек(ов) отправлено из кэша.`);
+  }
   return tasksToDownload;
 }
 
