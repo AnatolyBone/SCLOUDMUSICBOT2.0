@@ -12,7 +12,7 @@ import { bot } from '../bot.js';
 import { T } from '../config/texts.js';
 import {
     getUser, resetDailyLimitIfNeeded, saveTrackForUser, logEvent,
-    incrementDownloads, updateUserField, findCachedTracksByUrls, cacheTrack
+    incrementDownloads, updateUserField, findCachedTrack, cacheTrack
 } from '../db.js';
 
 // --- Конфигурация ---
