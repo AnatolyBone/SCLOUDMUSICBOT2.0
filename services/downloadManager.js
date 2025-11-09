@@ -1,7 +1,4 @@
-// =====================================================================================
-//      СКОПИРУЙТЕ ВЕСЬ ЭТОТ КОД И ПОЛНОСТЬЮ ЗАМЕНИТЕ ИМ СОДЕРЖИМОЕ
-//                       ФАЙЛА services/downloadManager.js
-// =====================================================================================
+// services/downloadManager.js - ОБНОВЛЕННАЯ ВЕРСИЯ С ПОДДЕРЖКОЙ SPOTIFY
 
 import fetch from 'node-fetch';
 import pMap from 'p-map';
@@ -10,7 +7,7 @@ import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
 import fs from 'fs';
-import scdl from 'soundcloud-downloader'; // <--- ПРАВИЛЬНЫЙ ИМПОРТ
+import scdl from 'soundcloud-downloader';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
@@ -67,7 +64,8 @@ async function resolveCanonicalUrl(url) {
   }
 }
 
-function getCacheKey(meta, fallbackUrl) {
+function getCacheKey(meta, fallbackUrl, source = 'soundcloud') {
+  if (source === 'spotify' && meta?.id) return `spotify:${meta.id}`;
   if (meta?.id) return `sc:${meta.id}`;
   return fallbackUrl || 'unknown';
 }
@@ -107,26 +105,65 @@ function extractMetadataFromInfo(info) {
 async function ensureTaskMetadata(task) {
   let { metadata, cacheKey } = task;
   const url = task.url || task.originalUrl;
-  if (!metadata) {
+  const source = task.source || 'soundcloud';
+  
+  if (!metadata && source !== 'spotify') {
     if (!url) throw new Error('TASK_MISSING_URL');
     console.warn('[Worker] metadata отсутствует, получаю через ytdl для URL:', url);
     const info = await ytdl(url, { 'dump-single-json': true, ...YTDL_COMMON });
     metadata = extractMetadataFromInfo(info);
     if (!metadata) throw new Error('META_MISSING');
   }
+  
   if (!cacheKey) {
-    cacheKey = getCacheKey(metadata, task.originalUrl || url);
+    cacheKey = getCacheKey(metadata, task.originalUrl || url, source);
   }
+  
   return { metadata, cacheKey, url };
 }
 
+// Новая функция для загрузки аудио из YouTube (для Spotify треков)
+async function downloadFromYouTube(searchQuery) {
+  console.log(`[YouTube] Ищу трек: ${searchQuery}`);
+  
+  const tempFile = path.join(TEMP_DIR, `yt_${Date.now()}.mp3`);
+  
+  try {
+    await ytdl(searchQuery, {
+      output: tempFile,
+      format: 'bestaudio',
+      'extract-audio': true,
+      'audio-format': 'mp3',
+      'audio-quality': 0,
+      'ffmpeg-location': ffmpegPath,
+      ...YTDL_COMMON
+    });
+    
+    const stream = fs.createReadStream(tempFile);
+    
+    // Удаляем файл после чтения
+    stream.on('end', () => {
+      fs.unlink(tempFile, (err) => {
+        if (err) console.error(`Не удалось удалить временный файл: ${tempFile}`, err);
+      });
+    });
+    
+    return stream;
+  } catch (error) {
+    // Удаляем файл в случае ошибки
+    fs.unlink(tempFile, () => {});
+    throw error;
+  }
+}
+
 // =====================================================================================
-//                             ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor
+//                   ОБНОВЛЕННАЯ ВЕРСИЯ trackDownloadProcessor
 // =====================================================================================
 
 export async function trackDownloadProcessor(task) {
   let statusMessage = null;
   const userId = parseInt(task.userId, 10);
+  const source = task.source || 'soundcloud';
   
   try {
     const usage = await getUserUsage(userId);
@@ -138,27 +175,45 @@ export async function trackDownloadProcessor(task) {
     const ensured = await ensureTaskMetadata(task);
     const { metadata, cacheKey } = ensured;
     
-    if (!metadata) { throw new Error('Не удалось получить метаданные для задачи.'); }
-    
-    const { title, uploader, duration, thumbnail, webpage_url: fullUrl } = metadata;
-    const roundedDuration = duration ? Math.round(duration) : undefined;
-    
-    if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
-      throw new Error(`Не удалось получить полную ссылку на трек из метаданных. Получено: ${fullUrl}`);
+    if (!metadata) { 
+      throw new Error('Не удалось получить метаданные для задачи.'); 
     }
     
-    let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(fullUrl);
+    const { title, uploader, duration, thumbnail } = metadata;
+    const roundedDuration = duration ? Math.round(duration) : undefined;
+    
+    // Проверяем кэш
+    let cached = await db.findCachedTrack(cacheKey);
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.trackName || title}" из кэша.`);
-      await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.trackName, performer: cached.artist || uploader, duration: roundedDuration });
-      await incrementDownload(userId, cached.trackName, cached.fileId, cacheKey);
+      await bot.telegram.sendAudio(userId, cached.fileId, { 
+        title: cached.trackName || title, 
+        performer: cached.artist || uploader, 
+        duration: roundedDuration 
+      });
+      await incrementDownload(userId, cached.trackName || title, cached.fileId, cacheKey);
       return;
     }
 
     statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
 
-    console.log(`[Worker/Stream] Открываю аудиопоток для: ${fullUrl}`);
-    const stream = await scdl.default.download(fullUrl); // <--- ПРАВИЛЬНЫЙ ВЫЗОВ
+    let stream;
+    
+    // Выбираем метод загрузки в зависимости от источника
+    if (source === 'spotify') {
+      console.log(`[Worker/Spotify] Загружаю с YouTube для Spotify трека: ${title}`);
+      // Для Spotify используем YouTube поиск
+      const searchQuery = task.url; // В spotifyManager.js мы уже формируем ytsearch1:"query"
+      stream = await downloadFromYouTube(searchQuery);
+    } else {
+      // Для SoundCloud используем scdl
+      const fullUrl = metadata.webpage_url || task.url;
+      if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
+        throw new Error(`Не удалось получить полную ссылку на трек. Получено: ${fullUrl}`);
+      }
+      console.log(`[Worker/SoundCloud] Открываю аудиопоток для: ${fullUrl}`);
+      stream = await scdl.default.download(fullUrl);
+    }
 
     let finalFileId = null;
 
@@ -179,21 +234,41 @@ export async function trackDownloadProcessor(task) {
     }
 
     if (finalFileId) {
-        const urlAliases = [];
-        if (task.originalUrl && task.originalUrl !== fullUrl && task.originalUrl.includes('soundcloud.com')) { urlAliases.push(task.originalUrl); }
-        if (cacheKey && !cacheKey.startsWith('http')) { urlAliases.push(cacheKey); }
-        if (fullUrl && fullUrl.includes('soundcloud.com')) {
-          await db.cacheTrack({ url: fullUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
-          console.log(`✅ [Cache] Трек "${title}" сохранён.`);
-        }
+      // Сохраняем в кэш
+      await db.cacheTrack({ 
+        url: cacheKey, 
+        fileId: finalFileId, 
+        title, 
+        artist: uploader, 
+        duration: roundedDuration, 
+        thumbnail,
+        source 
+      });
+      console.log(`✅ [Cache] Трек "${title}" сохранён.`);
     }
     
     if (finalFileId) {
-      await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
+      await bot.telegram.sendAudio(userId, finalFileId, { 
+        title, 
+        performer: uploader, 
+        duration: roundedDuration 
+      });
     } else {
-      console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток...');
-      const userStream = await scdl.default.download(fullUrl); // <--- ПРАВИЛЬНЫЙ ВЫЗОВ
-      const sentMsg = await bot.telegram.sendAudio(userId, { source: userStream }, { title, performer: uploader, duration: roundedDuration });
+      console.warn('[Worker] Канал-хранилище не настроен. Отправляю напрямую...');
+      // Для прямой отправки нужно создать новый поток
+      let directStream;
+      if (source === 'spotify') {
+        directStream = await downloadFromYouTube(task.url);
+      } else {
+        const fullUrl = metadata.webpage_url || task.url;
+        directStream = await scdl.default.download(fullUrl);
+      }
+      
+      const sentMsg = await bot.telegram.sendAudio(
+        userId, 
+        { source: directStream }, 
+        { title, performer: uploader, duration: roundedDuration }
+      );
       finalFileId = sentMsg?.audio?.file_id;
     }
 
@@ -202,7 +277,7 @@ export async function trackDownloadProcessor(task) {
     }
     
     if (finalFileId) {
-      await incrementDownload(userId, title, finalFileId, task.originalUrl || fullUrl);
+      await incrementDownload(userId, title, finalFileId, cacheKey);
     }
 
   } catch (err) {
@@ -220,10 +295,7 @@ export async function trackDownloadProcessor(task) {
   }
 }
 
-// =====================================================================================
-//                                 ОЧЕРЕДЬ ЗАГРУЗОК
-// =====================================================================================
-
+// Остальной код остается без изменений...
 export const downloadQueue = new TaskQueue({
   maxConcurrent: MAX_CONCURRENT_DOWNLOADS,
   taskProcessor: trackDownloadProcessor
@@ -231,12 +303,8 @@ export const downloadQueue = new TaskQueue({
 
 console.log(`[DownloadManager] Очередь загрузок инициализирована (maxConcurrent: ${MAX_CONCURRENT_DOWNLOADS})`);
 
-
-// =====================================================================================
-//                            ФИНАЛЬНАЯ ВЕРСИЯ ФУНКЦИИ enqueue
-// =====================================================================================
-
 export function enqueue(ctx, userId, url, earlyData = {}) {
+  // Ваша существующая функция enqueue остается без изменений
   (async () => {
     let statusMessage = null;
     const startTime = Date.now();
@@ -284,8 +352,6 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       }
 
       console.log('[Enqueue/Fallback] Запущена логика для плейлиста или старого вызова.');
-      // ... (здесь должна быть ваша старая, сложная логика для плейлистов)
-      // Если у вас её нет, этот блок останется пустым, и это нормально.
 
     } catch (err) {
       const errorMessage = err?.stderr || err?.message || String(err);
@@ -301,10 +367,6 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
     console.error('[Enqueue] ❌ ASYNC WRAPPER ERROR:', err);
   });
 }
-
-// =====================================================================================
-//                                   ИНИЦИАЛИЗАЦИЯ
-// =====================================================================================
 
 export function initializeDownloadManager() {
   console.log('[DownloadManager] Инициализация завершена.');
