@@ -3,6 +3,7 @@
 import fetch from 'node-fetch';
 import pMap from 'p-map';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL } from '../config.js';
+import { Readable } from 'stream';
 import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
@@ -122,37 +123,46 @@ async function ensureTaskMetadata(task) {
   return { metadata, cacheKey, url };
 }
 
-// Новая функция для загрузки аудио из YouTube (для Spotify треков)
+// Упрощенная версия для Render.com - без файлов, только потоки
 async function downloadFromYouTube(searchQuery) {
-  console.log(`[YouTube] Ищу трек: ${searchQuery}`);
-  
-  const tempFile = path.join(TEMP_DIR, `yt_${Date.now()}.mp3`);
+  console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
-    await ytdl(searchQuery, {
-      output: tempFile,
+    // Получаем информацию о треке
+    const info = await ytdl(searchQuery, {
+      dumpSingleJson: true,
       format: 'bestaudio',
-      'extract-audio': true,
-      'audio-format': 'mp3',
-      'audio-quality': 0,
-      'ffmpeg-location': ffmpegPath,
+      noPlaylist: true,
       ...YTDL_COMMON
     });
     
-    const stream = fs.createReadStream(tempFile);
+    if (!info || !info.url) {
+      throw new Error('Не удалось получить URL трека');
+    }
     
-    // Удаляем файл после чтения
-    stream.on('end', () => {
-      fs.unlink(tempFile, (err) => {
-        if (err) console.error(`Не удалось удалить временный файл: ${tempFile}`, err);
-      });
+    console.log(`[YouTube] Найден: ${info.title}`);
+    console.log(`[YouTube] URL получен, загружаю...`);
+    
+    // Загружаем аудио как поток
+    const response = await fetch(info.url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     });
     
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    // Преобразуем в Node.js поток
+    const { Readable } = await import('stream');
+    const stream = Readable.from(response.body);
+    
     return stream;
+    
   } catch (error) {
-    // Удаляем файл в случае ошибки
-    fs.unlink(tempFile, () => {});
-    throw error;
+    console.error(`[YouTube] Ошибка:`, error);
+    throw new Error(`Не удалось загрузить с YouTube: ${error.message}`);
   }
 }
 
