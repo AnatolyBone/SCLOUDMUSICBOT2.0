@@ -124,45 +124,78 @@ async function ensureTaskMetadata(task) {
 }
 
 // Упрощенная версия для Render.com - без файлов, только потоки
+// Замените функцию downloadFromYouTube в downloadManager.js на эту версию
 async function downloadFromYouTube(searchQuery) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
-    // Получаем информацию о треке
-    const info = await ytdl(searchQuery, {
+    // Получаем прямую ссылку на аудио без скачивания файла
+    const result = await ytdl.exec(searchQuery, {
       dumpSingleJson: true,
-      format: 'bestaudio',
-      noPlaylist: true,
+      noCheckCertificate: true,
+      noWarnings: true,
+      preferFreeFormats: true,
+      audioFormat: 'mp3',
+      audioQuality: 0,
+      getUrl: true,
       ...YTDL_COMMON
     });
     
-    if (!info || !info.url) {
+    if (!result || !result.url) {
       throw new Error('Не удалось получить URL трека');
     }
     
-    console.log(`[YouTube] Найден: ${info.title}`);
-    console.log(`[YouTube] URL получен, загружаю...`);
+    console.log(`[YouTube] Найден трек: ${result.title}`);
     
-    // Загружаем аудио как поток
-    const response = await fetch(info.url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    // Вариант 1: Если есть прямая ссылка на аудио
+    if (result.requested_formats && result.requested_formats[0]) {
+      const audioUrl = result.requested_formats[0].url;
+      console.log(`[YouTube] Загружаю аудио по прямой ссылке...`);
+      
+      const response = await fetch(audioUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
       }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      
+      // Конвертируем web stream в Node.js stream
+      const stream = Readable.from(response.body);
+      return stream;
     }
     
-    // Преобразуем в Node.js поток
-    const { Readable } = await import('stream');
-    const stream = Readable.from(response.body);
+    // Вариант 2: Используем основной URL
+    console.log(`[YouTube] Пробую альтернативный метод...`);
     
-    return stream;
+    // Скачиваем через pipe без сохранения на диск
+    const { spawn } = await import('child_process');
+    const ffmpeg = spawn(ffmpegPath, [
+      '-i', result.url,
+      '-vn', // Без видео
+      '-ar', '44100', // Sample rate
+      '-ac', '2', // Stereo
+      '-b:a', '192k', // Bitrate
+      '-f', 'mp3', // Формат
+      'pipe:1' // Вывод в stdout
+    ]);
+    
+    // Обработка ошибок ffmpeg
+    ffmpeg.stderr.on('data', (data) => {
+      console.log(`[FFmpeg]: ${data}`);
+    });
+    
+    ffmpeg.on('error', (error) => {
+      console.error('[FFmpeg] Ошибка:', error);
+    });
+    
+    return ffmpeg.stdout;
     
   } catch (error) {
     console.error(`[YouTube] Ошибка:`, error);
-    throw new Error(`Не удалось загрузить с YouTube: ${error.message}`);
+    throw new Error(`YouTube загрузка не удалась: ${error.message}`);
   }
 }
 
