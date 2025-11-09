@@ -145,86 +145,81 @@ async function initializePlayDl() {
 // Вызовите при старте
 initializePlayDl();
 
-// Новая функция downloadFromYouTube через play-dl
+// Замените функцию downloadFromYouTube в downloadManager.js
 async function downloadFromYouTube(searchQuery) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
-    // Убираем префикс ytsearch если есть
+    // Убираем префикс ytsearch
     const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
     
-    // Ищем на YouTube
-    const searchResults = await playdl.search(cleanQuery, {
-      source: { youtube: "video" },
-      limit: 1
+    // Сначала ищем видео на YouTube через простой HTML парсинг
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`;
+    const searchResponse = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     });
     
-    if (!searchResults || searchResults.length === 0) {
+    const html = await searchResponse.text();
+    
+    // Ищем videoId в HTML
+    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+    if (!videoIdMatch) {
       throw new Error('Видео не найдено');
     }
     
-    const video = searchResults[0];
-    console.log(`[YouTube] Найдено: ${video.title}`);
-    console.log(`[YouTube] URL: ${video.url}`);
-    console.log(`[YouTube] Длительность: ${video.durationInSec}s`);
+    const videoId = videoIdMatch[1];
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    console.log(`[YouTube] Найдено видео: ${videoId}`);
     
-    // Проверяем доступность
-    const info = await playdl.video_info(video.url);
-    if (!info) {
-      throw new Error('Не удалось получить информацию о видео');
-    }
-    
-    // Получаем поток аудио
-    const streamData = await playdl.stream(video.url, {
-      quality: 2, // 0 = highest, 2 = lowest (быстрее и стабильнее)
-      discordPlayerCompatibility: false // Для чистого потока
+    // Используем Cobalt API для загрузки
+    console.log('[YouTube] Запрос к Cobalt API...');
+    const cobaltResponse = await fetch('https://co.wuk.sh/api/json', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url: videoUrl,
+        aFormat: "mp3",
+        isAudioOnly: true,
+        filenamePattern: "basic"
+      })
     });
     
-    console.log(`[YouTube] Поток создан, тип: ${streamData.type}`);
+    const cobaltData = await cobaltResponse.json();
+    console.log('[YouTube] Ответ Cobalt:', cobaltData.status);
     
-    // Если это не аудио поток, конвертируем через FFmpeg
-    if (streamData.type !== 'audio') {
-      console.log('[YouTube] Конвертирую видео в аудио...');
+    if (cobaltData.status === 'stream' && cobaltData.url) {
+      console.log('[YouTube] Загружаю аудио файл...');
       
-      const { spawn } = await import('child_process');
-      const ffmpeg = spawn(ffmpegPath, [
-        '-i', 'pipe:0', // Вход из stdin
-        '-vn', // Без видео
-        '-acodec', 'libmp3lame', // MP3 кодек
-        '-ar', '44100', // Sample rate
-        '-ac', '2', // Stereo
-        '-b:a', '128k', // Bitrate (уменьшил для скорости)
-        '-f', 'mp3', // Формат вывода
-        'pipe:1' // Вывод в stdout
-      ]);
+      // Загружаем MP3 файл
+      const audioResponse = await fetch(cobaltData.url);
+      if (!audioResponse.ok) {
+        throw new Error(`HTTP ${audioResponse.status}`);
+      }
       
-      // Передаем поток в FFmpeg
-      streamData.stream.pipe(ffmpeg.stdin);
+      // Конвертируем в Node.js поток
+      const { Readable } = await import('stream');
+      const stream = Readable.from(audioResponse.body);
       
-      // Логирование ошибок FFmpeg
-      ffmpeg.stderr.on('data', (data) => {
-        console.log(`[FFmpeg Log]: ${data.toString().trim()}`);
-      });
-      
-      ffmpeg.on('error', (error) => {
-        console.error('[FFmpeg] Ошибка процесса:', error);
-      });
-      
-      return ffmpeg.stdout;
+      return stream;
     }
     
-    // Возвращаем аудио поток
-    return streamData.stream;
+    throw new Error('Не удалось получить ссылку на загрузку');
     
   } catch (error) {
-    console.error(`[YouTube] Ошибка play-dl:`, error.message);
+    console.error('[YouTube] Ошибка:', error.message);
     
-    // Запасной вариант - возвращаем информацию для пользователя
-    console.log('[YouTube] Пробую запасной метод...');
-    throw new Error(`Не удалось загрузить: ${error.message}`);
+    // Если Cobalt не работает, возвращаем специальный объект
+    return {
+      isYouTubeError: true,
+      searchQuery: searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '')
+    };
   }
 }
-
 // =====================================================================================
 //                   ОБНОВЛЕННАЯ ВЕРСИЯ trackDownloadProcessor
 // =====================================================================================
