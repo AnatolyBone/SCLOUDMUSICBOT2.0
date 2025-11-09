@@ -1,5 +1,5 @@
 // =========================================================================
-//        ФИНАЛЬНАЯ ВЕРСИЯ downloadManager.js (БЕЗ REDIS)
+//        ФИНАЛЬНАЯ ВЕРСИЯ downloadManager.js, ОСНОВАННАЯ НА ВАШЕМ КОДЕ (v3)
 // =========================================================================
 
 import path from 'path';
@@ -10,12 +10,12 @@ import crypto from 'crypto';
 import pTimeout, { TimeoutError } from 'p-timeout';
 
 import { TaskQueue } from '../lib/TaskQueue.js';
-// import { getRedisClient } from './redisService.js'; // УДАЛЕНО
+import { getRedisClient } from './redisService.js';
 import { bot } from '../bot.js';
 import { T } from '../config/texts.js';
 import {
     getUser, resetDailyLimitIfNeeded, saveTrackForUser, logEvent,
-    incrementDownloads, updateUserField, findCachedTrack, cacheTrack
+    incrementDownloads, updateUserField, findCachedTrack, cacheTrack // Убрали findCachedTracksByUrls
 } from '../db.js';
 
 const CONFIG = {
@@ -57,7 +57,7 @@ function getYtdlErrorMessage(err) {
 }
 
 async function trackDownloadProcessor(task) {
-  const { userId, url, trackName, uploader } = task; // Убрали playlistUrl
+  const { userId, url, trackName, uploader, playlistUrl } = task;
   const tempFilename = `${sanitizeFilename(trackName)}-${crypto.randomUUID()}.mp3`;
   const tempFilePath = path.join(cacheDir, tempFilename);
 
@@ -96,6 +96,15 @@ async function trackDownloadProcessor(task) {
       await incrementDownloads(userId);
     }
 
+    const redisClient = getRedisClient();
+    if (playlistUrl && redisClient) {
+      const playlistKey = `playlist:${userId}:${playlistUrl}`;
+      const remaining = await redisClient.decr(playlistKey);
+      if (remaining <= 0) {
+        await safeSendMessage(userId, '✅ Все треки из плейлиста загружены.');
+        await redisClient.del(playlistKey);
+      }
+    }
   } catch (err) {
     await safeSendMessage(userId, `❌ Ошибка обработки "${trackName}"`);
     console.error(`[Worker] Ошибка: ${err.stderr || err.message}`);
@@ -133,7 +142,6 @@ async function getTracksInfo(url) {
 }
 
 function applyUserLimits(tracks, user, isPlaylist) {
-    // Предполагаем, что у юзера есть поле is_premium
     if (isPlaylist && !user.is_premium && tracks.length > CONFIG.MAX_PLAYLIST_TRACKS_FREE) {
         safeSendMessage(user.id, `ℹ️ Бесплатный лимит: ${CONFIG.MAX_PLAYLIST_TRACKS_FREE} треков из плейлиста.`);
         return tracks.slice(0, CONFIG.MAX_PLAYLIST_TRACKS_FREE);
@@ -141,12 +149,13 @@ function applyUserLimits(tracks, user, isPlaylist) {
     return tracks;
 }
 
+// <<< ИСПРАВЛЕННАЯ ВЕРСИЯ >>>
 async function sendCachedTracks(tracks, userId) {
   const tasksToDownload = [];
   let sentFromCacheCount = 0;
 
   for (const track of tracks) {
-    const cached = await db.findCachedTrack(track.url);
+    const cached = await db.findCachedTrack(track.url); // Используем findCachedTrack
     if (cached) {
       try {
         await bot.telegram.sendAudio(userId, cached.fileId, { title: track.trackName, performer: track.uploader });
@@ -167,7 +176,7 @@ async function sendCachedTracks(tracks, userId) {
   return tasksToDownload;
 }
 
-async function queueRemainingTracks(tracks, userId) {
+async function queueRemainingTracks(tracks, userId, isPlaylist, originalUrl) {
   if (!tracks.length) return;
 
   const user = await getUser(userId);
@@ -179,8 +188,14 @@ async function queueRemainingTracks(tracks, userId) {
 
   if (finalTasks.length) {
     await safeSendMessage(userId, `⏳ В очереди ${finalTasks.length} трек(ов).`);
+    const redisClient = getRedisClient();
+    if (isPlaylist && redisClient) {
+        const playlistKey = `playlist:${userId}:${originalUrl}`;
+        await redisClient.setEx(playlistKey, 3600, finalTasks.length.toString());
+    }
+
     for (const track of finalTasks) {
-      downloadQueue.add({ userId, ...track, priority: user.premium_limit });
+      downloadQueue.add({ userId, ...track, playlistUrl: isPlaylist ? originalUrl : null, priority: user.premium_limit });
     }
   }
 }
@@ -199,7 +214,7 @@ export async function enqueue(ctx, userId, url) {
     const { tracks, isPlaylist } = await getTracksInfo(url);
     const limitedTracks = applyUserLimits(tracks, user, isPlaylist);
     const tasksToDownload = await sendCachedTracks(limitedTracks, userId);
-    await queueRemainingTracks(tasksToDownload, userId);
+    await queueRemainingTracks(tasksToDownload, userId, isPlaylist, url);
 
     if (processingMessage) await bot.telegram.deleteMessage(userId, processingMessage.message_id).catch(() => {});
   } catch (err) {
