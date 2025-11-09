@@ -7,6 +7,7 @@ import { Readable } from 'stream';
 import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
+import playdl from 'play-dl';
 import fs from 'fs';
 import scdl from 'soundcloud-downloader';
 import os from 'os';
@@ -124,78 +125,103 @@ async function ensureTaskMetadata(task) {
 }
 
 // Упрощенная версия для Render.com - без файлов, только потоки
-// Замените функцию downloadFromYouTube в downloadManager.js на эту версию
+
+
+// Инициализация play-dl (добавьте после импортов)
+async function initializePlayDl() {
+  try {
+    // Авторизация play-dl (опционально, но помогает с ограничениями)
+    await playdl.setToken({
+      youtube: {
+        cookie: '' // Можно оставить пустым
+      }
+    });
+    console.log('[PlayDL] Инициализирован');
+  } catch (error) {
+    console.log('[PlayDL] Работаем без авторизации');
+  }
+}
+
+// Вызовите при старте
+initializePlayDl();
+
+// Новая функция downloadFromYouTube через play-dl
 async function downloadFromYouTube(searchQuery) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
-    // Получаем прямую ссылку на аудио без скачивания файла
-    const result = await ytdl.exec(searchQuery, {
-      dumpSingleJson: true,
-      noCheckCertificate: true,
-      noWarnings: true,
-      preferFreeFormats: true,
-      audioFormat: 'mp3',
-      audioQuality: 0,
-      getUrl: true,
-      ...YTDL_COMMON
+    // Убираем префикс ytsearch если есть
+    const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
+    
+    // Ищем на YouTube
+    const searchResults = await playdl.search(cleanQuery, {
+      source: { youtube: "video" },
+      limit: 1
     });
     
-    if (!result || !result.url) {
-      throw new Error('Не удалось получить URL трека');
+    if (!searchResults || searchResults.length === 0) {
+      throw new Error('Видео не найдено');
     }
     
-    console.log(`[YouTube] Найден трек: ${result.title}`);
+    const video = searchResults[0];
+    console.log(`[YouTube] Найдено: ${video.title}`);
+    console.log(`[YouTube] URL: ${video.url}`);
+    console.log(`[YouTube] Длительность: ${video.durationInSec}s`);
     
-    // Вариант 1: Если есть прямая ссылка на аудио
-    if (result.requested_formats && result.requested_formats[0]) {
-      const audioUrl = result.requested_formats[0].url;
-      console.log(`[YouTube] Загружаю аудио по прямой ссылке...`);
+    // Проверяем доступность
+    const info = await playdl.video_info(video.url);
+    if (!info) {
+      throw new Error('Не удалось получить информацию о видео');
+    }
+    
+    // Получаем поток аудио
+    const streamData = await playdl.stream(video.url, {
+      quality: 2, // 0 = highest, 2 = lowest (быстрее и стабильнее)
+      discordPlayerCompatibility: false // Для чистого потока
+    });
+    
+    console.log(`[YouTube] Поток создан, тип: ${streamData.type}`);
+    
+    // Если это не аудио поток, конвертируем через FFmpeg
+    if (streamData.type !== 'audio') {
+      console.log('[YouTube] Конвертирую видео в аудио...');
       
-      const response = await fetch(audioUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+      const { spawn } = await import('child_process');
+      const ffmpeg = spawn(ffmpegPath, [
+        '-i', 'pipe:0', // Вход из stdin
+        '-vn', // Без видео
+        '-acodec', 'libmp3lame', // MP3 кодек
+        '-ar', '44100', // Sample rate
+        '-ac', '2', // Stereo
+        '-b:a', '128k', // Bitrate (уменьшил для скорости)
+        '-f', 'mp3', // Формат вывода
+        'pipe:1' // Вывод в stdout
+      ]);
+      
+      // Передаем поток в FFmpeg
+      streamData.stream.pipe(ffmpeg.stdin);
+      
+      // Логирование ошибок FFmpeg
+      ffmpeg.stderr.on('data', (data) => {
+        console.log(`[FFmpeg Log]: ${data.toString().trim()}`);
       });
       
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      ffmpeg.on('error', (error) => {
+        console.error('[FFmpeg] Ошибка процесса:', error);
+      });
       
-      // Конвертируем web stream в Node.js stream
-      const stream = Readable.from(response.body);
-      return stream;
+      return ffmpeg.stdout;
     }
     
-    // Вариант 2: Используем основной URL
-    console.log(`[YouTube] Пробую альтернативный метод...`);
-    
-    // Скачиваем через pipe без сохранения на диск
-    const { spawn } = await import('child_process');
-    const ffmpeg = spawn(ffmpegPath, [
-      '-i', result.url,
-      '-vn', // Без видео
-      '-ar', '44100', // Sample rate
-      '-ac', '2', // Stereo
-      '-b:a', '192k', // Bitrate
-      '-f', 'mp3', // Формат
-      'pipe:1' // Вывод в stdout
-    ]);
-    
-    // Обработка ошибок ffmpeg
-    ffmpeg.stderr.on('data', (data) => {
-      console.log(`[FFmpeg]: ${data}`);
-    });
-    
-    ffmpeg.on('error', (error) => {
-      console.error('[FFmpeg] Ошибка:', error);
-    });
-    
-    return ffmpeg.stdout;
+    // Возвращаем аудио поток
+    return streamData.stream;
     
   } catch (error) {
-    console.error(`[YouTube] Ошибка:`, error);
-    throw new Error(`YouTube загрузка не удалась: ${error.message}`);
+    console.error(`[YouTube] Ошибка play-dl:`, error.message);
+    
+    // Запасной вариант - возвращаем информацию для пользователя
+    console.log('[YouTube] Пробую запасной метод...');
+    throw new Error(`Не удалось загрузить: ${error.message}`);
   }
 }
 
