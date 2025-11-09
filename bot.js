@@ -885,50 +885,64 @@ async function handleSoundCloudUrl(ctx, url) {
         }
     }
 }
-// =====================================================================
-//      ЗАМЕНИТЕ ВЕСЬ ОБРАБОТЧИК bot.on('text',...) НА ЭТОТ
-// =====================================================================
-
 bot.on('text', async (ctx) => {
-    // 1. Стандартные проверки
-    if (isShuttingDown()) {
-        return; // Игнорируем новые запросы при выключении
-    }
-    if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) {
-        return await ctx.reply('⏳ Бот на плановом обслуживании. Попробуйте через 5-10 минут.');
-    }
+                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
+                if (isShuttingDown()) { // ПРАВИЛЬНО: скобок нет
+                    console.log('[Shutdown] Отклонен новый запрос, так как идет завершение работы.');
+                    return;
+                }
+                
+                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
+                if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) { // ПРАВИЛЬНО: и здесь тоже нет
+                    return await ctx.reply('⏳ Бот на плановом обслуживании. Новые запросы временно не принимаются. Пожалуйста, попробуйте через 5-10 минут.');
+                }
     if (ctx.chat.type !== 'private') {
-        return; // Работаем только в личных сообщениях
-    }
-    
-    const text = ctx.message.text;
-    // Игнорируем команды и кнопки меню
-    if (text.startsWith('/') || Object.values(allTextsSync()).includes(text)) {
+        console.log(`[Ignore] Сообщение из не-приватного чата (${ctx.chat.type}) было проигнорировано.`);
         return;
     }
     
-    // 2. Ищем ссылку в сообщении
+    const text = ctx.message.text;
+    if (text.startsWith('/')) return;
+    if (Object.values(allTextsSync()).includes(text)) return;
+    
     const urlMatch = text.match(/(https?:\/\/[^\s]+)/g);
     if (!urlMatch) {
-        return await ctx.reply('Пожалуйста, отправьте мне ссылку на трек из SoundCloud или Spotify.');
+        return await ctx.reply('Пожалуйста, отправьте мне ссылку.');
     }
     
-    const url = urlMatch[0];
-    
-    // 3. МАРШРУТИЗАЦИЯ: Определяем, куда отправить ссылку
-    // bot.js
+   const url = urlMatch[0];
 
 if (url.includes('soundcloud.com')) {
-    // Просто вызываем вашу основную функцию enqueue.
-    // Она сама разберется со ссылкой SoundCloud.
-    enqueue(ctx, ctx.from.id, url);
-    
+  // РАННИЙ ЧЕК ЛИМИТА: до любого анализа ссылки
+  const user = await getUser(ctx.from.id); // resetDailyLimitIfNeeded уже отработал в middleware
+  if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
+    const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+    const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+    const bonusText = bonusAvailable
+      ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+      : '';
+
+    const extra = {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true
+    };
+    if (bonusAvailable) {
+      extra.reply_markup = {
+        inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
+      };
+    }
+
+    await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+    return; // ВАЖНО: не запускаем анализ ссылки
+  }
+
+  // Лимит не достигнут — продолжаем обычную логику
+  handleSoundCloudUrl(ctx, url);
 } else if (url.includes('open.spotify.com')) {
-    // Для Spotify вызываем spotifyEnqueue.
-    // Он получит название трека и *тоже вызовет* enqueue, но уже с поисковым запросом.
-    spotifyEnqueue(ctx, ctx.from.id, url);
-    
+  // Просто отвечаем пользователю, что функция временно недоступна
+  await ctx.reply('🛠 К сожалению, скачивание из Spotify временно на техническом обслуживании. Мы работаем над этим!');
 } else {
-    await ctx.reply('Я поддерживаю ссылки только с SoundCloud и Spotify.');
+  // Обновляем текст, чтобы не упоминать Spotify
+  await ctx.reply('Я умею скачивать треки из SoundCloud. Поддержка других платформ в разработке!');
 }
 });
