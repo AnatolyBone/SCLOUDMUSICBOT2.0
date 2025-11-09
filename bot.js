@@ -916,21 +916,19 @@ bot.on('text', async (ctx) => {
     const url = urlMatch[0];
     
     // 3. МАРШРУТИЗАЦИЯ: Определяем, куда отправить ссылку
-    if (url.includes('soundcloud.com')) {
-        // Для SoundCloud просто ставим задачу в очередь.
-        // Воркер сам получит метаданные и проверит лимиты.
-        enqueue(ctx, ctx.from.id, url, {
-            source: 'soundcloud',
-            originalUrl: url,
-            metadata: null // metadata будет получено внутри воркера
-        });
-        
-    } else if (url.includes('open.spotify.com')) {
-        // Для Spotify вызываем специальный обработчик,
-        // который сначала получит метаданные, а потом поставит задачи в очередь.
-        spotifyEnqueue(ctx, ctx.from.id, url);
-        
-    } else {
-        await ctx.reply('Я поддерживаю ссылки только с SoundCloud и Spotify.');
-    }
+    // bot.js
+
+if (url.includes('soundcloud.com')) {
+    // Просто вызываем вашу основную функцию enqueue.
+    // Она сама разберется со ссылкой SoundCloud.
+    enqueue(ctx, ctx.from.id, url);
+    
+} else if (url.includes('open.spotify.com')) {
+    // Для Spotify вызываем spotifyEnqueue.
+    // Он получит название трека и *тоже вызовет* enqueue, но уже с поисковым запросом.
+    spotifyEnqueue(ctx, ctx.from.id, url);
+    
+} else {
+    await ctx.reply('Я поддерживаю ссылки только с SoundCloud и Spotify.');
+}
 });
