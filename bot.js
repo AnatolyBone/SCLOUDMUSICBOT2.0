@@ -965,6 +965,6 @@ if (url.includes('soundcloud.com')) {
   // Обрабатываем Spotify ссылку
   await spotifyEnqueue(ctx, ctx.from.id, url);
 } else {
-  await ctx.reply('Я умею скачивать треки из SoundCloud и Spotify. Отправьте мне ссылку на трек, альбом или плейлист!');
+  await ctx.reply('🎵 Я умею скачивать треки из SoundCloud и Spotify!\n\nПросто отправьте мне ссылку на трек, альбом или плейлист.');
 }
 });
