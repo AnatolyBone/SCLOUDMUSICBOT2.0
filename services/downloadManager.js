@@ -129,8 +129,16 @@ export const downloadQueue = new TaskQueue({
 
 // --- Конвейер обработки ---
 async function getTracksInfo(url) {
+  // <<< НОВАЯ ЛОГИКА МАРШРУТИЗАЦИИ >>>
+  let downloadUrl = url;
+  // Если URL не похож на настоящую ссылку, считаем, что это поисковый запрос для YouTube
+  if (!url.startsWith('http')) {
+      downloadUrl = `ytsearch:"${url}"`;
+      console.log(`[getTracksInfo] Обнаружен поисковый запрос, ищем на YouTube: ${downloadUrl}`);
+  }
+
   const info = await pTimeout(
-    ytdl(url, { dumpSingleJson: true, retries: CONFIG.YTDL_RETRIES, "socket-timeout": CONFIG.SOCKET_TIMEOUT }),
+    ytdl(downloadUrl, { dumpSingleJson: true, retries: CONFIG.YTDL_RETRIES, "socket-timeout": CONFIG.SOCKET_TIMEOUT }),
     { milliseconds: CONFIG.METADATA_FETCH_TIMEOUT_MS, message: 'Превышен таймаут получения метаданных.' }
   );
 
