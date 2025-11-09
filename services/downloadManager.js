@@ -1,17 +1,14 @@
 // services/downloadManager.js
 
-// services/downloadManager.js
-
-import path from 'path';
 import fs from 'fs';
 import ytdl from 'youtube-dl-exec';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import pTimeout, { TimeoutError } from 'p-timeout';
 
-import { TaskQueue } from '../src/lib/TaskQueue.js';
-import { getRedisClient } from './redisService.js'; // <<< ИСПРАВЛЕНО
-import { bot } from '../src/bot.js';               // <<< ИСПРАВЛЕНО
+import { TaskQueue } from '../lib/TaskQueue.js';
+import { getRedisClient } from './redisService.js';
+import { bot } from '../bot.js';
 import { T } from '../config/texts.js';
 import {
     getUser, resetDailyLimitIfNeeded, saveTrackForUser, logEvent,
