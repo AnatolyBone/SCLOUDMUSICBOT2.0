@@ -1,160 +1,257 @@
-// services/spotifyManager.js (ФИНАЛЬНАЯ ВЕРСИЯ)
+// services/spotifyManager.js (ВЕРСИЯ ДЛЯ RENDER.COM)
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import SpotifyWebApi from 'spotify-web-api-node';
 import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
 import { downloadQueue } from './downloadManager.js';
 import { logEvent, getUser } from '../db.js';
 
-const execAsync = promisify(exec);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(path.dirname(__filename));
+// Инициализация Spotify API
+const spotifyApi = new SpotifyWebApi({
+    clientId: SPOTIPY_CLIENT_ID,
+    clientSecret: SPOTIPY_CLIENT_SECRET
+});
 
-async function ensureDirectoryExists(dirPath) {
-    try { 
-        await fs.access(dirPath); 
+// Функция для получения токена
+async function getSpotifyToken() {
+    try {
+        const data = await spotifyApi.clientCredentialsGrant();
+        spotifyApi.setAccessToken(data.body['access_token']);
+        
+        // Токен истекает через час, обновляем автоматически
+        setTimeout(async () => {
+            await getSpotifyToken();
+        }, (data.body['expires_in'] - 60) * 1000);
+        
+        console.log('[Spotify] Токен получен успешно');
+        return true;
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            await fs.mkdir(dirPath, { recursive: true });
-        } else {
-            throw error;
+        console.error('[Spotify] Ошибка получения токена:', error);
+        return false;
+    }
+}
+
+// Инициализируем токен при запуске
+getSpotifyToken();
+
+// Парсим Spotify URL
+function parseSpotifyUrl(url) {
+    const match = url.match(/spotify\.com\/(track|album|playlist)\/([a-zA-Z0-9]+)/);
+    if (!match) return null;
+    return { type: match[1], id: match[2] };
+}
+
+// Получаем треки из плейлиста
+async function getPlaylistTracks(playlistId) {
+    const tracks = [];
+    let offset = 0;
+    const limit = 50;
+    
+    try {
+        while (true) {
+            const data = await spotifyApi.getPlaylistTracks(playlistId, {
+                offset: offset,
+                limit: limit,
+                fields: 'items(track(name,artists,duration_ms,id,external_urls)),total'
+            });
+            
+            const items = data.body.items;
+            if (!items || items.length === 0) break;
+            
+            items.forEach(item => {
+                if (item.track) {
+                    tracks.push({
+                        name: item.track.name,
+                        artists: item.track.artists.map(a => a.name),
+                        duration: item.track.duration_ms,
+                        id: item.track.id,
+                        url: item.track.external_urls?.spotify
+                    });
+                }
+            });
+            
+            if (items.length < limit) break;
+            offset += limit;
         }
+    } catch (error) {
+        console.error('[Spotify] Ошибка получения плейлиста:', error);
+    }
+    
+    return tracks;
+}
+
+// Получаем треки из альбома
+async function getAlbumTracks(albumId) {
+    try {
+        const albumData = await spotifyApi.getAlbum(albumId);
+        const album = albumData.body;
+        
+        return album.tracks.items.map(track => ({
+            name: track.name,
+            artists: track.artists.map(a => a.name),
+            duration: track.duration_ms,
+            id: track.id,
+            url: track.external_urls?.spotify,
+            album_name: album.name,
+            album_image: album.images?.[0]?.url
+        }));
+    } catch (error) {
+        console.error('[Spotify] Ошибка получения альбома:', error);
+        return [];
+    }
+}
+
+// Получаем один трек
+async function getSingleTrack(trackId) {
+    try {
+        const data = await spotifyApi.getTrack(trackId);
+        const track = data.body;
+        
+        return [{
+            name: track.name,
+            artists: track.artists.map(a => a.name),
+            duration: track.duration_ms,
+            id: track.id,
+            url: track.external_urls?.spotify,
+            album_image: track.album?.images?.[0]?.url
+        }];
+    } catch (error) {
+        console.error('[Spotify] Ошибка получения трека:', error);
+        return [];
     }
 }
 
 export async function spotifyEnqueue(ctx, userId, url) {
     let statusMessage = null;
-    let tempFilePath = null;
     
     try {
-        // Проверяем, что Spotify credentials настроены
+        // Проверяем credentials
         if (!SPOTIPY_CLIENT_ID || !SPOTIPY_CLIENT_SECRET) {
-            console.error('[Spotify] Spotify credentials не настроены');
+            console.error('[Spotify] Credentials не настроены');
             return await ctx.reply('❌ Spotify не настроен. Обратитесь к администратору.');
+        }
+        
+        // Парсим URL
+        const parsed = parseSpotifyUrl(url);
+        if (!parsed) {
+            return await ctx.reply('❌ Неверная ссылка Spotify. Поддерживаются треки, альбомы и плейлисты.');
         }
         
         statusMessage = await ctx.reply('🔍 Анализирую ссылку Spotify...');
         
-        const uploadDir = path.join(__dirname, 'uploads');
-        await ensureDirectoryExists(uploadDir);
-        
-        const tempFileName = `spotify_${userId}_${Date.now()}.spotdl`;
-        tempFilePath = path.join(uploadDir, tempFileName);
-        
-        // Используем системную команду spotdl с credentials в environment
-        const env = {
-            ...process.env,
-            SPOTIPY_CLIENT_ID,
-            SPOTIPY_CLIENT_SECRET
-        };
-        
-        const command = `spotdl save "${url}" --save-file "${tempFilePath}"`;
-        console.log(`[Spotify] Выполняю команду для ${userId}: spotdl save [url]`);
-        
-        try {
-            const { stdout, stderr } = await execAsync(command, { env });
-            if (stderr && !stderr.includes('WARNING')) {
-                console.warn('[Spotify] Предупреждения spotdl:', stderr);
+        // Обновляем токен если нужно
+        if (!spotifyApi.getAccessToken()) {
+            const tokenSuccess = await getSpotifyToken();
+            if (!tokenSuccess) {
+                throw new Error('Не удалось авторизоваться в Spotify');
             }
-        } catch (execError) {
-            console.error('[Spotify] Ошибка выполнения spotdl:', execError);
-            throw new Error('Не удалось получить информацию о треках');
         }
         
-        // Читаем и парсим результат
-        const fileContent = await fs.readFile(tempFilePath, 'utf-8');
-        const tracksMeta = JSON.parse(fileContent);
+        // Получаем треки в зависимости от типа
+        let tracks = [];
+        switch (parsed.type) {
+            case 'track':
+                tracks = await getSingleTrack(parsed.id);
+                break;
+            case 'album':
+                tracks = await getAlbumTracks(parsed.id);
+                break;
+            case 'playlist':
+                tracks = await getPlaylistTracks(parsed.id);
+                break;
+        }
         
-        if (!tracksMeta || tracksMeta.length === 0) {
+        if (tracks.length === 0) {
             return await ctx.telegram.editMessageText(
-                ctx.chat.id, 
-                statusMessage.message_id, 
-                undefined, 
-                '❌ Не удалось найти треки по этой ссылке Spotify.'
+                ctx.chat.id,
+                statusMessage.message_id,
+                undefined,
+                '❌ Не удалось найти треки по этой ссылке.'
             );
         }
         
-        const trackCount = tracksMeta.length;
-        const isPlaylist = trackCount > 1;
+        // Проверяем лимиты пользователя
+        const user = await getUser(userId);
+        const remainingLimit = user.premium_limit - (user.downloads_today || 0);
+        
+        if (remainingLimit <= 0) {
+            return await ctx.telegram.editMessageText(
+                ctx.chat.id,
+                statusMessage.message_id,
+                undefined,
+                '❌ Достигнут дневной лимит загрузок.'
+            );
+        }
+        
+        // Ограничиваем количество треков лимитом
+        const tracksToProcess = tracks.slice(0, Math.min(tracks.length, remainingLimit));
         
         await ctx.telegram.editMessageText(
-            ctx.chat.id, 
-            statusMessage.message_id, 
-            undefined, 
-            `✅ Найдено треков: ${trackCount}. Добавляю в очередь...`
+            ctx.chat.id,
+            statusMessage.message_id,
+            undefined,
+            `✅ Найдено треков: ${tracks.length}. Добавляю ${tracksToProcess.length} в очередь...`
         );
         
         // Логируем событие
-        await logEvent(userId, isPlaylist ? 'spotify_playlist_album' : 'spotify_track');
+        await logEvent(userId, tracks.length > 1 ? 'spotify_playlist_album' : 'spotify_track');
         
-        // Получаем приоритет пользователя
-        const user = await getUser(userId);
+        // Получаем приоритет
         const priority = user ? (user.premium_limit || 5) : 5;
-
+        
         // Добавляем треки в очередь
-        for (const track of tracksMeta) {
+        for (const track of tracksToProcess) {
             // Формируем поисковый запрос для YouTube
-            const artists = Array.isArray(track.artists) ? track.artists.join(' ') : track.artist || '';
-            const searchQuery = `${artists} ${track.name}`.trim();
+            const searchQuery = `${track.artists.join(' ')} ${track.name}`.trim();
             
             const task = {
                 userId,
                 source: 'spotify',
-                url: `ytsearch1:${searchQuery}`, // YouTube поиск
+                url: `ytsearch1:${searchQuery}`,
                 originalUrl: track.url || url,
                 metadata: {
                     title: track.name || 'Unknown Track',
-                    uploader: artists || 'Unknown Artist',
+                    uploader: track.artists.join(', ') || 'Unknown Artist',
                     duration: track.duration ? Math.round(track.duration / 1000) : undefined,
-                    thumbnail: track.cover_url || track.thumbnail,
-                    id: track.song_id || track.id || `spotify_${Date.now()}_${Math.random()}`
+                    thumbnail: track.album_image,
+                    id: `spotify_${track.id}`
                 },
                 priority
             };
             
-            console.log(`[Spotify] Добавляю в очередь: "${task.metadata.title}" by ${task.metadata.uploader}`);
+            console.log(`[Spotify] Добавляю: "${task.metadata.title}" - ${task.metadata.uploader}`);
             downloadQueue.add(task);
         }
         
         // Финальное сообщение
-        const finalMessage = isPlaylist 
-            ? `🎵 ${trackCount} треков из Spotify добавлены в очередь загрузки!`
-            : `🎵 Трек из Spotify добавлен в очередь загрузки!`;
-            
+        const finalMessage = tracksToProcess.length > 1
+            ? `🎵 ${tracksToProcess.length} треков добавлены в очередь!`
+            : `🎵 Трек добавлен в очередь!`;
+        
+        if (tracksToProcess.length < tracks.length) {
+            finalMessage += `\n⚠️ Остальные ${tracks.length - tracksToProcess.length} треков превышают ваш лимит.`;
+        }
+        
         await ctx.telegram.editMessageText(
-            ctx.chat.id, 
-            statusMessage.message_id, 
-            undefined, 
+            ctx.chat.id,
+            statusMessage.message_id,
+            undefined,
             finalMessage
         );
         
     } catch (error) {
-        console.error(`[Spotify] Ошибка для ${userId} с URL ${url}:`, error);
+        console.error(`[Spotify] Ошибка для ${userId}:`, error);
         
-        const errorMessage = error.message || 'Неизвестная ошибка';
+        const errorMessage = '❌ Произошла ошибка при обработке Spotify ссылки.';
         
         if (statusMessage) {
             await ctx.telegram.editMessageText(
-                ctx.chat.id, 
-                statusMessage.message_id, 
-                undefined, 
-                `❌ Произошла ошибка: ${errorMessage}`
+                ctx.chat.id,
+                statusMessage.message_id,
+                undefined,
+                errorMessage
             ).catch(() => {});
         } else {
-            await ctx.reply(`❌ Произошла ошибка: ${errorMessage}`);
-        }
-    } finally {
-        // Удаляем временный файл
-        if (tempFilePath) {
-            try {
-                await fs.unlink(tempFilePath);
-                console.log(`[Spotify] Удален временный файл: ${tempFilePath}`);
-            } catch (e) {
-                console.error(`[Spotify] Не удалось удалить временный файл ${tempFilePath}:`, e);
-            }
+            await ctx.reply(errorMessage);
         }
     }
 }
