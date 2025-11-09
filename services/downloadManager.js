@@ -1,5 +1,5 @@
 // =========================================================================
-//        ФИНАЛЬНАЯ ВЕРСИЯ downloadManager.js, ОСНОВАННАЯ НА ВАШЕМ КОДЕ
+//        ФИНАЛЬНАЯ ВЕРСИЯ downloadManager.js, ОСНОВАННАЯ НА ВАШЕМ КОДЕ (v3)
 // =========================================================================
 
 import path from 'path';
@@ -122,7 +122,6 @@ export const downloadQueue = new TaskQueue({
 
 async function getTracksInfo(url) {
   let downloadUrl = url;
-  // Если URL не похож на настоящую ссылку, считаем, что это поисковый запрос для YouTube
   if (!url.startsWith('http')) {
       downloadUrl = `ytsearch1:"${url}"`;
       console.log(`[getTracksInfo] Ищем на YouTube: ${downloadUrl}`);
@@ -150,12 +149,13 @@ function applyUserLimits(tracks, user, isPlaylist) {
     return tracks;
 }
 
+// <<< ИСПРАВЛЕННАЯ ВЕРСИЯ >>>
 async function sendCachedTracks(tracks, userId) {
   const tasksToDownload = [];
   let sentFromCacheCount = 0;
 
   for (const track of tracks) {
-    const cached = await db.findCachedTrack(track.url);
+    const cached = await db.findCachedTrack(track.url); // Используем findCachedTrack
     if (cached) {
       try {
         await bot.telegram.sendAudio(userId, cached.fileId, { title: track.trackName, performer: track.uploader });
