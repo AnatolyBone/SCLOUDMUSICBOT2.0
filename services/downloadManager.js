@@ -14,7 +14,8 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import ytdl from 'youtube-dl-exec';
-
+import ytsr from 'ytsr'; // npm install ytsr
+import ytdlCore from 'ytdl-core';
 import { bot } from '../bot.js';
 import { T } from '../config/texts.js';
 import { TaskQueue } from '../lib/TaskQueue.js';
@@ -145,79 +146,120 @@ async function initializePlayDl() {
 // Вызовите при старте
 initializePlayDl();
 
-// Замените функцию downloadFromYouTube в downloadManager.js
+
+// Функция для поиска на YouTube с проверкой длительности
 async function downloadFromYouTube(searchQuery) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
-    // Убираем префикс ytsearch
+    // Убираем префикс ytsearch и кавычки
     const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
     
-    // Сначала ищем видео на YouTube через простой HTML парсинг
-    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`;
-    const searchResponse = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    // Получаем метаданные из task (они должны быть переданы)
+    // В вызывающей функции нужно будет передать metadata
+    const spotifyDuration = this.metadata?.duration; // длительность в секундах из Spotify
+    
+    // Формируем несколько вариантов поиска (как в Python коде)
+    const searchQueries = [
+      cleanQuery,
+      cleanQuery + ' lyrics',
+      cleanQuery + ' official audio',
+      cleanQuery + ' audio'
+    ];
+    
+    let bestMatch = null;
+    let bestDiff = Infinity;
+    
+    // Ищем по всем вариантам запросов
+    for (const query of searchQueries) {
+      console.log(`[YouTube] Пробую запрос: ${query}`);
+      
+      try {
+        // Используем ytsr для поиска
+        const searchResults = await ytsr(query, {
+          limit: 5,
+          gl: 'US',
+          hl: 'en'
+        });
+        
+        if (!searchResults.items || searchResults.items.length === 0) {
+          continue;
+        }
+        
+        // Фильтруем только видео
+        const videos = searchResults.items.filter(item => item.type === 'video');
+        
+        for (const video of videos) {
+          // Парсим длительность видео (формат "MM:SS" или "HH:MM:SS")
+          const durationParts = (video.duration || '').split(':').reverse();
+          let videoDuration = 0;
+          
+          if (durationParts[0]) videoDuration += parseInt(durationParts[0], 10); // секунды
+          if (durationParts[1]) videoDuration += parseInt(durationParts[1], 10) * 60; // минуты
+          if (durationParts[2]) videoDuration += parseInt(durationParts[2], 10) * 3600; // часы
+          
+          console.log(`[YouTube] Найдено: ${video.title} (${videoDuration}s)`);
+          
+          // Сравниваем длительность (как в Python коде - разница до 35 секунд)
+          if (spotifyDuration) {
+            const diff = Math.abs(videoDuration - spotifyDuration);
+            
+            if (diff <= 35 && diff < bestDiff) {
+              bestMatch = video;
+              bestDiff = diff;
+              console.log(`[YouTube] Лучшее совпадение! Разница: ${diff}s`);
+              
+              // Если нашли точное совпадение, прекращаем поиск
+              if (diff <= 5) {
+                break;
+              }
+            }
+          } else if (!bestMatch) {
+            // Если нет данных о длительности, берем первое видео
+            bestMatch = video;
+          }
+        }
+        
+        // Если нашли хорошее совпадение, прекращаем поиск
+        if (bestDiff <= 5) {
+          break;
+        }
+        
+      } catch (searchError) {
+        console.error(`[YouTube] Ошибка поиска для "${query}":`, searchError.message);
       }
-    });
-    
-    const html = await searchResponse.text();
-    
-    // Ищем videoId в HTML
-    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-    if (!videoIdMatch) {
-      throw new Error('Видео не найдено');
     }
     
-    const videoId = videoIdMatch[1];
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    console.log(`[YouTube] Найдено видео: ${videoId}`);
-    
-    // Используем Cobalt API для загрузки
-    console.log('[YouTube] Запрос к Cobalt API...');
-    const cobaltResponse = await fetch('https://co.wuk.sh/api/json', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url: videoUrl,
-        aFormat: "mp3",
-        isAudioOnly: true,
-        filenamePattern: "basic"
-      })
-    });
-    
-    const cobaltData = await cobaltResponse.json();
-    console.log('[YouTube] Ответ Cobalt:', cobaltData.status);
-    
-    if (cobaltData.status === 'stream' && cobaltData.url) {
-      console.log('[YouTube] Загружаю аудио файл...');
-      
-      // Загружаем MP3 файл
-      const audioResponse = await fetch(cobaltData.url);
-      if (!audioResponse.ok) {
-        throw new Error(`HTTP ${audioResponse.status}`);
-      }
-      
-      // Конвертируем в Node.js поток
-      const { Readable } = await import('stream');
-      const stream = Readable.from(audioResponse.body);
-      
-      return stream;
+    if (!bestMatch) {
+      throw new Error('Не удалось найти подходящее видео');
     }
     
-    throw new Error('Не удалось получить ссылку на загрузку');
+    console.log(`[YouTube] Выбрано видео: ${bestMatch.title}`);
+    console.log(`[YouTube] URL: ${bestMatch.url}`);
+    
+    // Проверяем доступность видео
+    const isValid = ytdlCore.validateURL(bestMatch.url);
+    if (!isValid) {
+      throw new Error('Недействительный URL YouTube');
+    }
+    
+    // Получаем поток аудио
+    const stream = ytdlCore(bestMatch.url, {
+      quality: 'highestaudio',
+      filter: 'audioonly',
+      highWaterMark: 1 << 25 // 32MB буфер
+    });
+    
+    // Обработка ошибок потока
+    stream.on('error', (error) => {
+      console.error('[YouTube] Ошибка потока:', error);
+    });
+    
+    return stream;
     
   } catch (error) {
     console.error('[YouTube] Ошибка:', error.message);
-    
-    // Если Cobalt не работает, возвращаем специальный объект
-    return {
-      isYouTubeError: true,
-      searchQuery: searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '')
-    };
+    throw new Error(`YouTube: ${error.message}`);
   }
 }
 // =====================================================================================
@@ -264,21 +306,53 @@ export async function trackDownloadProcessor(task) {
     let stream;
     
     // Выбираем метод загрузки в зависимости от источника
-    if (source === 'spotify') {
-      console.log(`[Worker/Spotify] Загружаю с YouTube для Spotify трека: ${title}`);
-      // Для Spotify используем YouTube поиск
-      const searchQuery = task.url; // В spotifyManager.js мы уже формируем ytsearch1:"query"
-      stream = await downloadFromYouTube(searchQuery);
-    } else {
-      // Для SoundCloud используем scdl
-      const fullUrl = metadata.webpage_url || task.url;
-      if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
-        throw new Error(`Не удалось получить полную ссылку на трек. Получено: ${fullUrl}`);
+    // В trackDownloadProcessor обновите секцию для Spotify
+if (source === 'spotify') {
+  console.log(`[Worker/Spotify] Загружаю с YouTube для Spotify трека: ${title}`);
+  
+  try {
+    // Передаем metadata для умного поиска
+    stream = await downloadFromYouTube(task.url, metadata);
+  } catch (error) {
+    console.error(`[Worker/Spotify] Ошибка загрузки: ${error.message}`);
+    
+    // Если не удалось загрузить, отправляем альтернативные варианты
+    const cleanQuery = task.url.replace(/^ytsearch1?:/, '').replace(/"/g, '');
+    
+    const message = `🎵 <b>${title}</b>\n` +
+      `👤 <i>${uploader}</i>\n` +
+      `⏱ ${duration ? `${Math.floor(duration/60)}:${String(duration%60).padStart(2,'0')}` : ''}\n\n` +
+      `⚠️ <i>Не удалось загрузить автоматически.</i>\n` +
+      `<i>Попробуйте альтернативные способы:</i>`;
+    
+    await bot.telegram.sendMessage(userId, message, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔍 Найти на YouTube', url: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}` }],
+          [{ text: '🎵 YouTube Music', url: `https://music.youtube.com/search?q=${encodeURIComponent(cleanQuery)}` }],
+          [{ text: '💿 Скачать через Y2Mate', url: `https://www.y2mate.com/youtube-mp3/${encodeURIComponent(cleanQuery)}` }]
+        ]
       }
-      console.log(`[Worker/SoundCloud] Открываю аудиопоток для: ${fullUrl}`);
-      stream = await scdl.default.download(fullUrl);
+    });
+    
+    if (statusMessage) {
+      await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
     }
-
+    
+    // Логируем как попытку
+    await incrementDownload(userId, title, 'youtube_fallback', cacheKey);
+    return;
+  }
+} else {
+  // Для SoundCloud код остается без изменений
+  const fullUrl = metadata.webpage_url || task.url;
+  if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
+    throw new Error(`Не удалось получить полную ссылку на трек. Получено: ${fullUrl}`);
+  }
+  console.log(`[Worker/SoundCloud] Открываю аудиопоток для: ${fullUrl}`);
+  stream = await scdl.default.download(fullUrl);
+}
     let finalFileId = null;
 
     if (STORAGE_CHANNEL_ID) {
