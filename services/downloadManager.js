@@ -147,145 +147,85 @@ async function initializePlayDl() {
 initializePlayDl();
 
 
-// Функция для поиска на YouTube с проверкой длительности
-// Исправленная функция downloadFromYouTube в downloadManager.js
 async function downloadFromYouTube(searchQuery, metadata = null) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
     const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
-    
-    // Исправлено: используем metadata из параметра, а не this.metadata
-    const spotifyDuration = metadata?.duration; // длительность в секундах из Spotify
-    const trackTitle = metadata?.title;
-    const artistName = metadata?.uploader;
+    const spotifyDuration = metadata?.duration;
     
     console.log(`[YouTube] Ищу: "${cleanQuery}"`);
     if (metadata) {
-      console.log(`[YouTube] Метаданные: ${trackTitle} - ${artistName}`);
+      console.log(`[YouTube] Метаданные: ${metadata.title} - ${metadata.uploader}`);
       if (spotifyDuration) {
         console.log(`[YouTube] Целевая длительность: ${spotifyDuration}s`);
       }
     }
     
-    // Используем youtube-dl-exec для поиска (у вас он уже установлен)
+    // Сначала получаем прямой URL на аудио
     const searchResults = await ytdl(`ytsearch5:${cleanQuery}`, {
       dumpSingleJson: true,
       flatPlaylist: true,
-      noWarnings: true,
-      noCheckCertificate: true,
+      getUrl: true, // Получаем только URL
+      format: 'bestaudio',
       ...YTDL_COMMON
     });
     
     if (!searchResults || !searchResults.entries || searchResults.entries.length === 0) {
-      throw new Error('Не найдено видео по запросу');
+      throw new Error('Не найдено видео');
     }
     
-    let bestMatch = null;
-    let bestDiff = Infinity;
-    
-    // Ищем лучшее совпадение по длительности
-    for (const entry of searchResults.entries) {
-      const videoDuration = entry.duration || 0;
-      const videoTitle = entry.title || '';
-      
-      console.log(`[YouTube] Кандидат: ${videoTitle} (${videoDuration}s)`);
-      
-      // Если есть длительность от Spotify, сравниваем
-      if (spotifyDuration && videoDuration > 0) {
-        const diff = Math.abs(videoDuration - spotifyDuration);
-        
-        if (diff <= 35 && diff < bestDiff) {
+    // Находим лучшее совпадение
+    let bestMatch = searchResults.entries[0];
+    if (spotifyDuration) {
+      let bestDiff = Infinity;
+      for (const entry of searchResults.entries) {
+        const diff = Math.abs((entry.duration || 0) - spotifyDuration);
+        if (diff < bestDiff) {
           bestMatch = entry;
           bestDiff = diff;
-          console.log(`[YouTube] ✓ Лучшее совпадение! Разница: ${diff}s`);
-          
-          if (diff <= 5) {
-            console.log(`[YouTube] ✓ Найдено отличное совпадение!`);
-            break;
-          }
         }
-      } else if (!bestMatch) {
-        // Если нет данных о длительности, берем первый результат
-        bestMatch = entry;
-        console.log(`[YouTube] Взят первый результат (нет данных о длительности)`);
+        if (diff <= 5) break;
       }
     }
     
-    if (!bestMatch) {
-      // Если ничего не подошло, берем первый результат
-      bestMatch = searchResults.entries[0];
-      console.log(`[YouTube] Взят первый результат по умолчанию`);
-    }
-    
-    const videoUrl = bestMatch.webpage_url || bestMatch.url;
     console.log(`[YouTube] Выбрано: ${bestMatch.title}`);
-    console.log(`[YouTube] URL: ${videoUrl}`);
-    if (bestDiff < Infinity) {
-      console.log(`[YouTube] Разница в длительности: ${bestDiff}s`);
+    
+    // Получаем прямой URL на аудио
+    const audioUrl = bestMatch.url || bestMatch.webpage_url;
+    console.log(`[YouTube] Получаю прямой URL потока...`);
+    
+    // Получаем прямой URL используя youtube-dl
+    const urlInfo = await ytdl(audioUrl, {
+      getUrl: true,
+      format: 'bestaudio',
+      dumpSingleJson: true,
+      ...YTDL_COMMON
+    });
+    
+    if (!urlInfo || !urlInfo.url) {
+      throw new Error('Не удалось получить прямой URL');
     }
     
-    // Создаем временный файл
-    const tempFile = path.join(TEMP_DIR, `yt_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.mp3`);
+    console.log(`[YouTube] Получен прямой URL, создаю поток...`);
     
-    // Создаем директорию если её нет
-    if (!fs.existsSync(TEMP_DIR)) {
-      fs.mkdirSync(TEMP_DIR, { recursive: true });
-    }
-    
-    console.log(`[YouTube] Загружаю аудио...`);
-    
-    try {
-      // Загружаем аудио файл
-      await ytdl(videoUrl, {
-        output: tempFile,
-        format: 'bestaudio[ext=m4a]/bestaudio',
-        extractAudio: true,
-        audioFormat: 'mp3',
-        audioQuality: 0,
-        ffmpegLocation: ffmpegPath,
-        noCheckCertificate: true,
-        noWarnings: true,
-        ...YTDL_COMMON
-      });
-      
-      // Проверяем что файл существует
-      if (!fs.existsSync(tempFile)) {
-        throw new Error('Файл не был создан после загрузки');
+    // Загружаем по прямому URL
+    const response = await fetch(urlInfo.url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Range': 'bytes=0-' // Для поддержки стриминга
       }
-      
-      const stats = fs.statSync(tempFile);
-      console.log(`[YouTube] Файл создан, размер: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-      
-      // Создаем поток для чтения
-      const stream = fs.createReadStream(tempFile);
-      
-      // Удаляем файл после отправки
-      stream.on('end', () => {
-        fs.unlink(tempFile, (err) => {
-          if (err) {
-            console.error(`[YouTube] Не удалось удалить временный файл: ${tempFile}`, err);
-          } else {
-            console.log(`[YouTube] Временный файл удален: ${tempFile}`);
-          }
-        });
-      });
-      
-      stream.on('error', (err) => {
-        console.error(`[YouTube] Ошибка чтения файла:`, err);
-        // Пытаемся удалить файл при ошибке
-        fs.unlink(tempFile, () => {});
-      });
-      
-      return stream;
-      
-    } catch (downloadError) {
-      // Удаляем файл если загрузка не удалась
-      if (fs.existsSync(tempFile)) {
-        fs.unlinkSync(tempFile);
-      }
-      throw downloadError;
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
+    
+    // Преобразуем web stream в Node.js stream
+    const nodeStream = Readable.from(response.body);
+    
+    console.log(`[YouTube] Поток готов к передаче`);
+    return nodeStream;
     
   } catch (error) {
     console.error(`[YouTube] Ошибка:`, error.message);
