@@ -3,7 +3,6 @@
 import fetch from 'node-fetch';
 import pMap from 'p-map';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL } from '../config.js';
-import { Readable } from 'stream';
 import { Markup } from 'telegraf';
 import path from 'path';
 import { spawn } from 'child_process';
