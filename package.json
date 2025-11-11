@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "build": "pip install --user yt-dlp || true" },
+    "build": "pip install --user yt-dlp spotdl || true" },
   "dependencies": {
 "@supabase/supabase-js": "^2.39.6",
 "axios": "^1.6.8",
