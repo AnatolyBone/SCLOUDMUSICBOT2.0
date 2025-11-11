@@ -152,6 +152,10 @@ initializePlayDl();
 
 
 // Функция downloadFromYouTube с прямым потоком (без файлов)
+// Импорты в начале downloadManager.js
+
+
+// Исправленная функция downloadFromYouTube с прямым потоком
 async function downloadFromYouTube(searchQuery, metadata = null) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
@@ -169,7 +173,7 @@ async function downloadFromYouTube(searchQuery, metadata = null) {
       }
     }
     
-    // Поиск видео (эта часть работает хорошо)
+    // Поиск лучшего совпадения (эта часть работает хорошо)
     const searchResults = await ytdl(`ytsearch5:${cleanQuery}`, {
       dumpSingleJson: true,
       flatPlaylist: true,
@@ -185,7 +189,6 @@ async function downloadFromYouTube(searchQuery, metadata = null) {
     let bestMatch = null;
     let bestDiff = Infinity;
     
-    // Поиск лучшего совпадения по длительности
     for (const entry of searchResults.entries) {
       const videoDuration = entry.duration || 0;
       const videoTitle = entry.title || '';
@@ -207,7 +210,6 @@ async function downloadFromYouTube(searchQuery, metadata = null) {
         }
       } else if (!bestMatch) {
         bestMatch = entry;
-        console.log(`[YouTube] Взят первый результат`);
       }
     }
     
@@ -222,60 +224,105 @@ async function downloadFromYouTube(searchQuery, metadata = null) {
       console.log(`[YouTube] Разница в длительности: ${bestDiff}s`);
     }
     
-    // ВАЖНО: Создаем поток напрямую из youtube-dl без сохранения на диск
-    console.log(`[YouTube] Создаю аудио поток...`);
+    // ВАРИАНТ 1: Используем youtube-dl-exec для получения прямого URL и fetch для загрузки
+    console.log(`[YouTube] Получаю прямой URL потока...`);
+    
+    try {
+      // Получаем прямой URL на аудио
+      const urlInfo = await ytdl(videoUrl, {
+        getUrl: true,
+        format: 'bestaudio[ext=m4a]/bestaudio',
+        dumpSingleJson: true,
+        ...YTDL_COMMON
+      });
+      
+      if (urlInfo && urlInfo.url) {
+        console.log(`[YouTube] Получен прямой URL, создаю поток через fetch...`);
+        
+        // Загружаем по прямому URL
+        const response = await fetch(urlInfo.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Range': 'bytes=0-' // Для поддержки стриминга
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        // Конвертируем web stream в Node.js stream
+        const nodeStream = Readable.from(response.body);
+        console.log(`[YouTube] Поток готов к передаче`);
+        return nodeStream;
+      }
+    } catch (urlError) {
+      console.log(`[YouTube] Не удалось получить прямой URL, пробую альтернативный метод...`);
+    }
+    
+    // ВАРИАНТ 2: Используем yt-dlp напрямую через spawn
+    console.log(`[YouTube] Создаю аудио поток через yt-dlp...`);
     
     return new Promise((resolve, reject) => {
-      // Запускаем youtube-dl и направляем вывод в stdout
-      const ytdlProcess = spawn(ytdl.path, [
+      // Путь к yt-dlp (установлен через pip)
+      const ytdlpPath = 'yt-dlp'; // Будет искать в PATH
+      
+      // Запускаем yt-dlp и направляем вывод в stdout
+      const ytdlpProcess = spawn(ytdlpPath, [
         videoUrl,
         '--format', 'bestaudio[ext=m4a]/bestaudio',
         '--extract-audio',
         '--audio-format', 'mp3',
         '--audio-quality', '0',
-        '--output', '-', // ВАЖНО: вывод в stdout вместо файла
+        '-o', '-', // ВАЖНО: вывод в stdout
         '--ffmpeg-location', ffmpegPath,
         '--no-check-certificate',
-        '--no-warnings',
         '--quiet',
+        '--no-warnings',
         '--no-playlist'
       ]);
       
       let errorData = '';
       let streamStarted = false;
       
-      // Обработка ошибок
-      ytdlProcess.stderr.on('data', (chunk) => {
+      // Обработка ошибок stderr
+      ytdlpProcess.stderr.on('data', (chunk) => {
         errorData += chunk.toString();
-        // Не логируем каждый chunk, только в случае ошибки
       });
       
-      ytdlProcess.on('error', (error) => {
-        console.error('[YouTube] Ошибка процесса:', error);
-        reject(new Error(`Ошибка запуска youtube-dl: ${error.message}`));
-      });
-      
-      ytdlProcess.on('close', (code) => {
-        if (code !== 0 && !streamStarted) {
-          console.error('[YouTube] youtube-dl завершился с ошибкой:', errorData);
-          reject(new Error(`youtube-dl error (code ${code}): ${errorData.slice(0, 200)}`));
+      // Обработка ошибок процесса
+      ytdlpProcess.on('error', (error) => {
+        console.error('[YouTube] Ошибка запуска yt-dlp:', error.message);
+        // Если yt-dlp не найден, пробуем альтернативный путь
+        if (error.code === 'ENOENT') {
+          reject(new Error('yt-dlp не найден. Установите через: pip install yt-dlp'));
+        } else {
+          reject(new Error(`Ошибка yt-dlp: ${error.message}`));
         }
       });
       
-      // Когда начинают поступать данные, возвращаем поток
-      ytdlProcess.stdout.once('data', () => {
+      // Обработка завершения процесса
+      ytdlpProcess.on('close', (code) => {
+        if (code !== 0 && !streamStarted) {
+          console.error('[YouTube] yt-dlp завершился с ошибкой:', errorData);
+          reject(new Error(`yt-dlp error (код ${code})`));
+        }
+      });
+      
+      // Когда начинают поступать данные
+      ytdlpProcess.stdout.once('data', () => {
         console.log('[YouTube] Поток начал передачу данных');
         streamStarted = true;
-        resolve(ytdlProcess.stdout);
+        resolve(ytdlpProcess.stdout);
       });
       
-      // Таймаут на случай зависания
+      // Таймаут
       setTimeout(() => {
         if (!streamStarted) {
-          ytdlProcess.kill();
-          reject(new Error('Таймаут при получении потока от YouTube'));
+          ytdlpProcess.kill();
+          reject(new Error('Таймаут при получении потока'));
         }
-      }, 30000); // 30 секунд таймаут
+      }, 30000);
     });
     
   } catch (error) {
