@@ -147,140 +147,177 @@ async function initializePlayDl() {
 // Вызовите при старте
 initializePlayDl();
 
-
 async function downloadFromYouTube(searchQuery, metadata = null) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
     const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
     const spotifyDuration = metadata?.duration || 0;
-    const trackTitle = metadata?.title || '';
-    const artistName = metadata?.uploader || '';
     
-    // Пробуем несколько вариантов поиска
-    const queries = [
-      `${artistName} ${trackTitle}`,
-      `${trackTitle} ${artistName}`,
-      `${artistName} - ${trackTitle}`
-    ];
+    console.log(`[YouTube] Ищу через ytsr: "${cleanQuery}"`);
+    
+    // Используем ytsr для поиска (он у вас установлен)
+    const searchResults = await ytsr(cleanQuery, {
+      limit: 5,
+      gl: 'US',
+      hl: 'en'
+    });
+    
+    if (!searchResults.items || searchResults.items.length === 0) {
+      throw new Error('Видео не найдено');
+    }
+    
+    // Фильтруем только видео
+    const videos = searchResults.items.filter(item => item.type === 'video');
     
     let bestMatch = null;
     let bestDiff = Infinity;
     
-    for (const query of queries) {
-      console.log(`[YouTube] Пробую: "${query}"`);
+    for (const video of videos) {
+      // Парсим длительность
+      let videoDuration = 0;
+      if (video.duration) {
+        const parts = video.duration.split(':').reverse();
+        if (parts[0]) videoDuration += parseInt(parts[0], 10);
+        if (parts[1]) videoDuration += parseInt(parts[1], 10) * 60;
+        if (parts[2]) videoDuration += parseInt(parts[2], 10) * 3600;
+      }
       
-      try {
-        // Используем правильные опции для youtube-dl-exec
-        const searchResults = await ytdl.exec(`ytsearch3:${query}`, {
-          dumpSingleJson: true,
-          flatPlaylist: true,
-          noCheckCertificate: true,
-          noWarnings: true,
-          quiet: true,
-          // Важные опции для обхода блокировки
-          addHeader: [
-            'referer:youtube.com',
-            'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          ],
-          // Если есть прокси - используем
-          ...(PROXY_URL ? { proxy: PROXY_URL } : {}),
-          ...YTDL_COMMON
-        });
-        
-        if (!searchResults?.entries || searchResults.entries.length === 0) {
-          console.log(`[YouTube] Нет результатов для: "${query}"`);
-          continue;
+      console.log(`[YouTube] Найдено: ${video.title} (${videoDuration}s)`);
+      
+      if (spotifyDuration > 0) {
+        const diff = Math.abs(videoDuration - spotifyDuration);
+        if (diff <= 35 && diff < bestDiff) {
+          bestMatch = video;
+          bestDiff = diff;
         }
-        
-        for (const entry of searchResults.entries) {
-          const videoDuration = entry.duration || 0;
-          console.log(`[YouTube] Найдено: ${entry.title} (${videoDuration}s)`);
-          
-          if (spotifyDuration > 0) {
-            const diff = Math.abs(videoDuration - spotifyDuration);
-            if (diff <= 35 && diff < bestDiff) {
-              bestMatch = entry;
-              bestDiff = diff;
-              console.log(`[YouTube] Лучшее совпадение, разница: ${diff}s`);
-              if (diff <= 5) break;
-            }
-          } else if (!bestMatch) {
-            bestMatch = entry;
-          }
-        }
-        
-        if (bestMatch && bestDiff <= 5) break;
-        
-      } catch (err) {
-        console.log(`[YouTube] Ошибка при поиске: ${err.message}`);
-        continue;
+      } else if (!bestMatch) {
+        bestMatch = video;
       }
     }
     
     if (!bestMatch) {
-      throw new Error('Видео не найдено на YouTube');
+      bestMatch = videos[0];
     }
     
-    const videoUrl = bestMatch.webpage_url || bestMatch.url;
     console.log(`[YouTube] Выбрано: ${bestMatch.title}`);
-    console.log(`[YouTube] URL: ${videoUrl}`);
+    console.log(`[YouTube] URL: ${bestMatch.url}`);
     
-    // Скачиваем файл
-    const tempFile = path.join(TEMP_DIR, `yt_${Date.now()}.mp3`);
-    
-    if (!fs.existsSync(TEMP_DIR)) {
-      fs.mkdirSync(TEMP_DIR, { recursive: true });
+    // Используем ytdl-core для получения потока (он у вас установлен)
+    try {
+      // Проверяем доступность видео
+      const isValid = await ytdlCore.validateURL(bestMatch.url);
+      if (!isValid) {
+        throw new Error('Недействительный URL');
+      }
+      
+      // Получаем информацию о видео
+      const info = await ytdlCore.getInfo(bestMatch.url);
+      console.log(`[YouTube] Видео доступно: ${info.videoDetails.title}`);
+      
+      // Создаем поток
+      const stream = ytdlCore(bestMatch.url, {
+        quality: 'highestaudio',
+        filter: 'audioonly',
+        highWaterMark: 1 << 25
+      });
+      
+      console.log(`[YouTube] Поток создан через ytdl-core`);
+      return stream;
+      
+    } catch (ytdlError) {
+      console.log(`[YouTube] ytdl-core не сработал: ${ytdlError.message}`);
+      
+      // Fallback на youtube-dl-exec
+      console.log(`[YouTube] Пробую через youtube-dl-exec...`);
+      
+      const tempFile = path.join(TEMP_DIR, `yt_${Date.now()}.mp3`);
+      
+      if (!fs.existsSync(TEMP_DIR)) {
+        fs.mkdirSync(TEMP_DIR, { recursive: true });
+      }
+      
+      await ytdl.exec(bestMatch.url, {
+        output: tempFile,
+        format: 'bestaudio[ext=m4a]/bestaudio',
+        extractAudio: true,
+        audioFormat: 'mp3',
+        audioQuality: 0,
+        ffmpegLocation: ffmpegPath,
+        noCheckCertificate: true,
+        geoBypass: true,
+        // Используем cookies для обхода
+        cookiesFromBrowser: 'firefox',
+        ...YTDL_COMMON
+      });
+      
+      if (!fs.existsSync(tempFile)) {
+        throw new Error('Файл не создан');
+      }
+      
+      const stream = fs.createReadStream(tempFile);
+      
+      stream.on('end', () => {
+        fs.unlink(tempFile, () => {});
+      });
+      
+      return stream;
     }
-    
-    console.log(`[YouTube] Скачиваю в: ${tempFile}`);
-    
-    await ytdl.exec(videoUrl, {
-      output: tempFile,
-      format: 'bestaudio[ext=m4a]/bestaudio',
-      extractAudio: true,
-      audioFormat: 'mp3',
-      audioQuality: 0,
-      ffmpegLocation: ffmpegPath,
-      noCheckCertificate: true,
-      // Добавляем headers для обхода
-      addHeader: [
-        'referer:youtube.com',
-        'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      ],
-      ...(PROXY_URL ? { proxy: PROXY_URL } : {}),
-      ...YTDL_COMMON
-    });
-    
-    // Проверяем файл
-    if (!fs.existsSync(tempFile)) {
-      throw new Error('Файл не создан');
-    }
-    
-    const stats = fs.statSync(tempFile);
-    console.log(`[YouTube] Файл готов: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-    
-    // Создаем поток
-    const stream = fs.createReadStream(tempFile);
-    
-    stream.on('end', () => {
-      fs.unlink(tempFile, () => {});
-    });
-    
-    return stream;
     
   } catch (error) {
-    console.error(`[YouTube] Ошибка: ${error.message}`);
+    console.error(`[YouTube] Основной метод не сработал: ${error.message}`);
     
-    // Fallback на spotdl если установлен
-    if (metadata?.originalUrl) {
-      return downloadViaSpotdl(metadata.originalUrl);
+    // Последний fallback - spotdl
+    if (metadata?.originalUrl || metadata?.id) {
+      console.log('[YouTube] Пробую spotdl как последний вариант...');
+      
+      const spotifyUrl = metadata.originalUrl || `https://open.spotify.com/track/${metadata.id}`;
+      
+      return new Promise((resolve, reject) => {
+        const { spawn } = require('child_process');
+        
+        // Используем spotdl напрямую
+        const spotdl = spawn('spotdl', [
+          'download',
+          spotifyUrl,
+          '--format', 'mp3',
+          '--output', '-' // Вывод в stdout
+        ]);
+        
+        let streamStarted = false;
+        
+        spotdl.stdout.once('data', () => {
+          console.log('[SpotDL] Поток начался');
+          streamStarted = true;
+          resolve(spotdl.stdout);
+        });
+        
+        spotdl.on('error', (err) => {
+          if (err.code === 'ENOENT') {
+            reject(new Error('spotdl не установлен'));
+          } else {
+            reject(err);
+          }
+        });
+        
+        spotdl.on('close', (code) => {
+          if (code !== 0 && !streamStarted) {
+            reject(new Error(`spotdl вернул код ${code}`));
+          }
+        });
+        
+        setTimeout(() => {
+          if (!streamStarted) {
+            spotdl.kill();
+            reject(new Error('Таймаут spotdl'));
+          }
+        }, 30000);
+      });
     }
     
-    throw error;
+    throw new Error(`Все методы не сработали: ${error.message}`);
   }
 }
-
 // Упрощенный spotdl fallback
 async function downloadViaSpotdl(spotifyUrl) {
   console.log('[SpotDL] Пробую через spotdl...');
