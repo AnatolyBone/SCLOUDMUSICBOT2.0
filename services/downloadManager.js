@@ -151,183 +151,184 @@ initializePlayDl();
 // Импорты в начале downloadManager.js
 
 
-// Функция downloadFromYouTube с прямым потоком (без файлов)
-// Импорты в начале downloadManager.js
-
-
-// Исправленная функция downloadFromYouTube с прямым потоком
+// Функция downloadFromYouTube через Invidious API
 async function downloadFromYouTube(searchQuery, metadata = null) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
     const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
     const spotifyDuration = metadata?.duration;
-    const trackTitle = metadata?.title;
-    const artistName = metadata?.uploader;
     
-    console.log(`[YouTube] Ищу: "${cleanQuery}"`);
+    console.log(`[YouTube] Ищу через Invidious: "${cleanQuery}"`);
     if (metadata) {
-      console.log(`[YouTube] Метаданные: ${trackTitle} - ${artistName}`);
+      console.log(`[YouTube] Метаданные: ${metadata.title} - ${metadata.uploader}`);
       if (spotifyDuration) {
         console.log(`[YouTube] Целевая длительность: ${spotifyDuration}s`);
       }
     }
     
-    // Поиск лучшего совпадения (эта часть работает хорошо)
-    const searchResults = await ytdl(`ytsearch5:${cleanQuery}`, {
-      dumpSingleJson: true,
-      flatPlaylist: true,
-      noWarnings: true,
-      noCheckCertificate: true,
-      ...YTDL_COMMON
-    });
+    // Список публичных Invidious инстансов
+    const invidiousInstances = [
+      'https://inv.nadeko.net',
+      'https://invidious.nerdvpn.de',
+      'https://invidious.jing.rocks',
+      'https://invidious.private.coffee'
+    ];
     
-    if (!searchResults || !searchResults.entries || searchResults.entries.length === 0) {
-      throw new Error('Не найдено видео по запросу');
+    let searchResults = null;
+    let workingInstance = null;
+    
+    // Пробуем разные инстансы
+    for (const instance of invidiousInstances) {
+      try {
+        console.log(`[YouTube] Пробую инстанс: ${instance}`);
+        const searchUrl = `${instance}/api/v1/search?q=${encodeURIComponent(cleanQuery)}&type=video`;
+        
+        const response = await fetch(searchUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        });
+        
+        if (response.ok) {
+          searchResults = await response.json();
+          workingInstance = instance;
+          console.log(`[YouTube] Инстанс ${instance} работает`);
+          break;
+        }
+      } catch (err) {
+        console.log(`[YouTube] Инстанс ${instance} не отвечает`);
+        continue;
+      }
     }
     
+    if (!searchResults || searchResults.length === 0) {
+      throw new Error('Не удалось найти видео через Invidious');
+    }
+    
+    // Находим лучшее совпадение
     let bestMatch = null;
     let bestDiff = Infinity;
     
-    for (const entry of searchResults.entries) {
-      const videoDuration = entry.duration || 0;
-      const videoTitle = entry.title || '';
-      
-      console.log(`[YouTube] Кандидат: ${videoTitle} (${videoDuration}s)`);
+    for (const video of searchResults.slice(0, 5)) {
+      const videoDuration = video.lengthSeconds || 0;
+      console.log(`[YouTube] Кандидат: ${video.title} (${videoDuration}s)`);
       
       if (spotifyDuration && videoDuration > 0) {
         const diff = Math.abs(videoDuration - spotifyDuration);
-        
         if (diff <= 35 && diff < bestDiff) {
-          bestMatch = entry;
+          bestMatch = video;
           bestDiff = diff;
-          console.log(`[YouTube] ✓ Лучшее совпадение! Разница: ${diff}s`);
-          
-          if (diff <= 5) {
-            console.log(`[YouTube] ✓ Найдено отличное совпадение!`);
-            break;
-          }
+          if (diff <= 5) break;
         }
       } else if (!bestMatch) {
-        bestMatch = entry;
+        bestMatch = video;
       }
     }
     
     if (!bestMatch) {
-      bestMatch = searchResults.entries[0];
+      bestMatch = searchResults[0];
     }
     
-    const videoUrl = bestMatch.webpage_url || bestMatch.url;
     console.log(`[YouTube] Выбрано: ${bestMatch.title}`);
-    console.log(`[YouTube] URL: ${videoUrl}`);
-    if (bestDiff < Infinity) {
-      console.log(`[YouTube] Разница в длительности: ${bestDiff}s`);
-    }
+    const videoId = bestMatch.videoId;
     
-    // ВАРИАНТ 1: Используем youtube-dl-exec для получения прямого URL и fetch для загрузки
-    console.log(`[YouTube] Получаю прямой URL потока...`);
+    // Получаем прямую ссылку на аудио через Invidious
+    console.log(`[YouTube] Получаю аудио поток через Invidious...`);
     
-    try {
-      // Получаем прямой URL на аудио
-      const urlInfo = await ytdl(videoUrl, {
-        getUrl: true,
-        format: 'bestaudio[ext=m4a]/bestaudio',
-        dumpSingleJson: true,
-        ...YTDL_COMMON
-      });
-      
-      if (urlInfo && urlInfo.url) {
-        console.log(`[YouTube] Получен прямой URL, создаю поток через fetch...`);
-        
-        // Загружаем по прямому URL
-        const response = await fetch(urlInfo.url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Range': 'bytes=0-' // Для поддержки стриминга
-          }
-        });
-        
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        // Конвертируем web stream в Node.js stream
-        const nodeStream = Readable.from(response.body);
-        console.log(`[YouTube] Поток готов к передаче`);
-        return nodeStream;
+    const audioUrl = `${workingInstance}/latest_version?id=${videoId}&itag=140`; // itag 140 = m4a audio
+    
+    const audioResponse = await fetch(audioUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
-    } catch (urlError) {
-      console.log(`[YouTube] Не удалось получить прямой URL, пробую альтернативный метод...`);
-    }
-    
-    // ВАРИАНТ 2: Используем yt-dlp напрямую через spawn
-    console.log(`[YouTube] Создаю аудио поток через yt-dlp...`);
-    
-    return new Promise((resolve, reject) => {
-      // Путь к yt-dlp (установлен через pip)
-      const ytdlpPath = 'yt-dlp'; // Будет искать в PATH
-      
-      // Запускаем yt-dlp и направляем вывод в stdout
-      const ytdlpProcess = spawn(ytdlpPath, [
-        videoUrl,
-        '--format', 'bestaudio[ext=m4a]/bestaudio',
-        '--extract-audio',
-        '--audio-format', 'mp3',
-        '--audio-quality', '0',
-        '-o', '-', // ВАЖНО: вывод в stdout
-        '--ffmpeg-location', ffmpegPath,
-        '--no-check-certificate',
-        '--quiet',
-        '--no-warnings',
-        '--no-playlist'
-      ]);
-      
-      let errorData = '';
-      let streamStarted = false;
-      
-      // Обработка ошибок stderr
-      ytdlpProcess.stderr.on('data', (chunk) => {
-        errorData += chunk.toString();
-      });
-      
-      // Обработка ошибок процесса
-      ytdlpProcess.on('error', (error) => {
-        console.error('[YouTube] Ошибка запуска yt-dlp:', error.message);
-        // Если yt-dlp не найден, пробуем альтернативный путь
-        if (error.code === 'ENOENT') {
-          reject(new Error('yt-dlp не найден. Установите через: pip install yt-dlp'));
-        } else {
-          reject(new Error(`Ошибка yt-dlp: ${error.message}`));
-        }
-      });
-      
-      // Обработка завершения процесса
-      ytdlpProcess.on('close', (code) => {
-        if (code !== 0 && !streamStarted) {
-          console.error('[YouTube] yt-dlp завершился с ошибкой:', errorData);
-          reject(new Error(`yt-dlp error (код ${code})`));
-        }
-      });
-      
-      // Когда начинают поступать данные
-      ytdlpProcess.stdout.once('data', () => {
-        console.log('[YouTube] Поток начал передачу данных');
-        streamStarted = true;
-        resolve(ytdlpProcess.stdout);
-      });
-      
-      // Таймаут
-      setTimeout(() => {
-        if (!streamStarted) {
-          ytdlpProcess.kill();
-          reject(new Error('Таймаут при получении потока'));
-        }
-      }, 30000);
     });
     
+    if (!audioResponse.ok) {
+      throw new Error(`Не удалось получить аудио: ${audioResponse.status}`);
+    }
+    
+    // Конвертируем в Node.js stream
+    const { Readable } = await import('stream');
+    const stream = Readable.from(audioResponse.body);
+    
+    console.log(`[YouTube] Поток готов`);
+    return stream;
+    
   } catch (error) {
-    console.error(`[YouTube] Ошибка:`, error.message);
-    throw new Error(`YouTube: ${error.message}`);
+    console.error(`[YouTube] Ошибка Invidious:`, error.message);
+    
+    // Fallback на альтернативный метод
+    return downloadFromYouTubeAlternative(searchQuery, metadata);
+  }
+}
+
+// Альтернативный метод через cobalt.tools API
+async function downloadFromYouTubeAlternative(searchQuery, metadata) {
+  console.log(`[YouTube] Пробую альтернативный метод через Cobalt...`);
+  
+  try {
+    const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
+    
+    // Сначала ищем видео ID через простой HTML парсинг YouTube
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`;
+    const searchResponse = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const html = await searchResponse.text();
+    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+    
+    if (!videoIdMatch) {
+      throw new Error('Не удалось найти видео');
+    }
+    
+    const videoId = videoIdMatch[1];
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    
+    console.log(`[YouTube] Найден videoId: ${videoId}`);
+    
+    // Используем Cobalt API для загрузки
+    const cobaltResponse = await fetch('https://co.wuk.sh/api/json', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url: videoUrl,
+        aFormat: "mp3",
+        isAudioOnly: true,
+        filenamePattern: "basic"
+      })
+    });
+    
+    const cobaltData = await cobaltResponse.json();
+    
+    if (cobaltData.status === 'stream' && cobaltData.url) {
+      console.log('[YouTube] Загружаю через Cobalt...');
+      
+      const audioResponse = await fetch(cobaltData.url);
+      if (!audioResponse.ok) {
+        throw new Error(`HTTP ${audioResponse.status}`);
+      }
+      
+      const { Readable } = await import('stream');
+      return Readable.from(audioResponse.body);
+    }
+    
+    throw new Error('Cobalt API не вернул ссылку');
+    
+  } catch (error) {
+    console.error('[YouTube] Альтернативный метод не сработал:', error.message);
+    
+    // Если ничего не работает, возвращаем специальный объект для fallback
+    return {
+      isError: true,
+      searchQuery: searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '')
+    };
   }
 }
 // =====================================================================================
