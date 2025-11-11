@@ -148,188 +148,214 @@ async function initializePlayDl() {
 initializePlayDl();
 
 
-// Импорты в начале downloadManager.js
-
-
-// Функция downloadFromYouTube через Invidious API
+// downloadFromYouTube - адаптация подхода конкурента
 async function downloadFromYouTube(searchQuery, metadata = null) {
   console.log(`[YouTube] Поиск: ${searchQuery}`);
   
   try {
     const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
-    const spotifyDuration = metadata?.duration;
+    const spotifyDuration = metadata?.duration || 0;
+    const trackTitle = metadata?.title || '';
+    const artistName = metadata?.uploader || '';
+    const releaseYear = new Date().getFullYear(); // или из metadata если есть
     
-    console.log(`[YouTube] Ищу через Invidious: "${cleanQuery}"`);
-    if (metadata) {
-      console.log(`[YouTube] Метаданные: ${metadata.title} - ${metadata.uploader}`);
-      if (spotifyDuration) {
-        console.log(`[YouTube] Целевая длительность: ${spotifyDuration}s`);
-      }
-    }
-    
-    // Список публичных Invidious инстансов
-    const invidiousInstances = [
-      'https://inv.nadeko.net',
-      'https://invidious.nerdvpn.de',
-      'https://invidious.jing.rocks',
-      'https://invidious.private.coffee'
+    // Формируем несколько запросов как в Python коде
+    const queries = [
+      `"${artistName}" "${trackTitle}" lyrics`,
+      `"${trackTitle}" by "${artistName}"`,
+      `"${artistName}" "${trackTitle}" official audio`
     ];
     
-    let searchResults = null;
-    let workingInstance = null;
+    // Опции для youtube-dl как у конкурента
+    const ydlOpts = {
+      format: 'bestaudio',
+      quiet: true,
+      noWarnings: true,
+      noCheckCertificate: true, // ВАЖНО: отключаем проверку сертификата
+      geoBypass: true, // ВАЖНО: обход гео-блокировки
+      preferFreeFormats: true,
+      extractAudio: true,
+      audioFormat: 'mp3',
+      audioQuality: 0,
+      // ВАЖНЫЕ опции для обхода блокировки:
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      referer: 'https://www.youtube.com/',
+      // Добавляем cookies обход
+      cookiesFromBrowser: 'chrome', // или 'firefox'
+      ...YTDL_COMMON
+    };
     
-    // Пробуем разные инстансы
-    for (const instance of invidiousInstances) {
+    let bestMatch = null;
+    let bestDiff = Infinity;
+    
+    // Поиск по всем запросам
+    for (const query of queries) {
+      console.log(`[YouTube] Пробую: "${query}"`);
+      
       try {
-        console.log(`[YouTube] Пробую инстанс: ${instance}`);
-        const searchUrl = `${instance}/api/v1/search?q=${encodeURIComponent(cleanQuery)}&type=video`;
-        
-        const response = await fetch(searchUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          }
+        // Используем ytsearch для поиска
+        const searchResults = await ytdl(`ytsearch3:${query}`, {
+          ...ydlOpts,
+          dumpSingleJson: true,
+          flatPlaylist: true
         });
         
-        if (response.ok) {
-          searchResults = await response.json();
-          workingInstance = instance;
-          console.log(`[YouTube] Инстанс ${instance} работает`);
-          break;
+        if (!searchResults?.entries) continue;
+        
+        for (const entry of searchResults.entries) {
+          const videoDuration = entry.duration || 0;
+          const durationDiff = Math.abs(videoDuration - spotifyDuration);
+          
+          // Как у конкурента - разница до 35 секунд
+          if (durationDiff <= 35 && durationDiff < bestDiff) {
+            bestMatch = entry;
+            bestDiff = durationDiff;
+            console.log(`[YouTube] Найдено совпадение: ${entry.title} (разница ${durationDiff}s)`);
+            
+            // Если нашли хорошее совпадение, останавливаемся
+            if (durationDiff <= 5) {
+              break;
+            }
+          }
         }
+        
+        if (bestMatch && bestDiff <= 5) break;
+        
       } catch (err) {
-        console.log(`[YouTube] Инстанс ${instance} не отвечает`);
+        console.log(`[YouTube] Ошибка поиска: ${err.message}`);
         continue;
       }
     }
     
-    if (!searchResults || searchResults.length === 0) {
-      throw new Error('Не удалось найти видео через Invidious');
-    }
-    
-    // Находим лучшее совпадение
-    let bestMatch = null;
-    let bestDiff = Infinity;
-    
-    for (const video of searchResults.slice(0, 5)) {
-      const videoDuration = video.lengthSeconds || 0;
-      console.log(`[YouTube] Кандидат: ${video.title} (${videoDuration}s)`);
-      
-      if (spotifyDuration && videoDuration > 0) {
-        const diff = Math.abs(videoDuration - spotifyDuration);
-        if (diff <= 35 && diff < bestDiff) {
-          bestMatch = video;
-          bestDiff = diff;
-          if (diff <= 5) break;
-        }
-      } else if (!bestMatch) {
-        bestMatch = video;
-      }
-    }
-    
     if (!bestMatch) {
-      bestMatch = searchResults[0];
+      // Если точное совпадение не найдено, берем первый результат
+      const fallback = await ytdl(`ytsearch1:${cleanQuery}`, {
+        ...ydlOpts,
+        dumpSingleJson: true
+      });
+      
+      if (fallback?.entries?.[0]) {
+        bestMatch = fallback.entries[0];
+      } else {
+        throw new Error('Видео не найдено');
+      }
     }
     
+    const videoUrl = bestMatch.webpage_url || bestMatch.url;
     console.log(`[YouTube] Выбрано: ${bestMatch.title}`);
-    const videoId = bestMatch.videoId;
+    console.log(`[YouTube] URL: ${videoUrl}`);
     
-    // Получаем прямую ссылку на аудио через Invidious
-    console.log(`[YouTube] Получаю аудио поток через Invidious...`);
+    // ВАЖНО: Используем тот же подход что и конкурент - скачиваем во временный файл
+    const tempFile = path.join(TEMP_DIR, `yt_${Date.now()}.mp3`);
     
-    const audioUrl = `${workingInstance}/latest_version?id=${videoId}&itag=140`; // itag 140 = m4a audio
+    if (!fs.existsSync(TEMP_DIR)) {
+      fs.mkdirSync(TEMP_DIR, { recursive: true });
+    }
     
-    const audioResponse = await fetch(audioUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+    console.log(`[YouTube] Скачиваю аудио...`);
+    
+    // Скачиваем с теми же опциями что и конкурент
+    await ytdl.exec(videoUrl, {
+      output: tempFile,
+      format: 'bestaudio',
+      extractAudio: true,
+      audioFormat: 'mp3',
+      audioQuality: '0',
+      noCheckCertificate: true,
+      geoBypass: true,
+      // Добавляем прокси если есть
+      ...(PROXY_URL ? { proxy: PROXY_URL } : {}),
+      // Важно для обхода блокировки
+      addHeader: [
+        'referer:youtube.com',
+        'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      ],
+      ...YTDL_COMMON
     });
     
-    if (!audioResponse.ok) {
-      throw new Error(`Не удалось получить аудио: ${audioResponse.status}`);
+    // Проверяем файл
+    if (!fs.existsSync(tempFile)) {
+      throw new Error('Файл не был создан');
     }
     
-    // Конвертируем в Node.js stream
-    const { Readable } = await import('stream');
-    const stream = Readable.from(audioResponse.body);
+    const stats = fs.statSync(tempFile);
+    console.log(`[YouTube] Файл создан: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
     
-    console.log(`[YouTube] Поток готов`);
+    // Создаем поток
+    const stream = fs.createReadStream(tempFile);
+    
+    // Удаляем после отправки
+    stream.on('end', () => {
+      fs.unlink(tempFile, (err) => {
+        if (err) console.error(`Не удалось удалить: ${tempFile}`, err);
+      });
+    });
+    
     return stream;
     
   } catch (error) {
-    console.error(`[YouTube] Ошибка Invidious:`, error.message);
+    console.error(`[YouTube] Ошибка:`, error.message);
     
-    // Fallback на альтернативный метод
-    return downloadFromYouTubeAlternative(searchQuery, metadata);
+    // Если YouTube не работает, используем альтернативу как конкурент использует SpotDL
+    console.log('[YouTube] Пробую альтернативный метод...');
+    
+    // Используем spotdl как fallback (если установлен)
+    return downloadViaSpotdl(searchQuery, metadata);
   }
 }
 
-// Альтернативный метод через cobalt.tools API
-async function downloadFromYouTubeAlternative(searchQuery, metadata) {
-  console.log(`[YouTube] Пробую альтернативный метод через Cobalt...`);
+// Альтернативный метод через spotdl (как у конкурента)
+async function downloadViaSpotdl(searchQuery, metadata) {
+  const { spawn } = await import('child_process');
   
-  try {
-    const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
+  const spotifyUrl = metadata?.originalUrl || `https://open.spotify.com/track/${metadata?.id}`;
+  
+  console.log('[SpotDL] Пробую скачать через spotdl...');
+  
+  return new Promise((resolve, reject) => {
+    const spotdl = spawn('spotdl', [
+      'download',
+      spotifyUrl,
+      '--format', 'mp3',
+      '--output', '-', // Вывод в stdout
+      '--threads', '15',
+      '--audio', 'youtube' // Сначала пробуем youtube
+    ]);
     
-    // Сначала ищем видео ID через простой HTML парсинг YouTube
-    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`;
-    const searchResponse = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    let streamStarted = false;
+    let errorData = '';
+    
+    spotdl.stderr.on('data', (chunk) => {
+      errorData += chunk.toString();
+    });
+    
+    spotdl.on('error', (error) => {
+      if (error.code === 'ENOENT') {
+        reject(new Error('spotdl не установлен'));
+      } else {
+        reject(error);
       }
     });
     
-    const html = await searchResponse.text();
-    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-    
-    if (!videoIdMatch) {
-      throw new Error('Не удалось найти видео');
-    }
-    
-    const videoId = videoIdMatch[1];
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    
-    console.log(`[YouTube] Найден videoId: ${videoId}`);
-    
-    // Используем Cobalt API для загрузки
-    const cobaltResponse = await fetch('https://co.wuk.sh/api/json', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url: videoUrl,
-        aFormat: "mp3",
-        isAudioOnly: true,
-        filenamePattern: "basic"
-      })
+    spotdl.stdout.once('data', () => {
+      console.log('[SpotDL] Поток начал передачу');
+      streamStarted = true;
+      resolve(spotdl.stdout);
     });
     
-    const cobaltData = await cobaltResponse.json();
-    
-    if (cobaltData.status === 'stream' && cobaltData.url) {
-      console.log('[YouTube] Загружаю через Cobalt...');
-      
-      const audioResponse = await fetch(cobaltData.url);
-      if (!audioResponse.ok) {
-        throw new Error(`HTTP ${audioResponse.status}`);
+    spotdl.on('close', (code) => {
+      if (code !== 0 && !streamStarted) {
+        reject(new Error(`SpotDL ошибка: ${errorData}`));
       }
-      
-      const { Readable } = await import('stream');
-      return Readable.from(audioResponse.body);
-    }
+    });
     
-    throw new Error('Cobalt API не вернул ссылку');
-    
-  } catch (error) {
-    console.error('[YouTube] Альтернативный метод не сработал:', error.message);
-    
-    // Если ничего не работает, возвращаем специальный объект для fallback
-    return {
-      isError: true,
-      searchQuery: searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '')
-    };
-  }
+    setTimeout(() => {
+      if (!streamStarted) {
+        spotdl.kill();
+        reject(new Error('SpotDL таймаут'));
+      }
+    }, 30000);
+  });
 }
 // =====================================================================================
 //                   ОБНОВЛЕННАЯ ВЕРСИЯ trackDownloadProcessor
