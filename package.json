@@ -24,7 +24,6 @@
 "express-session": "^1.17.3",
 "file-type": "^19.0.0",
 "https-proxy-agent": "^7.0.4",
-"ytdl-core": "^4.11.5",
 "json-2-csv": "^5.5.9",
 "p-map": "^7.0.0",
 "mime-types": "^2.1.35",
@@ -36,7 +35,6 @@
 "redis": "^4.6.7",
 "telegraf": "^4.16.3",
 "ffmpeg-static": "^5.2.0",
-"ytsr": "^3.8.4",
 "youtube-dl-exec": "^2.0.1"
 },
   "engines": { "node": ">=18" },
