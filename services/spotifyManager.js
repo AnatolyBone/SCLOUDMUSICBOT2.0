@@ -330,51 +330,7 @@ function downloadViaSpotdl(metadata, resolve, reject) {
   }, 60000); // 60 секунд
 }
 // Упрощенный spotdl fallback
-async function downloadViaSpotdl(spotifyUrl) {
-  console.log('[SpotDL] Пробую через spotdl...');
-  
-  const tempFile = path.join(TEMP_DIR, `spotdl_${Date.now()}.mp3`);
-  
-  if (!fs.existsSync(TEMP_DIR)) {
-    fs.mkdirSync(TEMP_DIR, { recursive: true });
-  }
-  
-  try {
-    // Используем spotdl для скачивания
-    await new Promise((resolve, reject) => {
-      const { exec } = require('child_process');
-      
-      const cmd = `spotdl download "${spotifyUrl}" --format mp3 --output "${tempFile}"`;
-      
-      exec(cmd, (error, stdout, stderr) => {
-        if (error) {
-          console.error('[SpotDL] Ошибка:', stderr);
-          reject(error);
-        } else {
-          console.log('[SpotDL] Успешно скачано');
-          resolve();
-        }
-      });
-    });
-    
-    if (!fs.existsSync(tempFile)) {
-      throw new Error('SpotDL не создал файл');
-    }
-    
-    const stream = fs.createReadStream(tempFile);
-    
-    stream.on('end', () => {
-      fs.unlink(tempFile, () => {});
-    });
-    
-    return stream;
-    
-  } catch (error) {
-    console.error('[SpotDL] Ошибка:', error.message);
-    throw error;
-  }
-}
-// =====================================================================================
+
 //                   ОБНОВЛЕННАЯ ВЕРСИЯ trackDownloadProcessor
 // =====================================================================================
 
