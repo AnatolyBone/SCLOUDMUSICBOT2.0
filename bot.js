@@ -7,8 +7,8 @@ import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDai
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
-
-import { downloadQueue, enqueue } from './services/downloadManager.js';
+// Правильный импорт
+import { downloadQueue, enqueue } from './services/spotifyManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
@@ -885,17 +885,17 @@ async function handleSoundCloudUrl(ctx, url) {
         }
     }
 }
+// ЗАМЕНИТЕ ВЕСЬ БЛОК bot.on('text', ...) НА ЭТОТ
+
 bot.on('text', async (ctx) => {
-                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
-                if (isShuttingDown()) { // ПРАВИЛЬНО: скобок нет
-                    console.log('[Shutdown] Отклонен новый запрос, так как идет завершение работы.');
-                    return;
-                }
-                
-                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
-                if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) { // ПРАВИЛЬНО: и здесь тоже нет
-                    return await ctx.reply('⏳ Бот на плановом обслуживании. Новые запросы временно не принимаются. Пожалуйста, попробуйте через 5-10 минут.');
-                }
+    if (isShuttingDown()) {
+        console.log('[Shutdown] Отклонен новый запрос, так как идет завершение работы.');
+        return;
+    }
+    if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) {
+        return await ctx.reply('⏳ Бот на плановом обслуживании. Новые запросы временно не принимаются. Пожалуйста, попробуйте через 5-10 минут.');
+    }
+
     if (ctx.chat.type !== 'private') {
         console.log(`[Ignore] Сообщение из не-приватного чата (${ctx.chat.type}) было проигнорировано.`);
         return;
@@ -910,61 +910,66 @@ bot.on('text', async (ctx) => {
         return await ctx.reply('Пожалуйста, отправьте мне ссылку.');
     }
     
-   const url = urlMatch[0];
+    const url = urlMatch[0];
 
-if (url.includes('soundcloud.com')) {
-  // РАННИЙ ЧЕК ЛИМИТА: до любого анализа ссылки
-  const user = await getUser(ctx.from.id); // resetDailyLimitIfNeeded уже отработал в middleware
-  if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-    const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-    const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-    const bonusText = bonusAvailable
-      ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-      : '';
-
-    const extra = {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    };
-    if (bonusAvailable) {
-      extra.reply_markup = {
-        inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
-      };
+    // РАННИЙ ЧЕК ЛИМИТА (общий для всех ссылок)
+    const user = await getUser(ctx.from.id);
+    if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
+        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+        const bonusText = bonusAvailable
+            ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+            : '';
+        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+        if (bonusAvailable) {
+            extra.reply_markup = { inline_keyboard: [[{ text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' }]] };
+        }
+        await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+        return;
     }
 
-    await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
-    return; // ВАЖНО: не запускаем анализ ссылки
-  }
+    // РОУТИНГ ПО ТИПУ ССЫЛКИ
+    if (url.includes('soundcloud.com')) {
+        handleSoundCloudUrl(ctx, url);
 
-  // Лимит не достигнут — продолжаем обычную логику
-  handleSoundCloudUrl(ctx, url);
-} else if (url.includes('open.spotify.com')) {
-  // Проверяем лимит перед обработкой Spotify
-  const user = await getUser(ctx.from.id);
-  if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-    const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-    const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-    const bonusText = bonusAvailable
-      ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-      : '';
+    } else if (url.includes('open.spotify.com')) {
+        // ===============================================
+        //           ИСПРАВЛЕННАЯ ЛОГИКА SPOTIFY
+        // ===============================================
+        let loadingMessage;
+        try {
+            loadingMessage = await ctx.reply('🔍 Анализирую ссылку Spotify...');
+            
+            const youtubeDl = getYoutubeDl();
+            const data = await youtubeDl(url, { dumpSingleJson: true });
 
-    const extra = {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    };
-    if (bonusAvailable) {
-      extra.reply_markup = {
-        inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
-      };
+            if (!data) throw new Error('Не удалось получить метаданные из Spotify');
+
+            // Теперь мы вызываем enqueue с готовыми метаданными!
+            await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
+            
+            // `data` содержит все что нужно: title, artist, duration и т.д.
+            // `url` для поиска на YouTube сформируется внутри downloadManager'а
+            enqueue(ctx, ctx.from.id, url, {
+                isSingleTrack: true,
+                metadata: data, // Передаем все полученные данные
+                source: 'spotify' // Явно указываем источник
+            });
+
+        } catch (error) {
+            console.error('Ошибка при обработке ссылки Spotify:', error.message);
+            const userMessage = '❌ Не удалось обработать ссылку Spotify. Трек может быть недоступен.';
+            if (loadingMessage) {
+                await ctx.telegram.editMessageText(ctx.chat.id, loadingMessage.message_id, undefined, userMessage).catch(() => {});
+            } else {
+                await ctx.reply(userMessage);
+            }
+        }
+        // ===============================================
+        //           КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ
+        // ===============================================
+
+    } else {
+        await ctx.reply('🎵 Я умею скачивать треки из SoundCloud и Spotify!\n\nПросто отправьте мне ссылку на трек, альбом или плейлист.');
     }
-
-    await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
-    return;
-  }
-
-  // Обрабатываем Spotify ссылку
-  await enqueue(ctx, ctx.from.id, url);
-} else {
-  await ctx.reply('🎵 Я умею скачивать треки из SoundCloud и Spotify!\n\nПросто отправьте мне ссылку на трек, альбом или плейлист.');
-}
 });
