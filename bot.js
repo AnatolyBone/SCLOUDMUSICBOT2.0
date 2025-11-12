@@ -7,7 +7,7 @@ import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDai
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
-import { spotifyEnqueue } from './services/spotifyManager.js';
+import { enqueue } from './services/spotifyManager.js';
 import { downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
