@@ -121,23 +121,24 @@ async function getSingleTrack(trackId) {
 }
 
 export async function spotifyEnqueue(ctx, userId, url) {
-  let statusMessage = null;
-  
-  try {
-    // Проверяем credentials
-    if (!SPOTIPY_CLIENT_ID || !SPOTIPY_CLIENT_SECRET) {
-      console.error('[Spotify] Credentials не настроены');
-      return await ctx.reply('❌ Spotify не настроен. Обратитесь к администратору.');
-    }
+    let statusMessage = null;
     
-    // Парсим URL
-    const parsed = parseSpotifyUrl(url);
-    if (!parsed) {
-      return await ctx.reply('❌ Неверная ссылка Spotify. Поддерживаются треки, альбомы и плейлисты.');
-    }
-    
-    statusMessage = await ctx.reply('🔍 Анализирую ссылку Spotify...');
-    
+    try {
+      // Проверяем credentials
+      if (!SPOTIPY_CLIENT_ID || !SPOTIPY_CLIENT_SECRET) {
+        console.error('[Spotify] Credentials не настроены');
+        return await ctx.reply('❌ Spotify не настроен. Обратитесь к администратору.');
+      }
+      
+      // Парсим URL
+      const parsed = parseSpotifyUrl(url);
+      if (!parsed) {
+        return await ctx.reply('❌ Неверная ссылка Spotify.');
+      }
+      
+      statusMessage = await ctx.reply('🔍 Анализирую ссылку Spotify...');
+      
+      // ... остальной код
     // Обновляем токен если нужно
     if (!spotifyApi.getAccessToken()) {
       const tokenSuccess = await getSpotifyToken();
@@ -199,28 +200,32 @@ export async function spotifyEnqueue(ctx, userId, url) {
     const priority = user ? (user.premium_limit || 5) : 5;
     
     // Добавляем треки в очередь
-    for (const track of tracksToProcess) {
-      // Формируем поисковый запрос для YouTube
-      // В spotifyManager.js при добавлении в очередь
-const task = {
-  userId,
-  source: 'spotify',
-  url: `ytsearch1:${searchQuery}`,
-  originalUrl: track.url || `https://open.spotify.com/track/${track.id}`, // Важно!
-  metadata: {
-    title: track.name || 'Unknown Track',
-    uploader: artists || 'Unknown Artist',
-    duration: track.duration ? Math.round(track.duration / 1000) : undefined,
-    thumbnail: track.cover_url || track.thumbnail,
-    id: track.song_id || track.id || `spotify_${Date.now()}_${Math.random()}`,
-    originalUrl: track.url // Добавьте это
-  },
-  priority
-};
-      
-      console.log(`[Spotify] Добавляю: "${task.metadata.title}" - ${task.metadata.uploader}`);
-      downloadQueue.add(task);
-    }
+    // В spotifyManager.js, в цикле где добавляете треки в очередь
+for (const track of tracksToProcess) {
+  // Формируем поисковый запрос для YouTube
+  const artists = Array.isArray(track.artists) ? track.artists.join(' ') : track.artist || '';
+  const trackName = track.name || 'Unknown Track';
+  const searchQuery = `${artists} ${trackName}`.trim(); // ОПРЕДЕЛЯЕМ searchQuery ЗДЕСЬ!
+  
+  const task = {
+    userId,
+    source: 'spotify',
+    url: `ytsearch1:${searchQuery}`, // Теперь searchQuery определена
+    originalUrl: track.url || url,
+    metadata: {
+      title: trackName,
+      uploader: artists || 'Unknown Artist',
+      duration: track.duration ? Math.round(track.duration / 1000) : undefined,
+      thumbnail: track.cover_url || track.thumbnail || track.album_image,
+      id: `spotify_${track.id || Date.now()}_${Math.random()}`,
+      originalUrl: track.url || `https://open.spotify.com/track/${track.id}`
+    },
+    priority
+  };
+  
+  console.log(`[Spotify] Добавляю в очередь: "${task.metadata.title}" by ${task.metadata.uploader}`);
+  downloadQueue.add(task);
+}
     
     // Финальное сообщение
     const finalMessage = tracksToProcess.length > 1 ?
