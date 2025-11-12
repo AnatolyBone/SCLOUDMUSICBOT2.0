@@ -5,6 +5,9 @@ import pMap from 'p-map';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL } from '../config.js';
 import { Markup } from 'telegraf';
 import path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
 import { spawn } from 'child_process';
 import { Readable } from 'stream';
 import ffmpegPath from 'ffmpeg-static';
@@ -55,7 +58,26 @@ function cleanUrl(url) {
     return url;
   } catch { return url; }
 }
+// Проверка установки при запуске
 
+async function checkDependencies() {
+    try {
+        const { stdout: ytdlp } = await execAsync('which yt-dlp');
+        console.log('[yt-dlp] Найден:', ytdlp.trim());
+    } catch {
+        console.warn('[yt-dlp] НЕ установлен!');
+    }
+    
+    try {
+        const { stdout: spotdl } = await execAsync('which spotdl');
+        console.log('[spotdl] Найден:', spotdl.trim());
+    } catch {
+        console.warn('[spotdl] НЕ установлен!');
+    }
+}
+
+// Вызовите при инициализации
+checkDependencies();
 async function resolveCanonicalUrl(url) {
   const cleanedUrl = cleanUrl(url);
   if (!cleanedUrl.includes('on.soundcloud.com')) return cleanedUrl;
