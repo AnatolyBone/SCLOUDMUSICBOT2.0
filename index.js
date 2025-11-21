@@ -322,7 +322,7 @@ app.get('/health', async (req, res) => {
     };
     
     // Если хотя бы один сервис недоступен, возвращаем 503
-    const allOk = dbAvailable;
+    const allOk = redisAvailable && dbAvailable;
     res.status(allOk ? 200 : 503).json(health);
   } catch (e) {
     res.status(500).json({ status: 'error', message: e.message });
