@@ -1,21 +1,21 @@
-// services/downloadManager.js - ОБНОВЛЕННАЯ ВЕРСИЯ С ПОДДЕРЖКОЙ SPOTIFY
+// =====================================================================================
+//      СКОПИРУЙТЕ ВЕСЬ ЭТОТ КОД И ПОЛНОСТЬЮ ЗАМЕНИТЕ ИМ СОДЕРЖИМОЕ
+//                       ФАЙЛА services/downloadManager.js
+// =====================================================================================
 
 import fetch from 'node-fetch';
 import pMap from 'p-map';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL } from '../config.js';
 import { Markup } from 'telegraf';
 import path from 'path';
-import { exec, spawn } from 'child_process';
-import { promisify } from 'util';
-import { Readable } from 'stream';
 import ffmpegPath from 'ffmpeg-static';
-import playdl from 'play-dl';
 import fs from 'fs';
-import scdl from 'soundcloud-downloader';
+import scdl from 'soundcloud-downloader'; // <--- ПРАВИЛЬНЫЙ ИМПОРТ
 import os from 'os';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import ytdl from 'youtube-dl-exec';
+
 import { bot } from '../bot.js';
 import { T } from '../config/texts.js';
 import { TaskQueue } from '../lib/TaskQueue.js';
@@ -54,26 +54,7 @@ function cleanUrl(url) {
     return url;
   } catch { return url; }
 }
-// Проверка установки при запуске
 
-async function checkDependencies() {
-    try {
-        const { stdout: ytdlp } = await execAsync('which yt-dlp');
-        console.log('[yt-dlp] Найден:', ytdlp.trim());
-    } catch {
-        console.warn('[yt-dlp] НЕ установлен!');
-    }
-    
-    try {
-        const { stdout: spotdl } = await execAsync('which spotdl');
-        console.log('[spotdl] Найден:', spotdl.trim());
-    } catch {
-        console.warn('[spotdl] НЕ установлен!');
-    }
-}
-
-// Вызовите при инициализации
-checkDependencies();
 async function resolveCanonicalUrl(url) {
   const cleanedUrl = cleanUrl(url);
   if (!cleanedUrl.includes('on.soundcloud.com')) return cleanedUrl;
@@ -86,8 +67,7 @@ async function resolveCanonicalUrl(url) {
   }
 }
 
-function getCacheKey(meta, fallbackUrl, source = 'soundcloud') {
-  if (source === 'spotify' && meta?.id) return `spotify:${meta.id}`;
+function getCacheKey(meta, fallbackUrl) {
   if (meta?.id) return `sc:${meta.id}`;
   return fallbackUrl || 'unknown';
 }
@@ -127,264 +107,26 @@ function extractMetadataFromInfo(info) {
 async function ensureTaskMetadata(task) {
   let { metadata, cacheKey } = task;
   const url = task.url || task.originalUrl;
-  const source = task.source || 'soundcloud';
-  
-  if (!metadata && source !== 'spotify') {
+  if (!metadata) {
     if (!url) throw new Error('TASK_MISSING_URL');
     console.warn('[Worker] metadata отсутствует, получаю через ytdl для URL:', url);
     const info = await ytdl(url, { 'dump-single-json': true, ...YTDL_COMMON });
     metadata = extractMetadataFromInfo(info);
     if (!metadata) throw new Error('META_MISSING');
   }
-  
   if (!cacheKey) {
-    cacheKey = getCacheKey(metadata, task.originalUrl || url, source);
+    cacheKey = getCacheKey(metadata, task.originalUrl || url);
   }
-  
   return { metadata, cacheKey, url };
 }
 
-// Упрощенная версия для Render.com - без файлов, только потоки
-
-
-// Инициализация play-dl (добавьте после импортов)
-async function initializePlayDl() {
-  try {
-    // Авторизация play-dl (опционально, но помогает с ограничениями)
-    await playdl.setToken({
-      youtube: {
-        cookie: '' // Можно оставить пустым
-      }
-    });
-    console.log('[PlayDL] Инициализирован');
-  } catch (error) {
-    console.log('[PlayDL] Работаем без авторизации');
-  }
-}
-
-// Вызовите при старте
-initializePlayDl();
-
-const execAsync = promisify(exec);
-
-async function downloadFromYouTube(searchQuery, metadata = null) {
-  console.log(`[YouTube] Поиск: ${searchQuery}`);
-  
-  try {
-    const cleanQuery = searchQuery.replace(/^ytsearch1?:/, '').replace(/"/g, '');
-    const spotifyDuration = metadata?.duration || 0;
-    
-    console.log(`[YouTube] Ищу через youtube-dl: "${cleanQuery}"`);
-    
-    // Используем youtube-dl-exec для поиска БЕЗ cookies
-    const searchResults = await ytdl.exec(`ytsearch5:${cleanQuery}`, {
-      dumpSingleJson: true,
-      flatPlaylist: true,
-      noCheckCertificate: true,
-      geoBypass: true,
-      // НЕ используем cookies!
-      ...YTDL_COMMON
-    });
-    
-    if (!searchResults?.entries || searchResults.entries.length === 0) {
-      throw new Error('Видео не найдено');
-    }
-    
-    // Находим лучшее совпадение по длительности
-    let bestMatch = null;
-    let bestDiff = Infinity;
-    
-    for (const entry of searchResults.entries) {
-      const videoDuration = entry.duration || 0;
-      console.log(`[YouTube] Найдено: ${entry.title} (${videoDuration}s)`);
-      
-      if (spotifyDuration > 0) {
-        const diff = Math.abs(videoDuration - spotifyDuration);
-        if (diff <= 35 && diff < bestDiff) {
-          bestMatch = entry;
-          bestDiff = diff;
-        }
-      } else if (!bestMatch) {
-        bestMatch = entry;
-      }
-    }
-    
-    if (!bestMatch) {
-      bestMatch = searchResults.entries[0];
-    }
-    
-    const videoUrl = bestMatch.webpage_url || bestMatch.url;
-    console.log(`[YouTube] Выбрано: ${bestMatch.title}`);
-    console.log(`[YouTube] URL: ${videoUrl}`);
-    
-    // Скачиваем БЕЗ cookies и БЕЗ сохранения файла
-    console.log(`[YouTube] Создаю поток через youtube-dl...`);
-    
-    return new Promise((resolve, reject) => {
-      // Используем yt-dlp напрямую для стриминга
-      const ytdlp = spawn('yt-dlp', [
-        videoUrl,
-        '--format', 'bestaudio[ext=m4a]/bestaudio',
-        '--extract-audio',
-        '--audio-format', 'mp3',
-        '--audio-quality', '0',
-        '-o', '-', // Вывод в stdout!
-        '--no-check-certificate',
-        '--geo-bypass',
-        '--quiet',
-        '--no-warnings',
-        '--no-playlist',
-        // НЕ используем --cookies-from-browser!
-      ]);
-      
-      let streamStarted = false;
-      let errorData = '';
-      
-      ytdlp.stderr.on('data', (chunk) => {
-        errorData += chunk.toString();
-      });
-      
-      ytdlp.on('error', (error) => {
-        if (error.code === 'ENOENT') {
-          console.error('[YouTube] yt-dlp не найден');
-          reject(new Error('yt-dlp не установлен'));
-        } else {
-          reject(error);
-        }
-      });
-      
-      ytdlp.stdout.once('data', () => {
-        console.log('[YouTube] Поток начал передачу');
-        streamStarted = true;
-        resolve(ytdlp.stdout);
-      });
-      
-      ytdlp.on('close', (code) => {
-        if (code !== 0 && !streamStarted) {
-          console.error('[YouTube] yt-dlp ошибка:', errorData);
-          reject(new Error(`yt-dlp error: ${errorData}`));
-        }
-      });
-      
-      setTimeout(() => {
-        if (!streamStarted) {
-          ytdlp.kill();
-          reject(new Error('Таймаут YouTube'));
-        }
-      }, 30000);
-    });
-    
-  } catch (error) {
-    console.error(`[YouTube] Основной метод не сработал: ${error.message}`);
-    
-    // Fallback на spotdl
-    if (metadata?.originalUrl || metadata?.id) {
-      console.log('[YouTube] Пробую spotdl как последний вариант...');
-      
-      const spotifyUrl = metadata.originalUrl || `https://open.spotify.com/track/${metadata.id}`;
-      
-      return new Promise((resolve, reject) => {
-        // Используем spawn вместо require
-        const spotdl = spawn('spotdl', [
-          'download',
-          spotifyUrl,
-          '--format', 'mp3',
-          '--output', '-' // Вывод в stdout
-        ]);
-        
-        let streamStarted = false;
-        let errorData = '';
-        
-        spotdl.stderr.on('data', (chunk) => {
-          errorData += chunk.toString();
-        });
-        
-        spotdl.stdout.once('data', () => {
-          console.log('[SpotDL] Поток начался');
-          streamStarted = true;
-          resolve(spotdl.stdout);
-        });
-        
-        spotdl.on('error', (err) => {
-          if (err.code === 'ENOENT') {
-            reject(new Error('spotdl не установлен'));
-          } else {
-            reject(err);
-          }
-        });
-        
-        spotdl.on('close', (code) => {
-          if (code !== 0 && !streamStarted) {
-            console.error('[SpotDL] Ошибка:', errorData);
-            reject(new Error(`spotdl error: ${errorData}`));
-          }
-        });
-        
-        setTimeout(() => {
-          if (!streamStarted) {
-            spotdl.kill();
-            reject(new Error('Таймаут spotdl'));
-          }
-        }, 30000);
-      });
-    }
-    
-    throw error;
-  }
-}
-// Упрощенный spotdl fallback
-async function downloadViaSpotdl(spotifyUrl) {
-  console.log('[SpotDL] Пробую через spotdl...');
-  
-  const tempFile = path.join(TEMP_DIR, `spotdl_${Date.now()}.mp3`);
-  
-  if (!fs.existsSync(TEMP_DIR)) {
-    fs.mkdirSync(TEMP_DIR, { recursive: true });
-  }
-  
-  try {
-    // Используем spotdl для скачивания
-    await new Promise((resolve, reject) => {
-      const { exec } = require('child_process');
-      
-      const cmd = `spotdl download "${spotifyUrl}" --format mp3 --output "${tempFile}"`;
-      
-      exec(cmd, (error, stdout, stderr) => {
-        if (error) {
-          console.error('[SpotDL] Ошибка:', stderr);
-          reject(error);
-        } else {
-          console.log('[SpotDL] Успешно скачано');
-          resolve();
-        }
-      });
-    });
-    
-    if (!fs.existsSync(tempFile)) {
-      throw new Error('SpotDL не создал файл');
-    }
-    
-    const stream = fs.createReadStream(tempFile);
-    
-    stream.on('end', () => {
-      fs.unlink(tempFile, () => {});
-    });
-    
-    return stream;
-    
-  } catch (error) {
-    console.error('[SpotDL] Ошибка:', error.message);
-    throw error;
-  }
-}
 // =====================================================================================
-//                   ОБНОВЛЕННАЯ ВЕРСИЯ trackDownloadProcessor
+//                             ФИНАЛЬНАЯ ВЕРСИЯ trackDownloadProcessor
 // =====================================================================================
 
 export async function trackDownloadProcessor(task) {
   let statusMessage = null;
   const userId = parseInt(task.userId, 10);
-  const source = task.source || 'soundcloud';
   
   try {
     const usage = await getUserUsage(userId);
@@ -396,78 +138,32 @@ export async function trackDownloadProcessor(task) {
     const ensured = await ensureTaskMetadata(task);
     const { metadata, cacheKey } = ensured;
     
-    if (!metadata) { 
-      throw new Error('Не удалось получить метаданные для задачи.'); 
-    }
+    if (!metadata) { throw new Error('Не удалось получить метаданные для задачи.'); }
     
-    const { title, uploader, duration, thumbnail } = metadata;
+    const { title, uploader, duration, thumbnail, webpage_url: fullUrl } = metadata;
     const roundedDuration = duration ? Math.round(duration) : undefined;
     
-    // Проверяем кэш
-    let cached = await db.findCachedTrack(cacheKey);
-    if (cached?.fileId) {
-      console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.trackName || title}" из кэша.`);
-      await bot.telegram.sendAudio(userId, cached.fileId, { 
-        title: cached.trackName || title, 
-        performer: cached.artist || uploader, 
-        duration: roundedDuration 
-      });
-      await incrementDownload(userId, cached.trackName || title, cached.fileId, cacheKey);
-      return;
+    if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
+      throw new Error(`Не удалось получить полную ссылку на трек из метаданных. Получено: ${fullUrl}`);
     }
+    
+    let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(fullUrl);
+if (cached?.fileId) {
+  const options = { title: cached.title, performer: cached.artist };
+  console.log(`[DIAGNOSTIC-ENQUEUE] Отправка из кэша. Данные: ${JSON.stringify(cached)}`);
+  console.log(`[DIAGNOSTIC-ENQUEUE] Параметры для sendAudio: ${JSON.stringify(options)}`);
+  
+  console.log(`[Enqueue/FastPath] ⚡ КЭШ ХИТ! Отправляю "${cached.title}"`);
+  await bot.telegram.sendAudio(userId, cached.fileId, options);
+  await incrementDownload(userId, cached.title, cached.fileId, url);
+  return;
+}
 
     statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
 
-    let stream;
-    
-    // Выбираем метод загрузки в зависимости от источника
-    // В trackDownloadProcessor обновите секцию для Spotify
-if (source === 'spotify') {
-  console.log(`[Worker/Spotify] Загружаю с YouTube для Spotify трека: ${title}`);
-  
-  try {
-    // Передаем metadata для умного поиска
-    stream = await downloadFromYouTube(task.url, metadata);
-  } catch (error) {
-    console.error(`[Worker/Spotify] Ошибка загрузки: ${error.message}`);
-    
-    // Если не удалось загрузить, отправляем альтернативные варианты
-    const cleanQuery = task.url.replace(/^ytsearch1?:/, '').replace(/"/g, '');
-    
-    const message = `🎵 <b>${title}</b>\n` +
-      `👤 <i>${uploader}</i>\n` +
-      `⏱ ${duration ? `${Math.floor(duration/60)}:${String(duration%60).padStart(2,'0')}` : ''}\n\n` +
-      `⚠️ <i>Не удалось загрузить автоматически.</i>\n` +
-      `<i>Попробуйте альтернативные способы:</i>`;
-    
-    await bot.telegram.sendMessage(userId, message, {
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔍 Найти на YouTube', url: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}` }],
-          [{ text: '🎵 YouTube Music', url: `https://music.youtube.com/search?q=${encodeURIComponent(cleanQuery)}` }],
-          [{ text: '💿 Скачать через Y2Mate', url: `https://www.y2mate.com/youtube-mp3/${encodeURIComponent(cleanQuery)}` }]
-        ]
-      }
-    });
-    
-    if (statusMessage) {
-      await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
-    }
-    
-    // Логируем как попытку
-    await incrementDownload(userId, title, 'youtube_fallback', cacheKey);
-    return;
-  }
-} else {
-  // Для SoundCloud код остается без изменений
-  const fullUrl = metadata.webpage_url || task.url;
-  if (!fullUrl || !fullUrl.includes('soundcloud.com')) {
-    throw new Error(`Не удалось получить полную ссылку на трек. Получено: ${fullUrl}`);
-  }
-  console.log(`[Worker/SoundCloud] Открываю аудиопоток для: ${fullUrl}`);
-  stream = await scdl.default.download(fullUrl);
-}
+    console.log(`[Worker/Stream] Открываю аудиопоток для: ${fullUrl}`);
+    const stream = await scdl.default.download(fullUrl); // <--- ПРАВИЛЬНЫЙ ВЫЗОВ
+
     let finalFileId = null;
 
     if (STORAGE_CHANNEL_ID) {
@@ -487,41 +183,21 @@ if (source === 'spotify') {
     }
 
     if (finalFileId) {
-      // Сохраняем в кэш
-      await db.cacheTrack({ 
-        url: cacheKey, 
-        fileId: finalFileId, 
-        title, 
-        artist: uploader, 
-        duration: roundedDuration, 
-        thumbnail,
-        source 
-      });
-      console.log(`✅ [Cache] Трек "${title}" сохранён.`);
+        const urlAliases = [];
+        if (task.originalUrl && task.originalUrl !== fullUrl && task.originalUrl.includes('soundcloud.com')) { urlAliases.push(task.originalUrl); }
+        if (cacheKey && !cacheKey.startsWith('http')) { urlAliases.push(cacheKey); }
+        if (fullUrl && fullUrl.includes('soundcloud.com')) {
+          await db.cacheTrack({ url: fullUrl, fileId: finalFileId, title, artist: uploader, duration: roundedDuration, thumbnail, aliases: urlAliases });
+          console.log(`✅ [Cache] Трек "${title}" сохранён.`);
+        }
     }
     
     if (finalFileId) {
-      await bot.telegram.sendAudio(userId, finalFileId, { 
-        title, 
-        performer: uploader, 
-        duration: roundedDuration 
-      });
+      await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
     } else {
-      console.warn('[Worker] Канал-хранилище не настроен. Отправляю напрямую...');
-      // Для прямой отправки нужно создать новый поток
-      let directStream;
-      if (source === 'spotify') {
-        directStream = await downloadFromYouTube(task.url);
-      } else {
-        const fullUrl = metadata.webpage_url || task.url;
-        directStream = await scdl.default.download(fullUrl);
-      }
-      
-      const sentMsg = await bot.telegram.sendAudio(
-        userId, 
-        { source: directStream }, 
-        { title, performer: uploader, duration: roundedDuration }
-      );
+      console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток...');
+      const userStream = await scdl.default.download(fullUrl); // <--- ПРАВИЛЬНЫЙ ВЫЗОВ
+      const sentMsg = await bot.telegram.sendAudio(userId, { source: userStream }, { title, performer: uploader, duration: roundedDuration });
       finalFileId = sentMsg?.audio?.file_id;
     }
 
@@ -530,7 +206,7 @@ if (source === 'spotify') {
     }
     
     if (finalFileId) {
-      await incrementDownload(userId, title, finalFileId, cacheKey);
+      await incrementDownload(userId, title, finalFileId, task.originalUrl || fullUrl);
     }
 
   } catch (err) {
@@ -548,7 +224,10 @@ if (source === 'spotify') {
   }
 }
 
-// Остальной код остается без изменений...
+// =====================================================================================
+//                                 ОЧЕРЕДЬ ЗАГРУЗОК
+// =====================================================================================
+
 export const downloadQueue = new TaskQueue({
   maxConcurrent: MAX_CONCURRENT_DOWNLOADS,
   taskProcessor: trackDownloadProcessor
@@ -556,8 +235,12 @@ export const downloadQueue = new TaskQueue({
 
 console.log(`[DownloadManager] Очередь загрузок инициализирована (maxConcurrent: ${MAX_CONCURRENT_DOWNLOADS})`);
 
+
+// =====================================================================================
+//                            ФИНАЛЬНАЯ ВЕРСИЯ ФУНКЦИИ enqueue
+// =====================================================================================
+
 export function enqueue(ctx, userId, url, earlyData = {}) {
-  // Ваша существующая функция enqueue остается без изменений
   (async () => {
     let statusMessage = null;
     const startTime = Date.now();
@@ -605,6 +288,8 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       }
 
       console.log('[Enqueue/Fallback] Запущена логика для плейлиста или старого вызова.');
+      // ... (здесь должна быть ваша старая, сложная логика для плейлистов)
+      // Если у вас её нет, этот блок останется пустым, и это нормально.
 
     } catch (err) {
       const errorMessage = err?.stderr || err?.message || String(err);
@@ -620,6 +305,10 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
     console.error('[Enqueue] ❌ ASYNC WRAPPER ERROR:', err);
   });
 }
+
+// =====================================================================================
+//                                   ИНИЦИАЛИЗАЦИЯ
+// =====================================================================================
 
 export function initializeDownloadManager() {
   console.log('[DownloadManager] Инициализация завершена.');
