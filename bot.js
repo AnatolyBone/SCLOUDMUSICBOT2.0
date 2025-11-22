@@ -1006,22 +1006,16 @@ async function handleSoundCloudUrl(ctx, url) {
         
         let data;
         try {
-            data = await youtubeDl(url, {
-                dumpSingleJson: true,
-                flatPlaylist: true
-            });
+            data = await youtubeDl(url, { dumpSingleJson: true, flatPlaylist: true });
         } catch (ytdlError) {
             console.error(`[youtube-dl] Ошибка:`, ytdlError.stderr || ytdlError.message);
             throw new Error('Не удалось получить метаданные.');
         }
         
-        if (!data) {
-            throw new Error('Не удалось получить метаданные.');
-        }
+        if (!data) throw new Error('Не удалось получить метаданные.');
         
-        // ✅ ТОЛЬКО РОУТИНГ — без проверки кэша!
         if (data.entries && data.entries.length > 1) {
-            // ПЛЕЙЛИСТ
+            // Плейлист
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
             
             const playlistId = `pl_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
@@ -1036,39 +1030,25 @@ async function handleSoundCloudUrl(ctx, url) {
             });
             
             const message = `🎶 В плейлисте <b>"${escapeHtml(data.title)}"</b> найдено <b>${data.entries.length}</b> треков.\n\nЧто делаем?`;
-            await ctx.reply(message, {
-                parse_mode: 'HTML',
-                ...generateInitialPlaylistMenu(playlistId, data.entries.length)
-            });
+            await ctx.reply(message, { parse_mode: 'HTML', ...generateInitialPlaylistMenu(playlistId, data.entries.length) });
             
-        // ...
-} else {
-    // ОДИНОЧНЫЙ ТРЕК — передаём в enqueue СРАЗУ С МЕТАДАННЫМИ
-    await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
-    
-    // Передаем в enqueue не просто URL, а объект с уже полученными данными!
-    enqueue(ctx, ctx.from.id, url, {
-        isSingleTrack: true,
-        metadata: data // <--- data уже содержит все, что нам нужно!
-    });
-}
-// ..
+        } else {
+            // Одиночный трек
+            await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
+            enqueue(ctx, ctx.from.id, url, { isSingleTrack: true, metadata: data });
+        }
         
     } catch (error) {
         console.error('Ошибка handleSoundCloudUrl:', error.message);
         const userMessage = '❌ Не удалось обработать ссылку.';
         if (loadingMessage) {
-            await ctx.telegram.editMessageText(
-                ctx.chat.id,
-                loadingMessage.message_id,
-                undefined,
-                userMessage
-            ).catch(() => {});
+            await ctx.telegram.editMessageText(ctx.chat.id, loadingMessage.message_id, undefined, userMessage).catch(() => {});
         } else {
             await ctx.reply(userMessage);
         }
     }
 }
+
 // ======================= SHAZAM HANDLER =======================
 
 const handleMediaForShazam = async (ctx) => {
@@ -1081,15 +1061,11 @@ const handleMediaForShazam = async (ctx) => {
     else if (message.audio) fileId = message.audio.file_id;
     else if (message.video) fileId = message.video.file_id;
     
-    // Если это просто файл без команды и не ГС - игнорируем (чтобы не мешать другим функциям)
-    // Но ГС и Кружочки обрабатываем всегда
     if (!fileId) return;
     
-    // Для обычных аудио/видео файлов реагируем только если это ответ на сообщение бота или явное желание
-    // (Опционально: можно убрать это условие, если хотите шазамить ВСЁ подряд)
     const isVoiceOrNote = !!(message.voice || message.video_note);
     if (!isVoiceOrNote && !message.caption?.toLowerCase().includes('shazam')) {
-        // Можно раскомментировать, если хотите, чтобы бот игнорировал просто присланные mp3 без подписи
+        // Если это просто аудио/видео без подписи shazam и не ГС - игнорируем
         // return; 
     }
 
@@ -1114,7 +1090,6 @@ const handleMediaForShazam = async (ctx) => {
             }
 
             // 🤖 АВТО-ПОИСК ПО БАЗЕ
-            // Используем вашу функцию performInlineSearch
             const searchResults = await performInlineSearch(query, ctx.from.id);
             
             let foundExact = false;
@@ -1144,121 +1119,54 @@ const handleMediaForShazam = async (ctx) => {
             }
 
         } else {
-            await ctx.reply('🤷‍♂️ Не удалось распознать. Попробуйте запись лучшего качества.');
+            await ctx.reply('🤷‍♂️ Не удалось распознать.');
         }
 
     } catch (e) {
         console.error('[Shazam] Error:', e);
         if (statusMsg) await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
-        // Не спамим ошибкой пользователю, если это был случайный файл
     }
 };
 
 // Подключаем обработчик ко всем медиа-типам
 bot.on(['voice', 'video_note', 'audio', 'video'], handleMediaForShazam);
 
-            // Авто-поиск в нашей базе (используем ваш готовый performInlineSearch)
-            const searchResults = await performInlineSearch(query, ctx.from.id);
-            
-            if (searchResults && searchResults.length > 0) {
-                // Если есть точное совпадение в кэше
-                const bestMatch = searchResults[0];
-                if (bestMatch.audio_file_id) {
-                    await ctx.replyWithAudio(bestMatch.audio_file_id, {
-                        caption: `✅ Нашел в кэше!`,
-                        title: result.title,
-                        performer: result.artist
-                    });
-                    await incrementDownloadsAndSaveTrack(ctx.from.id, result.title, bestMatch.audio_file_id, 'shazam_auto');
-                } else {
-                    // Если только внешний поиск
-                    await ctx.reply(`Нашел варианты! Нажми кнопку ниже:`, {
-                        reply_markup: {
-                            inline_keyboard: [[ Markup.button.switchInlineQueryCurrentChat(query) ]]
-                        }
-                    });
-                }
-            } else {
-                await ctx.reply(`К сожалению, скачать не удалось, но вот название. Попробуйте найти вручную:`, {
-                    reply_markup: {
-                        inline_keyboard: [[ Markup.button.switchInlineQueryCurrentChat(query) ]]
-                    }
-                });
-            }
-
-        } else {
-            await ctx.reply('🤷‍♂️ Не удалось распознать. Попробуйте запись лучшего качества.');
-        }
-
-    } catch (e) {
-        console.error('[Shazam Handler] Error:', e);
-        if (statusMsg) await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
-        await ctx.reply('❌ Ошибка сервиса распознавания.');
-    }
-};
-
-// Вешаем обработчик на типы сообщений
-bot.on(['voice', 'video_note'], handleMediaForShazam);
-// Для аудио и видео тоже можно, но лучше по команде, чтобы не спамил
-// bot.on(['audio', 'video'], handleMediaForShazam); 
 bot.on('text', async (ctx) => {
-                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
-                if (isShuttingDown()) { // ПРАВИЛЬНО: скобок нет
-                    console.log('[Shutdown] Отклонен новый запрос, так как идет завершение работы.');
-                    return;
-                }
-                
-                // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
-                if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) { // ПРАВИЛЬНО: и здесь тоже нет
-                    return await ctx.reply('⏳ Бот на плановом обслуживании. Новые запросы временно не принимаются. Пожалуйста, попробуйте через 5-10 минут.');
-                }
-    if (ctx.chat.type !== 'private') {
-        console.log(`[Ignore] Сообщение из не-приватного чата (${ctx.chat.type}) было проигнорировано.`);
-        return;
+    if (isShuttingDown()) return;
+    if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) {
+        return await ctx.reply('⏳ Бот на плановом обслуживании.');
     }
+    
+    if (ctx.chat.type !== 'private') return;
     
     const text = ctx.message.text;
     if (text.startsWith('/')) return;
     if (Object.values(allTextsSync()).includes(text)) return;
     
     const urlMatch = text.match(/(https?:\/\/[^\s]+)/g);
-    if (!urlMatch) {
-        return await ctx.reply('Пожалуйста, отправьте мне ссылку.');
-    }
+    if (!urlMatch) return await ctx.reply('Пожалуйста, отправьте мне ссылку.');
     
-   const url = urlMatch[0];
+    const url = urlMatch[0];
 
-if (url.includes('soundcloud.com')) {
-  // РАННИЙ ЧЕК ЛИМИТА: до любого анализа ссылки
-  const user = await getUser(ctx.from.id); // resetDailyLimitIfNeeded уже отработал в middleware
-  if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-    const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-    const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-    const bonusText = bonusAvailable
-      ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-      : '';
-
-    const extra = {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    };
-    if (bonusAvailable) {
-      extra.reply_markup = {
-        inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
-      };
+    if (url.includes('soundcloud.com')) {
+        const user = await getUser(ctx.from.id);
+        if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
+            const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+            const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+            const bonusText = bonusAvailable
+              ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+              : '';
+            const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+            if (bonusAvailable) {
+              extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
+            }
+            await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+            return;
+        }
+        handleSoundCloudUrl(ctx, url);
+    } else if (url.includes('open.spotify.com')) {
+        await ctx.reply('🛠 Скачивание из Spotify временно недоступно.');
+    } else {
+        await ctx.reply('Я умею скачивать треки из SoundCloud.');
     }
-
-    await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
-    return; // ВАЖНО: не запускаем анализ ссылки
-  }
-
-  // Лимит не достигнут — продолжаем обычную логику
-  handleSoundCloudUrl(ctx, url);
-} else if (url.includes('open.spotify.com')) {
-  // Просто отвечаем пользователю, что функция временно недоступна
-  await ctx.reply('🛠 К сожалению, скачивание из Spotify временно на техническом обслуживании. Мы работаем над этим!');
-} else {
-  // Обновляем текст, чтобы не упоминать Spotify
-  await ctx.reply('Я умею скачивать треки из SoundCloud. Поддержка других платформ в разработке!');
-}
 });
