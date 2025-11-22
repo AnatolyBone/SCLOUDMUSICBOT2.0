@@ -4,9 +4,7 @@
   "description": "Telegram bot for downloading SoundCloud tracks via yt-dlp",
   "main": "index.js",
   "type": "module",
-  "scripts": {
-    "start": "node index.js",
-    "build": "pip install --user yt-dlp spotdl || true" },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
 "@supabase/supabase-js": "^2.39.6",
 "axios": "^1.6.8",
@@ -14,8 +12,6 @@
 "connect-pg-simple": "^8.0.0",
 "dotenv": "^16.4.5",
 "ejs": "^3.1.9",
-"play-dl": "^1.9.7",
-"spotify-web-api-node": "^5.0.2",
 "express": "^4.19.2",
 "express-ejs-layouts": "^2.5.1",
 "node-fetch": "^3.3.2",

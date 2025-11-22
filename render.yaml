@@ -1,15 +1,20 @@
 services:
   - type: web
-    name: scloudmusicbot2-0
+    name: soundcloud-bot
+    # ✅ 1. Меняем env с 'docker' на 'node'
     env: node
     plan: free
-    buildCommand: |
-      npm install
-      pip install yt-dlp spotdl
-    startCommand: node index.js
+    # ✅ 2. Указываем команду для сборки
+    buildCommand: "npm install && pip install -r requirements.txt"
+    # ✅ 3. Указываем команду для запуска
+    startCommand: "node index.js"
     envVars:
+      # ✅ 4. Добавляем версию Python
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: 3.11
+      #
+      # --- Твои существующие переменные (оставляем как есть) ---
+      #
       - key: SPOTIPY_CLIENT_ID
         sync: false
       - key: SPOTIPY_CLIENT_SECRET
@@ -20,19 +25,8 @@ services:
         sync: false
       - key: STORAGE_CHANNEL_ID
         sync: false
-      - key: CHANNEL_URL
-        sync: false
-      - key: DATABASE_URL
-        sync: false
+      # Добавь сюда остальные переменные из веб-интерфейса Render:
+      # DATABASE_URL, REDIS_URL, SESSION_SECRET, и т.д.
+      # Важно! WEBHOOK_URL теперь нужно задавать вручную, так как fromService может не сработать.
       - key: WEBHOOK_URL
-        value: "https://scloudmusicbot2-0.onrender.com"
-      - key: SESSION_SECRET
-        sync: false
-      - key: ADMIN_LOGIN
-        sync: false
-      - key: ADMIN_PASSWORD
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_KEY
-        sync: false
+        value: "https://soundcloud-bot.onrender.com" # ⚠️ ЗАМЕНИ НА СВОЙ URL

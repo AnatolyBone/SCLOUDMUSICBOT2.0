@@ -4,7 +4,7 @@ import { Telegraf, Markup, TelegramError } from 'telegraf';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
 import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,           // <--- ДОБАВИТЬ
-    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats} from './db.js';
+    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, updateFileId} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
 import { spotifyEnqueue } from './services/spotifyManager.js';
@@ -258,6 +258,188 @@ bot.start(async (ctx) => {
             [T('mytracks'), T('help')]
         ]).resize()
     });
+});
+
+function sanitizeFilename(name) {
+  if (!name || typeof name !== 'string') return 'track';
+  return name.replace(/[<>:"/\\|?*]+/g, '').trim() || 'track';
+}
+// bot.js
+
+bot.command('fixuser', async (ctx) => {
+  // 1. Проверяем, что это админ
+  if (ctx.from.id !== ADMIN_ID) {
+    return;
+  }
+
+  const args = ctx.message.text.split(' ');
+  const targetUserId = parseInt(args[1], 10);
+
+  if (!targetUserId) {
+    return ctx.reply('Пожалуйста, укажите ID пользователя. Пример: /fixuser 123456789');
+  }
+
+  await ctx.reply(`✅ Запускаю фоновую задачу по исправлению кэша для пользователя ID: ${targetUserId}. Это может занять много времени. Отчет будет прислан вам по завершении.`);
+
+  // 2. Запускаем всю тяжелую работу в фоновом режиме, чтобы бот не "зависал"
+  (async () => {
+    let fixedCount = 0;
+    let checkedCount = 0;
+    let failedCount = 0;
+    const BATCH_DELAY = 3000; // 3 секунды между проверками
+
+    try {
+      // 3. Получаем все URL пользователя
+      const urls = await getUserUniqueDownloadedUrls(targetUserId);
+      if (urls.length === 0) {
+        await bot.telegram.sendMessage(ADMIN_ID, `ℹ️ Для пользователя ${targetUserId} не найдено скачанных треков в логах.`);
+        return;
+      }
+      
+      await bot.telegram.sendMessage(ADMIN_ID, `[FixUser] Найдено ${urls.length} уникальных URL для пользователя ${targetUserId}. Начинаю проверку...`);
+
+      // 4. Перебираем URL и лечим файлы
+      for (const url of urls) {
+        checkedCount++;
+        try {
+          const track = await findCachedTrack(url);
+          if (!track || !track.fileId || !track.title) {
+            continue; // Трека нет в кэше или запись неполная
+          }
+
+          const fileInfo = await bot.telegram.getFile(track.fileId);
+          const cleanTitle = sanitizeFilename(track.title);
+          const hasCorrectName = fileInfo.file_path && fileInfo.file_path.includes(encodeURIComponent(cleanTitle.split('.mp3')[0]));
+
+          if (hasCorrectName) {
+            continue; // Файл уже в порядке
+          }
+
+          // Файл "сломан", лечим
+          const fileLink = await bot.telegram.getFileLink(track.fileId);
+          const filename = cleanTitle.toLowerCase().endsWith('.mp3') ? cleanTitle : `${cleanTitle}.mp3`;
+          
+          const sentToStorage = await bot.telegram.sendAudio(
+            STORAGE_CHANNEL_ID,
+            { url: fileLink.href, filename },
+            { title: track.title, performer: track.artist }
+          );
+
+          const newFileId = sentToStorage?.audio?.file_id;
+          if (newFileId) {
+            await updateFileId(track.fileId, newFileId);
+            fixedCount++;
+          }
+        } catch (e) {
+          failedCount++;
+          console.error(`[FixUser] Ошибка при обработке URL ${url} для юзера ${targetUserId}:`, e.message);
+        }
+        // Пауза между запросами к API
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+      }
+
+      // 5. Отправляем финальный отчет админу
+      await bot.telegram.sendMessage(ADMIN_ID, `✅ [FixUser] Задача для пользователя ${targetUserId} завершена.\n\n- Проверено треков: ${checkedCount}\n- Исправлено файлов: ${fixedCount}\n- Ошибок при обработке: ${failedCount}`);
+
+    } catch (e) {
+      console.error(`[FixUser] Критическая ошибка в задаче для ${targetUserId}:`, e);
+      await bot.telegram.sendMessage(ADMIN_ID, `❌ [FixUser] Произошла критическая ошибка в задаче для пользователя ${targetUserId}. Подробности в логах.`);
+    }
+  })(); // Немедленно вызываем асинхронную функцию
+});
+bot.command('fix', async (ctx) => {
+  console.log(`[FIX_COMMAND] Команда /fix инициирована пользователем ${ctx.from.id}`);
+
+  // Проверяем, что это ответ на сообщение
+  if (!ctx.message.reply_to_message) {
+    console.log('[FIX_COMMAND] Сбой: Команда вызвана не как ответ на сообщение.');
+    return ctx.reply('ℹ️ Чтобы исправить файл, ответьте на сообщение с аудиозаписью этой командой.');
+  }
+  const repliedMessage = ctx.message.reply_to_message;
+  console.log('[FIX_COMMAND] Это ответ на сообщение. ID сообщения: ' + repliedMessage.message_id);
+
+  // Проверяем, что в сообщении есть аудио
+  if (!repliedMessage.audio) {
+    console.log('[FIX_COMMAND] Сбой: В сообщении, на которое ответили, нет аудио.');
+    return ctx.reply('❌ Это не аудиофайл. Пожалуйста, ответьте на сообщение с музыкой.');
+  }
+  console.log('[FIX_COMMAND] В сообщении есть аудио.');
+  
+  // Проверяем, что есть канал-хранилище
+  if (!STORAGE_CHANNEL_ID) {
+      console.log('[FIX_COMMAND] Сбой: Не настроен STORAGE_CHANNEL_ID.');
+      return ctx.reply('🛠 К сожалению, эта функция временно недоступна (не настроено хранилище).');
+  }
+  console.log('[FIX_COMMAND] Канал-хранилище настроен.');
+
+  const oldFileId = repliedMessage.audio.file_id;
+  console.log(`[FIX_COMMAND] Старый file_id: ${oldFileId}`);
+  
+  let statusMessage;
+
+  try {
+    statusMessage = await ctx.reply('🔬 Начинаю процедуру "лечения" файла. Пожалуйста, подождите...');
+
+    // 1. Находим трек в нашей базе по старому file_id
+    console.log('[FIX_COMMAND] Шаг 1: Поиск трека в БД...');
+    const trackInfo = await findCachedTrackByFileId(oldFileId);
+    if (!trackInfo) {
+      console.log('[FIX_COMMAND] Шаг 1: Провал. Трек с таким file_id не найден в track_cache.');
+      return ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, '🤔 Не могу найти этот трек в своей базе. Возможно, он был скачан очень давно, или не мной, или уже был исправлен.');
+    }
+    console.log('[FIX_COMMAND] Шаг 1: Успех. Найден трек:', trackInfo);
+
+    // 2. Получаем временную ссылку на скачивание файла от Telegram
+    console.log('[FIX_COMMAND] Шаг 2: Получение ссылки на файл от Telegram...');
+    const fileLink = await ctx.telegram.getFileLink(oldFileId);
+    console.log('[FIX_COMMAND] Шаг 2: Успех. Ссылка получена.');
+
+    // 3. Загружаем этот же файл обратно в наш канал-хранилище, но с правильным именем
+    const title = trackInfo.title;
+    console.log(`[FIX_COMMAND] Шаг 3: Перезагрузка в хранилище с именем "${title}.mp3"...`);
+    
+    // Проверяем, заканчивается ли title на .mp3 (без учета регистра)
+const cleanTitle = sanitizeFilename(title);
+const filename = cleanTitle.toLowerCase().endsWith('.mp3') 
+    ? cleanTitle 
+    : `${cleanTitle}.mp3`;
+
+const sentToStorage = await bot.telegram.sendAudio(
+  STORAGE_CHANNEL_ID,
+  { url: fileLink.href, filename: filename }, // <-- Используем нашу умную переменную
+  //...
+);
+    
+    const newFileId = sentToStorage?.audio?.file_id;
+    if (!newFileId) {
+        throw new Error('Не удалось получить новый file_id после загрузки в хранилище.');
+    }
+    console.log(`[FIX_COMMAND] Шаг 3: Успех. Новый file_id: ${newFileId}`);
+
+    // 4. Обновляем запись в базе данных
+    console.log('[FIX_COMMAND] Шаг 4: Обновление file_id в БД...');
+    const updatedCount = await updateFileId(oldFileId, newFileId);
+    console.log(`[FIX_COMMAND] Шаг 4: Успех. Обновлено строк: ${updatedCount}`);
+    
+    if (updatedCount > 0) {
+    await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, '✅ Готово! Файл в базе данных исправлен. Отправляю вам исправленную версию:');
+    
+    // ДОБАВЛЯЕМ ОТПРАВКУ ИСПРАВЛЕННОГО ФАЙЛА
+    await ctx.replyWithAudio(newFileId, {
+        title: trackInfo.title,
+        performer: trackInfo.artist
+    });
+    
+} else {
+        await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, '⚠️ Файл был перезалит, но что-то пошло не так при обновлении базы. Эффект может быть временным.');
+    }
+
+  } catch (error) {
+    console.error('❌ КРИТИЧЕСКАЯ ОШИБКА в команде /fix:', error);
+    if (statusMessage) {
+      await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, `❌ Произошла ошибка во время исправления. Подробности в логах сервера.`).catch(()=>{});
+    }
+  }
 });
 bot.command('admin', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;

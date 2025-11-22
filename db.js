@@ -313,8 +313,18 @@ export async function getPaginatedUsers(options) {
   else if (statusFilter === 'inactive') whereClauses.push('active = FALSE');
 
   // поиск
-  if (searchQuery) {
-    params.push(`%${searchQuery}%`);
+ if (searchQuery) {
+    // Очищаем запрос от лишних пробелов
+    let cleanQuery = searchQuery.trim();
+    
+    // Если запрос начинается с @, убираем этот символ для поиска по username
+    if (cleanQuery.startsWith('@')) {
+      cleanQuery = cleanQuery.substring(1);
+    }
+
+    params.push(`%${cleanQuery}%`);
+    
+    // Ищем совпадения по ID, Имени или Username (в Username уже без @)
     whereClauses.push(`(CAST(id AS TEXT) ILIKE $${i} OR first_name ILIKE $${i} OR username ILIKE $${i})`);
     i++;
   }
@@ -585,7 +595,7 @@ export async function findCachedTrack(trackUrl) {
       console.log(`[✓ Cache HIT] ${direct[0].title} (прямое совпадение)`);
       return {
         fileId: direct[0].file_id,
-        trackName: direct[0].title,
+        title: direct[0].title,
         artist: direct[0].artist,
         duration: direct[0].duration
       };
@@ -607,7 +617,7 @@ export async function findCachedTrack(trackUrl) {
       console.log(`[✓ Cache HIT] ${aliased[0].title} (через алиас)`);
       return {
         fileId: aliased[0].file_id,
-        trackName: aliased[0].title,
+        title: aliased[0].title,
         artist: aliased[0].artist,
         duration: aliased[0].duration
       };
@@ -677,7 +687,7 @@ export async function findCachedTrackByMeta({ title, artist, duration }) {
             console.log(`[✓ Cache HIT by Meta] ${rows[0].title} - ${rows[0].artist}`);
             return {
                 fileId: rows[0].file_id,
-                trackName: rows[0].title,
+                title: rows[0].title,
                 artist: rows[0].artist,
                 url: rows[0].url
             };
@@ -811,9 +821,12 @@ export async function getActiveUsersByDate() {
   return rows.reduce((acc, row) => ({ ...acc, [row.date]: parseInt(row.count, 10) }), {});
 }
 
+// =================================================================
+// ЗАМЕНИТЬ СУЩЕСТВУЮЩУЮ ФУНКЦИЮ getDownloadsByUserId В db.js
+// =================================================================
 export async function getDownloadsByUserId(userId, limit = 50) {
   const { rows } = await query(
-    `SELECT track_title, downloaded_at
+    `SELECT track_title, downloaded_at, url 
      FROM downloads_log
      WHERE user_id = $1
      ORDER BY downloaded_at DESC
@@ -1463,4 +1476,104 @@ export async function setAppSetting(key, value) {
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
     [key, value]
   );
+}
+// db.js
+
+/**
+ * Находит запись в кэше по file_id
+ */
+export async function findCachedTrackByFileId(fileId) {
+  try {
+    const { rows } = await query(
+      'SELECT url, title, artist FROM track_cache WHERE file_id = $1 LIMIT 1',
+      [fileId]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] Ошибка findCachedTrackByFileId:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Обновляет file_id для записи в кэше, найденной по старому file_id
+ */
+export async function updateFileId(oldFileId, newFileId) {
+  try {
+    const { rowCount } = await query(
+      'UPDATE track_cache SET file_id = $1 WHERE file_id = $2',
+      [newFileId, oldFileId]
+    );
+    return rowCount;
+  } catch (e) {
+    console.error('[DB] Ошибка updateFileId:', e.message);
+    return 0;
+  }
+}
+// db.js
+
+/**
+ * Получает все уникальные URL, которые когда-либо скачивал пользователь.
+ */
+export async function getUserUniqueDownloadedUrls(userId) {
+  try {
+    const { rows } = await query(
+      'SELECT DISTINCT url FROM downloads_log WHERE user_id = $1',
+      [userId]
+    );
+    // Возвращаем массив строк, а не объектов
+    return rows.map(row => row.url);
+  } catch (e) {
+    console.error(`[DB] Ошибка getUserUniqueDownloadedUrls для ${userId}:`, e.message);
+    return [];
+  }
+}
+export async function resetCacheForUserHistory(userId, beforeDate = '2024-11-17') {
+  try {
+    // 1. Находим уникальные URL, которые качал юзер до даты фикса
+    // 2. Обновляем таблицу track_cache, обнуляя file_id для этих URL
+    const sql = `
+      UPDATE track_cache
+      SET file_id = NULL
+      WHERE url IN (
+        SELECT DISTINCT url 
+        FROM downloads_log 
+        WHERE user_id = $1 
+          AND downloaded_at < $2::date
+      )
+      AND file_id IS NOT NULL
+    `;
+    
+    const { rowCount } = await query(sql, [userId, beforeDate]);
+    console.log(`[DB Fix] Пользователь ${userId}: сброшен кэш для ${rowCount} треков.`);
+    return rowCount;
+  } catch (e) {
+    console.error('[DB Fix Error]', e.message);
+    return 0;
+  }
+}
+export async function fixBadCacheForUser(userId, dateLimit) {
+  try {
+    // Если дата не передана, используем текущую (сброс всего прошлого)
+    const limit = dateLimit || new Date().toISOString().split('T')[0];
+
+    const sql = `
+      UPDATE track_cache
+      SET file_id = NULL
+      WHERE url IN (
+        SELECT DISTINCT url 
+        FROM downloads_log 
+        WHERE user_id = $1 
+          AND downloaded_at < $2::date
+      )
+      AND file_id IS NOT NULL
+    `;
+    
+    const { rowCount } = await query(sql, [userId, limit]);
+    console.log(`[DB Fix] User ${userId}: сброшен кэш для ${rowCount} треков (до ${limit}).`);
+    return rowCount;
+  } catch (e) {
+    console.error('[DB Fix Error]', e.message);
+    return 0;
+  }
 }

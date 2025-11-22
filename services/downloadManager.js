@@ -147,6 +147,7 @@ export async function trackDownloadProcessor(task) {
       throw new Error(`Не удалось получить полную ссылку на трек из метаданных. Получено: ${fullUrl}`);
     }
     
+<<<<<<< Updated upstream
     let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(fullUrl);
 if (cached?.fileId) {
   const options = { title: cached.title, performer: cached.artist };
@@ -156,6 +157,16 @@ if (cached?.fileId) {
   console.log(`[Enqueue/FastPath] ⚡ КЭШ ХИТ! Отправляю "${cached.title}"`);
   await bot.telegram.sendAudio(userId, cached.fileId, options);
   await incrementDownload(userId, cached.title, cached.fileId, url);
+=======
+    // ... в функции trackDownloadProcessor
+let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(fullUrl);
+
+// VVV--------- ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ ---------VVV
+if (cached?.fileId) {
+  console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.title}" из кэша.`);
+  await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist || uploader, duration: roundedDuration });
+  await incrementDownload(userId, cached.title, cached.fileId, cacheKey);
+>>>>>>> Stashed changes
   return;
 }
 
@@ -170,10 +181,10 @@ if (cached?.fileId) {
       try {
         console.log(`[Worker/Stream] Передаю поток в канал-хранилище...`);
         const sentToStorage = await bot.telegram.sendAudio(
-          STORAGE_CHANNEL_ID,
-          { source: stream },
-          { title, performer: uploader, duration: roundedDuration }
-        );
+  STORAGE_CHANNEL_ID,
+  { source: stream, filename: `${sanitizeFilename(title)}.mp3` }, // <--- ДОБАВЛЕНО
+  { title, performer: uploader, duration: roundedDuration }
+);
         finalFileId = sentToStorage?.audio?.file_id;
         console.log(`[Worker/Stream] ✅ Успешно. file_id получен.`);
       } catch (e) {
@@ -197,9 +208,17 @@ if (cached?.fileId) {
     } else {
       console.warn('[Worker] Канал-хранилище не настроен. Повторно открываю поток...');
       const userStream = await scdl.default.download(fullUrl); // <--- ПРАВИЛЬНЫЙ ВЫЗОВ
+<<<<<<< Updated upstream
       const sentMsg = await bot.telegram.sendAudio(userId, { source: userStream }, { title, performer: uploader, duration: roundedDuration });
       finalFileId = sentMsg?.audio?.file_id;
     }
+=======
+      const sentMsg = await bot.telegram.sendAudio(
+    userId, 
+    { source: userStream, filename: `${sanitizeFilename(title)}.mp3` }, // <--- ДОБАВЛЕНО
+    { title, performer: uploader, duration: roundedDuration }
+);
+>>>>>>> Stashed changes
 
     if (statusMessage) {
       await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
@@ -208,7 +227,7 @@ if (cached?.fileId) {
     if (finalFileId) {
       await incrementDownload(userId, title, finalFileId, task.originalUrl || fullUrl);
     }
-
+}
   } catch (err) {
     const errorDetails = err?.stderr || err?.message || 'Неизвестная ошибка';
     const trackTitle = task?.metadata?.title ? `: "${task.metadata.title}"` : '';
@@ -270,14 +289,15 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
 
         const { webpage_url: fullUrl, id } = metadata;
         const cacheKey = id ? `sc:${id}` : null;
-        const cached = await db.findCachedTrack(url) || await db.findCachedTrack(fullUrl) || (cacheKey && await db.findCachedTrack(cacheKey));
+        // ... в функции enqueue
+const cached = await db.findCachedTrack(url) || await db.findCachedTrack(fullUrl) || (cacheKey && await db.findCachedTrack(cacheKey));
 
-        if (cached?.fileId) {
-            console.log(`[Enqueue/FastPath] ⚡ КЭШ ХИТ! Отправляю "${cached.trackName}"`);
-            await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.trackName, performer: cached.artist });
-            await incrementDownload(userId, cached.trackName, cached.fileId, url);
-            return;
-        }
+if (cached?.fileId) {
+  console.log(`[Enqueue/FastPath] ⚡ КЭШ ХИТ! Отправляю "${cached.title}"`);
+  await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist });
+  await incrementDownload(userId, cached.title, cached.fileId, url);
+  return;
+}
 
         console.log('[Enqueue/FastPath] Кэш не найден. Ставлю задачу в очередь.');
         const task = { userId, url: fullUrl, originalUrl: url, source: 'soundcloud', cacheKey, metadata };
