@@ -255,9 +255,9 @@ bot.start(async (ctx) => {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.keyboard([
-            [T('menu'), T('upgrade')],
-            [T('mytracks'), T('help')]
-        ]).resize()
+    [T('menu'), '🆔 Распознать', T('upgrade')],
+    [T('mytracks'), T('help')]
+]).resize()
     });
 });
 
@@ -592,6 +592,7 @@ bot.hears(T('menu'), async (ctx) => {
     
     await ctx.reply(message, extraOptions);
 });
+bot.hears('🆔 Распознать', (ctx) => ctx.reply('Просто отправьте или перешлите мне:\n🎤 Голосовое сообщение\n📹 Видео-кружок\n🎧 Аудиофайл\n\n...и я скажу, что это за трек!'));
 bot.hears(T('mytracks'), async (ctx) => {
     try {
         const user = await getUser(ctx.from.id);
@@ -1068,34 +1069,36 @@ async function handleSoundCloudUrl(ctx, url) {
         }
     }
 }
-// --- SHAZAM HANDLER ---
+// ======================= SHAZAM HANDLER =======================
+
 const handleMediaForShazam = async (ctx) => {
     const message = ctx.message;
     let fileId = null;
 
-    // Поддерживаем разные типы медиа
+    // Проверяем типы файлов
     if (message.voice) fileId = message.voice.file_id;
-    else if (message.audio) fileId = message.audio.file_id;
     else if (message.video_note) fileId = message.video_note.file_id;
+    else if (message.audio) fileId = message.audio.file_id;
     else if (message.video) fileId = message.video.file_id;
     
+    // Если это просто файл без команды и не ГС - игнорируем (чтобы не мешать другим функциям)
+    // Но ГС и Кружочки обрабатываем всегда
     if (!fileId) return;
-
-    // Если это просто пересланное сообщение без явной команды, можно игнорировать,
-    // но лучше сделать кнопку "Распознать" или реагировать всегда.
-    // Сейчас реагируем всегда на ГС и кружочки.
     
-    // Для аудиофайлов (mp3) лучше реагировать только если есть капшн "/shazam" или если это ГС
-    if (message.audio && !message.caption?.includes('shazam')) return;
+    // Для обычных аудио/видео файлов реагируем только если это ответ на сообщение бота или явное желание
+    // (Опционально: можно убрать это условие, если хотите шазамить ВСЁ подряд)
+    const isVoiceOrNote = !!(message.voice || message.video_note);
+    if (!isVoiceOrNote && !message.caption?.toLowerCase().includes('shazam')) {
+        // Можно раскомментировать, если хотите, чтобы бот игнорировал просто присланные mp3 без подписи
+        // return; 
+    }
 
     let statusMsg;
     try {
         statusMsg = await ctx.reply('👂 Слушаю...');
-        
-        // Получаем ссылку от Телеграма
         const fileLink = await ctx.telegram.getFileLink(fileId);
         
-        // Отправляем в наш сервис
+        // 🚀 Запускаем Python-распознавание
         const result = await identifyTrack(fileLink.href);
         
         await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
@@ -1109,6 +1112,50 @@ const handleMediaForShazam = async (ctx) => {
             } else {
                 await ctx.reply(text, { parse_mode: 'HTML' });
             }
+
+            // 🤖 АВТО-ПОИСК ПО БАЗЕ
+            // Используем вашу функцию performInlineSearch
+            const searchResults = await performInlineSearch(query, ctx.from.id);
+            
+            let foundExact = false;
+            if (searchResults && searchResults.length > 0) {
+                // Проверяем первый результат на наличие file_id (значит он в кэше)
+                const bestMatch = searchResults[0];
+                if (bestMatch.audio_file_id) {
+                    await ctx.replyWithAudio(bestMatch.audio_file_id, {
+                        caption: `✅ <b>Нашел в кэше!</b> Держи:`,
+                        title: result.title,
+                        performer: result.artist,
+                        parse_mode: 'HTML'
+                    });
+                    await incrementDownloadsAndSaveTrack(ctx.from.id, result.title, bestMatch.audio_file_id, 'shazam_auto');
+                    foundExact = true;
+                }
+            }
+
+            if (!foundExact) {
+                await ctx.reply(`К сожалению, в кэше нет, но можно поискать:`, {
+                    reply_markup: {
+                        inline_keyboard: [[ 
+                            Markup.button.switchInlineQueryCurrentChat(query, `🔎 Найти: ${query}`) 
+                        ]]
+                    }
+                });
+            }
+
+        } else {
+            await ctx.reply('🤷‍♂️ Не удалось распознать. Попробуйте запись лучшего качества.');
+        }
+
+    } catch (e) {
+        console.error('[Shazam] Error:', e);
+        if (statusMsg) await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+        // Не спамим ошибкой пользователю, если это был случайный файл
+    }
+};
+
+// Подключаем обработчик ко всем медиа-типам
+bot.on(['voice', 'video_note', 'audio', 'video'], handleMediaForShazam);
 
             // Авто-поиск в нашей базе (используем ваш готовый performInlineSearch)
             const searchResults = await performInlineSearch(query, ctx.from.id);
