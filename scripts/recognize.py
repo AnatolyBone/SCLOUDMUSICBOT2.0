@@ -5,6 +5,7 @@ from shazamio import Shazam
 
 async def main():
     try:
+        # Читаем аргументы (путь к файлу)
         if len(sys.argv) < 2:
             print(json.dumps({"error": "No file path provided"}))
             return
@@ -12,14 +13,13 @@ async def main():
         file_path = sys.argv[1]
         shazam = Shazam()
         
-        # Распознаем трек
+        # Распознаем
         out = await shazam.recognize(file_path)
         
-        # Печатаем результат в stdout, чтобы Node.js его поймал
+        # Печатаем чистый JSON для Node.js
         print(json.dumps(out))
         
     except Exception as e:
-        # В случае ошибки тоже печатаем JSON
         print(json.dumps({"error": str(e)}))
 
 if __name__ == "__main__":
