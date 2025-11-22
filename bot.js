@@ -10,6 +10,7 @@ import { performInlineSearch } from './services/searchManager.js';
 import { spotifyEnqueue } from './services/spotifyManager.js';
 import { downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
+import { identifyTrack } from './services/shazamService.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
 
@@ -1067,6 +1068,92 @@ async function handleSoundCloudUrl(ctx, url) {
         }
     }
 }
+// --- SHAZAM HANDLER ---
+const handleMediaForShazam = async (ctx) => {
+    const message = ctx.message;
+    let fileId = null;
+
+    // Поддерживаем разные типы медиа
+    if (message.voice) fileId = message.voice.file_id;
+    else if (message.audio) fileId = message.audio.file_id;
+    else if (message.video_note) fileId = message.video_note.file_id;
+    else if (message.video) fileId = message.video.file_id;
+    
+    if (!fileId) return;
+
+    // Если это просто пересланное сообщение без явной команды, можно игнорировать,
+    // но лучше сделать кнопку "Распознать" или реагировать всегда.
+    // Сейчас реагируем всегда на ГС и кружочки.
+    
+    // Для аудиофайлов (mp3) лучше реагировать только если есть капшн "/shazam" или если это ГС
+    if (message.audio && !message.caption?.includes('shazam')) return;
+
+    let statusMsg;
+    try {
+        statusMsg = await ctx.reply('👂 Слушаю...');
+        
+        // Получаем ссылку от Телеграма
+        const fileLink = await ctx.telegram.getFileLink(fileId);
+        
+        // Отправляем в наш сервис
+        const result = await identifyTrack(fileLink.href);
+        
+        await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+
+        if (result) {
+            const query = `${result.artist} - ${result.title}`;
+            const text = `🎵 <b>Распознано:</b>\n\n🎤 <b>${result.artist}</b>\n🎼 <b>${result.title}</b>\n\n🔍 Ищу трек в базе...`;
+            
+            if (result.image) {
+                await ctx.replyWithPhoto(result.image, { caption: text, parse_mode: 'HTML' });
+            } else {
+                await ctx.reply(text, { parse_mode: 'HTML' });
+            }
+
+            // Авто-поиск в нашей базе (используем ваш готовый performInlineSearch)
+            const searchResults = await performInlineSearch(query, ctx.from.id);
+            
+            if (searchResults && searchResults.length > 0) {
+                // Если есть точное совпадение в кэше
+                const bestMatch = searchResults[0];
+                if (bestMatch.audio_file_id) {
+                    await ctx.replyWithAudio(bestMatch.audio_file_id, {
+                        caption: `✅ Нашел в кэше!`,
+                        title: result.title,
+                        performer: result.artist
+                    });
+                    await incrementDownloadsAndSaveTrack(ctx.from.id, result.title, bestMatch.audio_file_id, 'shazam_auto');
+                } else {
+                    // Если только внешний поиск
+                    await ctx.reply(`Нашел варианты! Нажми кнопку ниже:`, {
+                        reply_markup: {
+                            inline_keyboard: [[ Markup.button.switchInlineQueryCurrentChat(query) ]]
+                        }
+                    });
+                }
+            } else {
+                await ctx.reply(`К сожалению, скачать не удалось, но вот название. Попробуйте найти вручную:`, {
+                    reply_markup: {
+                        inline_keyboard: [[ Markup.button.switchInlineQueryCurrentChat(query) ]]
+                    }
+                });
+            }
+
+        } else {
+            await ctx.reply('🤷‍♂️ Не удалось распознать. Попробуйте запись лучшего качества.');
+        }
+
+    } catch (e) {
+        console.error('[Shazam Handler] Error:', e);
+        if (statusMsg) await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+        await ctx.reply('❌ Ошибка сервиса распознавания.');
+    }
+};
+
+// Вешаем обработчик на типы сообщений
+bot.on(['voice', 'video_note'], handleMediaForShazam);
+// Для аудио и видео тоже можно, но лучше по команде, чтобы не спамил
+// bot.on(['audio', 'video'], handleMediaForShazam); 
 bot.on('text', async (ctx) => {
                 // =====> ПРАВИЛЬНЫЙ ВАРИАНТ <=====
                 if (isShuttingDown()) { // ПРАВИЛЬНО: скобок нет
