@@ -41,7 +41,7 @@ export async function identifyTrack(fileLink) {
         await downloadFile(fileLink, tempFile);
         
         return await new Promise((resolve, reject) => {
-            const pythonProcess = spawn('python', [PYTHON_SCRIPT, tempFile]);
+            const pythonProcess = spawn('python3', [PYTHON_SCRIPT, tempFile]);
             
             let resultData = '';
             
