@@ -80,8 +80,4 @@ export async function spotifyEnqueue(ctx, userId, url) {
             await fs.unlink(tempFilePath).catch(e => console.error(`Не удалось удалить временный файл ${tempFilePath}`, e));
         }
     }
-<<<<<<< Updated upstream
 }
-=======
-}
->>>>>>> Stashed changes
