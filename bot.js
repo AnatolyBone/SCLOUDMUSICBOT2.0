@@ -268,9 +268,6 @@ function sanitizeFilename(name) {
 }
 // --- KARAOKE HANDLER ---
 bot.command('minus', async (ctx) => {
-    // Проверка прав (опционально, можно разрешить только админу или премиумам)
-    // if (ctx.from.id !== ADMIN_ID) return ctx.reply('Эта функция в разработке.');
-
     const reply = ctx.message.reply_to_message;
     if (!reply || (!reply.audio && !reply.voice)) {
         return ctx.reply('❌ Ответьте этой командой на аудиофайл или голосовое сообщение.');
@@ -278,21 +275,17 @@ bot.command('minus', async (ctx) => {
 
     const fileId = reply.audio ? reply.audio.file_id : reply.voice.file_id;
     
-    let statusMsg;
+    // Объявляем переменную ДО блока try
+    let statusMsg = null; 
+    
     try {
-        statusMsg = await ctx.reply('🔪 <b>Разделяю трек на музыку и голос...</b>\n⏳ Это займет 2-5 минут. Я пришлю файлы, когда закончу.', { parse_mode: 'HTML' });
+        statusMsg = await ctx.reply('🔪 <b>Разделяю трек...</b>\n⏳ Это займет 2-5 минут.', { parse_mode: 'HTML' });
         
-        // 1. Получаем ссылку на файл
         const fileLink = await ctx.telegram.getFileLink(fileId);
-        
-        // 2. Запускаем процесс (это долго, поэтому await тут задержит ответ)
-        // В идеале это нужно делать через очередь (как скачивание), но для теста сойдет так.
         const resultFiles = await processKaraoke(fileLink.href);
         
         await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
         
-        // 3. Скачиваем результаты (по ссылкам) и отправляем как документы
-        // Отправляем Минус
         if (resultFiles.Instrumental) {
              await ctx.replyWithAudio({ url: resultFiles.Instrumental }, { 
                  caption: '🎼 <b>Инструментал (Минус)</b>', 
@@ -302,7 +295,6 @@ bot.command('minus', async (ctx) => {
              });
         }
         
-        // Отправляем Голос (акапелла)
         if (resultFiles.Vocals) {
              await ctx.replyWithAudio({ url: resultFiles.Vocals }, { 
                  caption: '🎤 <b>Вокал (Акапелла)</b>', 
@@ -312,10 +304,11 @@ bot.command('minus', async (ctx) => {
              });
         }
 
-       } catch (e) {
+    } catch (e) {
         console.error('[Karaoke] Error:', e.message);
-        // Пробуем редактировать, если не получается - шлем новое сообщение
-        if (statusMessage) {
+        
+        // Безопасная обработка ошибки
+        if (statusMsg) {
             try {
                 await ctx.telegram.editMessageText(
                     ctx.chat.id, 
@@ -323,9 +316,8 @@ bot.command('minus', async (ctx) => {
                     undefined, 
                     '❌ Ошибка при обработке. Сервис перегружен или файл недоступен.'
                 );
-            } catch (editErr) {
-                // Если редактировать нельзя (например, удалено), шлем новое
-                await ctx.reply('❌ Ошибка при обработке. Попробуйте позже.');
+            } catch (err) {
+                await ctx.reply('❌ Ошибка при обработке.');
             }
         } else {
             await ctx.reply('❌ Ошибка при обработке.');
