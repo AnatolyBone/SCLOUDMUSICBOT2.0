@@ -505,7 +505,7 @@ bot.command('minus', async (ctx) => {
             const finalPerformer = cached.performer || displayPerformer;
 
             await ctx.replyWithAudio(cached.instrumental_file_id, {
-                caption: `🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Взято из базы (${matchType})</i>\n🤖 @${ctx.botInfo.username}`,
+                caption: `🎼 <b>Инструментал (Минус)</b> (${matchType})</i>\n @${ctx.botInfo.username}`,
                 parse_mode: 'HTML',
                 title: `${finalTitle} (Instrumental)`,
                 performer: finalPerformer
