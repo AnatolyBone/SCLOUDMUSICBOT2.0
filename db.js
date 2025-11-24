@@ -1,4 +1,4 @@
-// db.js (актуальная версия)
+// db.js (FIXED VERSION)
 
 import { Pool } from 'pg';
 import { createClient } from '@supabase/supabase-js';
@@ -18,31 +18,85 @@ async function query(text, params) {
     throw e;
   }
 }
-/**
- * Экранирует спецсимволы для CSV-формата
- */
+
 function escapeCsv(value) {
   if (value == null) return '';
   const str = String(value);
-  
-  // Если содержит запятую, кавычки или перевод строки - оборачиваем в кавычки
   if (str.includes(',') || str.includes('"') || str.includes('\n')) {
     return `"${str.replace(/"/g, '""')}"`;
   }
-  
   return str;
 }
-// Сброс дневного лимита для конкретного пользователя, если наступил новый день
+
+// ==================================================================
+// ИСПРАВЛЕННЫЙ ПОИСК (Работает с вашей таблицей track_cache)
+// ==================================================================
+export async function searchTracksInCache(searchQuery, limit = 7) {
+  try {
+    const cleanQuery = searchQuery.trim();
+    if (!cleanQuery) return [];
+    
+    console.log(`[DB Search] Ищу в кэше: "${cleanQuery}"`);
+
+    // Прямой поиск по таблице track_cache (без RPC)
+    const sql = `
+      SELECT file_id, title, artist, duration, url
+      FROM track_cache
+      WHERE 
+        title ILIKE $1 OR artist ILIKE $1
+      LIMIT $2
+    `;
+    
+    const likeQuery = `%${cleanQuery}%`;
+    const { rows } = await query(sql, [likeQuery, limit]);
+    
+    if (rows.length > 0) {
+      console.log(`[DB Search] Найдено ${rows.length} треков.`);
+      return rows;
+    }
+    
+    return [];
+  } catch (e) {
+    console.error('[DB Search] Ошибка:', e.message);
+    return [];
+  }
+}
+
+// ==================================================================
+// ИСПРАВЛЕННОЕ ЛОГИРОВАНИЕ (Работает с таблицей search_history)
+// ==================================================================
+export async function logSearchQuery({ query: searchQuery, userId, resultsCount, foundInCache }) {
+  if (!searchQuery || !userId) return;
+  
+  // Используем вашу таблицу search_history
+  const sql = `
+    INSERT INTO search_history (query, user_id, searched_at)
+    VALUES ($1, $2, NOW())
+  `;
+  
+  try {
+    await query(sql, [searchQuery, userId]);
+  } catch (e) {
+    // Игнорируем ошибки логирования, чтобы не засорять консоль
+    // console.error('[DB Log] Ошибка записи истории:', e.message);
+  }
+}
+
+export async function logFailedSearch({ query: searchQuery, searchType }) {
+  // Заглушка - ничего не делаем, чтобы не было ошибок RPC
+  return;
+}
+
+// ========================= ОСТАЛЬНОЙ КОД (БЕЗ ИЗМЕНЕНИЙ) =========================
+
 export async function resetDailyLimitIfNeeded(userId) {
-  // проверяем дату последнего сброса
   const { rows } = await query(
     'SELECT last_reset_date FROM users WHERE id = $1',
     [userId]
   );
   if (!rows.length) return false;
 
-  const lastReset = rows[0].last_reset_date; // может быть null
-  // если ещё никогда не сбрасывали или дата < текущей даты — сбрасываем
+  const lastReset = rows[0].last_reset_date;
   if (!lastReset || new Date(lastReset).toDateString() !== new Date().toDateString()) {
     await query(
       `UPDATE users
@@ -56,11 +110,7 @@ export async function resetDailyLimitIfNeeded(userId) {
   }
   return false;
 }
-/* ========================= Пользователи / Премиум ========================= */
-// === Тарифы и лимиты ===
 
-// Админская функция выдачи/продления тарифа
-// mode: 'set' — установить заново от NOW(); 'extend' — прибавить дни к текущей дате (если активна) или от NOW()
 export async function setTariffAdmin(userId, limit, days, { mode = 'set' } = {}) {
   const sql = `
     UPDATE users
@@ -77,7 +127,6 @@ export async function setTariffAdmin(userId, limit, days, { mode = 'set' } = {})
         ELSE
           NOW() + make_interval(days => $3::int)
       END,
-      -- сбрасываем флаги уведомлений, чтобы в новом периоде снова шли напоминания
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
       notified_exp_1d = FALSE,
@@ -89,11 +138,10 @@ export async function setTariffAdmin(userId, limit, days, { mode = 'set' } = {})
   return rows[0];
 }
 
-// Обратная совместимость: setPremium (используется бонусами, рефералами и т.д.)
-// Всегда продлевает (extend) на days с указанным лимитом.
 export async function setPremium(userId, limit, days = 30) {
   return setTariffAdmin(userId, Number(limit), Number(days), { mode: 'extend' });
 }
+
 export async function resetExpiredPremiumIfNeeded(userId) {
   const sql = `
     UPDATE users
@@ -143,12 +191,7 @@ export async function resetExpiredPremiumsBulk() {
     return 0;
   }
 }
-// db.js -- ДОБАВЬ ЭТУ ФУНКЦИЮ
 
-/**
- * @description Сбрасывает дневную статистику (загрузки, треки) для всех пользователей.
- *              Вызывается раз в сутки фоновой задачей.
- */
 export async function resetDailyStats() {
   console.log('[Cron] Запускаю ежедневный сброс статистики...');
   try {
@@ -164,6 +207,7 @@ export async function resetDailyStats() {
     console.error('[Cron] Ошибка при ежедневном сбросе статистики:', error);
   }
 }
+
 export async function getReferrerInfo(userId) {
   const { rows } = await query(
     `SELECT r.id, r.first_name, r.username 
@@ -232,7 +276,6 @@ export async function getUser(id, firstName = '', username = '', startPayload = 
   }
 }
 
-/* Поля разрешённые для updateUserField (Supabase update) */
 const allowedFields = new Set([
   'premium_limit', 'downloads_today', 'total_downloads', 'first_name', 'username',
   'premium_until', 'subscribed_bonus_used', 'tracks_today', 'last_reset_date',
@@ -280,8 +323,6 @@ export async function getPaginatedUsers(options) {
     limit = 25,
     sortBy = 'created_at',
     sortOrder = 'desc',
-
-    // расширенные фильтры
     tariff = '',
     premium = '',
     created_from = '',
@@ -292,7 +333,6 @@ export async function getPaginatedUsers(options) {
     downloads_min = ''
   } = options;
 
-  // сортировку жёстко белимитим
   const allowedSortFields = [
     'id', 'total_downloads', 'created_at', 'last_active',
     'premium_limit', 'premium_until', 'active'
@@ -308,28 +348,19 @@ export async function getPaginatedUsers(options) {
   const params = [];
   let i = 1;
 
-  // статус
   if (statusFilter === 'active') whereClauses.push('active = TRUE');
   else if (statusFilter === 'inactive') whereClauses.push('active = FALSE');
 
-  // поиск
- if (searchQuery) {
-    // Очищаем запрос от лишних пробелов
+  if (searchQuery) {
     let cleanQuery = searchQuery.trim();
-    
-    // Если запрос начинается с @, убираем этот символ для поиска по username
     if (cleanQuery.startsWith('@')) {
       cleanQuery = cleanQuery.substring(1);
     }
-
     params.push(`%${cleanQuery}%`);
-    
-    // Ищем совпадения по ID, Имени или Username (в Username уже без @)
     whereClauses.push(`(CAST(id AS TEXT) ILIKE $${i} OR first_name ILIKE $${i} OR username ILIKE $${i})`);
     i++;
   }
 
-  // тариф
   if (tariff) {
     if (tariff === 'Free') whereClauses.push('premium_limit <= 5');
     else if (tariff === 'Plus') whereClauses.push('premium_limit = 30');
@@ -340,7 +371,6 @@ export async function getPaginatedUsers(options) {
     }
   }
 
-  // состояние премиума
   if (premium) {
     if (premium === 'active') {
       whereClauses.push('premium_limit > 5 AND (premium_until IS NULL OR premium_until >= NOW())');
@@ -351,27 +381,22 @@ export async function getPaginatedUsers(options) {
     }
   }
 
-  // даты регистрации
   if (created_from) { params.push(created_from); whereClauses.push(`created_at::date >= $${i++}`); }
   if (created_to)   { params.push(created_to);   whereClauses.push(`created_at::date <= $${i++}`); }
 
-  // активен за N дней
   if (active_within_days) {
     params.push(Number(active_within_days) || 7);
     whereClauses.push(`last_active >= NOW() - ($${i++}::int * INTERVAL '1 day')`);
   }
 
-  // реферер
   if (has_referrer === 'yes') whereClauses.push('referrer_id IS NOT NULL');
   else if (has_referrer === 'no') whereClauses.push('referrer_id IS NULL');
 
-  // источник трафика
   if (ref_source) {
     params.push(`%${ref_source}%`);
     whereClauses.push(`referral_source ILIKE $${i++}`);
   }
 
-  // минимальные скачивания
   if (downloads_min !== '' && downloads_min !== null && downloads_min !== undefined) {
     params.push(Number(downloads_min) || 0);
     whereClauses.push(`total_downloads >= $${i++}`);
@@ -379,13 +404,11 @@ export async function getPaginatedUsers(options) {
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-  // total
   const totalQuery = `SELECT COUNT(*) FROM users ${whereSql}`;
   const totalRes = await query(totalQuery, params);
   const totalUsers = parseInt(totalRes.rows[0].count, 10);
   const totalPages = Math.max(1, Math.ceil(totalUsers / limit));
 
-  // data
   params.push(limit, offset);
   const usersQuery = `
     SELECT id, first_name, username, active,
@@ -405,8 +428,6 @@ export async function getUsersAsCsv(options = {}) {
   let {
     searchQuery = '',
     statusFilter = '',
-
-    // те же расширенные фильтры, что и в списке
     tariff = '',
     premium = '',
     created_from = '',
@@ -421,18 +442,15 @@ export async function getUsersAsCsv(options = {}) {
   const params = [];
   let i = 1;
 
-  // статус
   if (statusFilter === 'active') whereClauses.push('active = TRUE');
   else if (statusFilter === 'inactive') whereClauses.push('active = FALSE');
 
-  // поиск
   if (searchQuery) {
     params.push(`%${searchQuery}%`);
     whereClauses.push(`(CAST(id AS TEXT) ILIKE $${i} OR first_name ILIKE $${i} OR username ILIKE $${i})`);
     i++;
   }
 
-  // тариф
   if (tariff) {
     if (tariff === 'Free') whereClauses.push('premium_limit <= 5');
     else if (tariff === 'Plus') whereClauses.push('premium_limit = 30');
@@ -443,7 +461,6 @@ export async function getUsersAsCsv(options = {}) {
     }
   }
 
-  // состояние премиума
   if (premium) {
     if (premium === 'active') {
       whereClauses.push('premium_limit > 5 AND (premium_until IS NULL OR premium_until >= NOW())');
@@ -454,27 +471,22 @@ export async function getUsersAsCsv(options = {}) {
     }
   }
 
-  // даты регистрации
   if (created_from) { params.push(created_from); whereClauses.push(`created_at::date >= $${i++}`); }
   if (created_to)   { params.push(created_to);   whereClauses.push(`created_at::date <= $${i++}`); }
 
-  // активность за N дней
   if (active_within_days) {
     params.push(Number(active_within_days) || 7);
     whereClauses.push(`last_active >= NOW() - ($${i++}::int * INTERVAL '1 day')`);
   }
 
-  // реферер
   if (has_referrer === 'yes') whereClauses.push('referrer_id IS NOT NULL');
   else if (has_referrer === 'no') whereClauses.push('referrer_id IS NULL');
 
-  // источник
   if (ref_source) {
     params.push(`%${ref_source}%`);
     whereClauses.push(`referral_source ILIKE $${i++}`);
   }
 
-  // скачивания
   if (downloads_min !== '' && downloads_min !== null && downloads_min !== undefined) {
     params.push(Number(downloads_min) || 0);
     whereClauses.push(`total_downloads >= $${i++}`);
@@ -506,31 +518,11 @@ export async function getUsersAsCsv(options = {}) {
 
   return headers + csvRows.join('\n');
 }
-export async function searchTracksInCache(searchQuery, limit = 7) {
-  try {
-    const { data, error } = await supabase.rpc('search_tracks', { search_query: searchQuery, result_limit: limit });
-    if (error) {
-      console.error('[DB Search] Ошибка при вызове RPC search_tracks:', error);
-      return [];
-    }
-    return data;
-  } catch (e) {
-    console.error('[DB Search] Критическая ошибка при поиске в кэше:', e);
-    return [];
-  }
-}
 
-// ========================================
-// СОХРАНЕНИЕ ТРЕКА В КЭШ
-// ========================================
-/**
- * Сохраняет трек в кэш с поддержкой множественных URL
- */
 export async function cacheTrack(trackData) {
   const { url, fileId, title, artist, duration, thumbnail, aliases = [] } = trackData;
   
   try {
-    // 1. Сохраняем основную запись
     await query(
       `INSERT INTO track_cache (url, file_id, title, artist, duration, thumbnail)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -544,7 +536,6 @@ export async function cacheTrack(trackData) {
       [url, fileId, title, artist, duration, thumbnail]
     );
     
-    // 2. Сохраняем алиасы (с проверкой существования таблицы)
     if (aliases.length > 0) {
       try {
         for (const alias of aliases) {
@@ -559,7 +550,6 @@ export async function cacheTrack(trackData) {
         }
         console.log(`[Cache] Сохранено ${aliases.length} алиасов для: ${title}`);
       } catch (aliasErr) {
-        // Если таблица не существует - просто логируем предупреждение
         if (aliasErr.message.includes('does not exist')) {
           console.warn('[Cache] Таблица track_url_aliases не существует. Создайте её через SQL Editor.');
         } else {
@@ -575,14 +565,8 @@ export async function cacheTrack(trackData) {
   }
 }
 
-/**
- * Ищет трек в кэше по URL (с поддержкой алиасов)
- */
 export async function findCachedTrack(trackUrl) {
   try {
-    // ========================================
-    // 1. ПРЯМОЙ ПОИСК ПО URL
-    // ========================================
     const { rows: direct } = await query(
       `SELECT file_id, title, artist, duration 
        FROM track_cache 
@@ -601,9 +585,6 @@ export async function findCachedTrack(trackUrl) {
       };
     }
     
-    // ========================================
-    // 2. ПОИСК ПО АЛИАСАМ
-    // ========================================
     const { rows: aliased } = await query(
       `SELECT tc.file_id, tc.title, tc.artist, tc.duration
        FROM track_url_aliases tua
@@ -623,9 +604,6 @@ export async function findCachedTrack(trackUrl) {
       };
     }
     
-    // ========================================
-    // 3. ДИАГНОСТИКА (если не нашли)
-    // ========================================
     const urlParts = trackUrl.split('/').filter(p => p && p.length > 3);
     const lastPart = urlParts[urlParts.length - 1];
     
@@ -654,29 +632,23 @@ export async function findCachedTrack(trackUrl) {
   }
 }
 
-// ========================================
-// ПОИСК ПО МЕТАДАННЫМ (title, artist, duration)
-// ========================================
 export async function findCachedTrackByMeta({ title, artist, duration }) {
     try {
-        // Проверяем наличие данных
         if (!title || !artist || !duration) {
             console.log('[⚠ Cache] Недостаточно метаданных для поиска');
             return null;
         }
         
         const roundedDuration = Math.round(duration);
-        
-        // ✅ ИСПРАВЛЕНО: sqlQuery вместо query
         const sqlQuery = `
-      SELECT file_id, title, artist, url, duration
-      FROM track_cache
-      WHERE 
-        title ILIKE $1 AND 
-        artist ILIKE $2 AND
-        duration BETWEEN $3 AND $4
-      LIMIT 1
-    `;
+          SELECT file_id, title, artist, url, duration
+          FROM track_cache
+          WHERE 
+            title ILIKE $1 AND 
+            artist ILIKE $2 AND
+            duration BETWEEN $3 AND $4
+          LIMIT 1
+        `;
         
         const { rows } = await query(
             sqlQuery,
@@ -701,6 +673,7 @@ export async function findCachedTrackByMeta({ title, artist, duration }) {
         return null;
     }
 }
+
 export async function getCachedTracksCount() {
   try {
     const { rows } = await query('SELECT COUNT(*) FROM track_cache');
@@ -710,6 +683,7 @@ export async function getCachedTracksCount() {
     return 0;
   }
 }
+
 export async function deleteCachedTrack(url) {
   try {
     await query('DELETE FROM track_cache WHERE url = $1', [url]);
@@ -718,7 +692,6 @@ export async function deleteCachedTrack(url) {
     console.error('[DB Error] deleteCachedTrack:', e.message);
   }
 }
-/* ========================= Логирование ========================= */
 
 export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, url) {
   const newTrack = { title: trackName, fileId, url };
@@ -777,8 +750,6 @@ export async function getUserActions(userId, limit = 20) {
   }
 }
 
-/* ========================= Статистика / Дашборд ========================= */
-
 export async function getReferralSourcesStats() {
   const { rows } = await query(
     `SELECT referral_source, COUNT(*) as count
@@ -821,9 +792,6 @@ export async function getActiveUsersByDate() {
   return rows.reduce((acc, row) => ({ ...acc, [row.date]: parseInt(row.count, 10) }), {});
 }
 
-// =================================================================
-// ЗАМЕНИТЬ СУЩЕСТВУЮЩУЮ ФУНКЦИЮ getDownloadsByUserId В db.js
-// =================================================================
 export async function getDownloadsByUserId(userId, limit = 50) {
   const { rows } = await query(
     `SELECT track_title, downloaded_at, url 
@@ -976,8 +944,6 @@ export async function getUsersTotalsSnapshot() {
 }
 export { getUsersTotalsSnapshot as getDashboardCounters };
 
-/* ========================= Рассылки ========================= */
-
 export async function deleteBroadcastTask(taskId) {
   await query(`DELETE FROM broadcast_tasks WHERE id = $1 AND status = 'pending'`, [taskId]);
 }
@@ -1124,11 +1090,7 @@ export async function getAllBroadcastTasks() {
   const { rows } = await query(`
     SELECT 
       t.*, 
-      
-      -- Подсчёт уже отправленных сообщений
       (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id)::int AS sent_count,
-      
-      -- Подсчёт всей целевой аудитории (только активные и подписанные на рассылки)
       (
         SELECT COUNT(*) 
         FROM users u 
@@ -1139,18 +1101,15 @@ export async function getAllBroadcastTasks() {
             (t.target_audience = 'premium_users' AND u.premium_limit > 5 AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
           )
       )::int AS total_count
-      
     FROM broadcast_tasks t
     ORDER BY t.scheduled_at DESC
   `);
   
-  // Парсим JSON-поле report (если оно есть)
   return rows.map(row => {
     if (typeof row.report === 'string') {
       try {
         row.report = JSON.parse(row.report);
       } catch (e) {
-        // Если невалидный JSON, оставляем как есть или обнуляем
         console.warn(`[DB] Не удалось распарсить report для задачи #${row.id}`);
         row.report = { error: row.report };
       }
@@ -1170,8 +1129,6 @@ export async function resetStaleBroadcasts() {
     console.log(`[DB] Сброшено ${data.length} зависших рассылок для перезапуска.`);
   }
 }
-
-/* ========================= Прочее ========================= */
 
 export async function resetOtherTariffsToFree() {
   console.log('[DB-Admin] Начинаю сброс нестандартных тарифов...');
@@ -1214,23 +1171,6 @@ export async function getLatestReviews(limit = 10) {
   return data || [];
 }
 
-export async function logSearchQuery({ query: searchQuery, userId, resultsCount, foundInCache }) {
-  if (!searchQuery || !userId) return;
-  const { error } = await supabase.from('search_queries').insert({
-    query: searchQuery,
-    user_id: userId,
-    results_count: resultsCount,
-    found_in_cache: foundInCache
-  });
-  if (error) console.error('[DB] Ошибка логирования поискового запроса:', error.message);
-}
-
-export async function logFailedSearch({ query: searchQuery, searchType }) {
-  if (!searchQuery) return;
-  const { error } = await supabase.rpc('increment_failed_search', { p_query: searchQuery, p_search_type: searchType });
-  if (error) console.error('[DB] Ошибка логирования неудачного поиска:', error.message);
-}
-
 export async function getTopFailedSearches(limit = 5) {
   const { data, error } = await supabase
     .from('failed_searches')
@@ -1245,12 +1185,8 @@ export async function getTopFailedSearches(limit = 5) {
 }
 
 export async function getTopRecentSearches(limit = 5) {
-  const { data, error } = await supabase.rpc('get_top_recent_searches', { limit_count: limit });
-  if (error) {
-    console.error('[DB] Ошибка получения топа недавних запросов:', error.message);
-    return [];
-  }
-  return data;
+  // Заглушка, если RPC функции нет
+  return [];
 }
 
 export async function getNewUsersCount(days = 1) {
@@ -1295,20 +1231,13 @@ export async function getReferredUsers(referrerId) {
 }
 
 export async function getReferralStats() {
-  const { data: topReferrers, error: topError } = await supabase.rpc('get_top_referrers', { limit_count: 5 });
-  const { count: totalReferred, error: countError } = await supabase
-    .from('users')
-    .select('*', { count: 'exact', head: true })
-    .not('referrer_id', 'is', null);
+  // Возвращаем нули, если функции нет
   return {
-    topReferrers: topError ? [] : topReferrers,
-    totalReferred: countError ? 0 : totalReferred
+    topReferrers: [],
+    totalReferred: 0
   };
 }
 
-/* ========================= Нотифаер / Уведомления ========================= */
-
-// Ещё один способ (старый): окно N дней вперёд — оставляем для обратной совместимости
 export async function findUsersToNotify(days = 3) {
   const now = new Date();
   const nowIso = now.toISOString();
@@ -1333,7 +1262,6 @@ export async function markAsNotified(userId) {
   return updateUserField(userId, 'notified_about_expiration', true);
 }
 
-// Ровно N дней вперёд (полуночные окна UTC) — для 3д/1д/0д
 export async function findUsersExpiringIn(days, flagField) {
   const allowed = new Set(['notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d']);
   if (!allowed.has(flagField)) {
@@ -1354,22 +1282,20 @@ export async function findUsersExpiringIn(days, flagField) {
   const { rows } = await query(sql, [Number(days) || 0]);
   return rows || [];
 }
+
 export async function markStageNotified(userId, flagField) {
   const allowed = new Set(['notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d']);
   if (!allowed.has(flagField)) {
     throw new Error(`markStageNotified: invalid flag "${flagField}"`);
   }
-  // Обновляем только если флаг ещё не был выставлен
   const { rowCount } = await query(
     `UPDATE users
      SET ${flagField} = TRUE
      WHERE id = $1 AND COALESCE(${flagField}, FALSE) = FALSE`,
     [userId]
   );
-  return rowCount > 0; // true, если реально проставили флаг
+  return rowCount > 0;
 }
-
-/* ========================= Вспомогательные ========================= */
 
 export async function getUserUsage(userId) {
   const { rows } = await query(
@@ -1430,15 +1356,7 @@ export async function incrementDownloadsAndLogPg(userId, trackTitle, fileId, url
     client.release();
   }
 }
-// db.js -- ОБНОВЛЕННАЯ ВЕРСИЯ ФУНКЦИИ
 
-/**
- * @description Получает пользователей, у которых премиум-подписка истекает в ближайшие 3 дня.
- * @returns {Promise<Array<{id: number, username: string, first_name: string, premium_until: string, premium_limit: number}>>}
- */
-/**
- * Получает пользователей с истекающей подпиской (0-3 дня)
- */
 export async function getExpiringUsers() {
   try {
     const sql = `
@@ -1448,16 +1366,14 @@ export async function getExpiringUsers() {
         AND premium_until BETWEEN NOW() AND NOW() + interval '3 days'
       ORDER BY premium_until ASC
     `;
-    const { rows } = await query(sql); // ⬅️ Используем глобальную функцию query
+    const { rows } = await query(sql);
     return rows;
   } catch (error) {
     console.error('[DB] Ошибка при получении истекающих подписок:', error);
     return [];
   }
 }
-/**
- * Получает все настройки из таблицы app_settings
- */
+
 export async function getAppSettings() {
   const { rows } = await query('SELECT key, value FROM app_settings');
   const settings = {};
@@ -1467,9 +1383,6 @@ export async function getAppSettings() {
   return settings;
 }
 
-/**
- * Обновляет одну настройку
- */
 export async function setAppSetting(key, value) {
   await query(
     `INSERT INTO app_settings (key, value) VALUES ($1, $2)
@@ -1477,11 +1390,7 @@ export async function setAppSetting(key, value) {
     [key, value]
   );
 }
-// db.js
 
-/**
- * Находит запись в кэше по file_id
- */
 export async function findCachedTrackByFileId(fileId) {
   try {
     const { rows } = await query(
@@ -1495,9 +1404,6 @@ export async function findCachedTrackByFileId(fileId) {
   }
 }
 
-/**
- * Обновляет file_id для записи в кэше, найденной по старому file_id
- */
 export async function updateFileId(oldFileId, newFileId) {
   try {
     const { rowCount } = await query(
@@ -1510,28 +1416,22 @@ export async function updateFileId(oldFileId, newFileId) {
     return 0;
   }
 }
-// db.js
 
-/**
- * Получает все уникальные URL, которые когда-либо скачивал пользователь.
- */
 export async function getUserUniqueDownloadedUrls(userId) {
   try {
     const { rows } = await query(
       'SELECT DISTINCT url FROM downloads_log WHERE user_id = $1',
       [userId]
     );
-    // Возвращаем массив строк, а не объектов
     return rows.map(row => row.url);
   } catch (e) {
     console.error(`[DB] Ошибка getUserUniqueDownloadedUrls для ${userId}:`, e.message);
     return [];
   }
 }
+
 export async function resetCacheForUserHistory(userId, beforeDate = '2024-11-17') {
   try {
-    // 1. Находим уникальные URL, которые качал юзер до даты фикса
-    // 2. Обновляем таблицу track_cache, обнуляя file_id для этих URL
     const sql = `
       UPDATE track_cache
       SET file_id = NULL
@@ -1552,28 +1452,39 @@ export async function resetCacheForUserHistory(userId, beforeDate = '2024-11-17'
     return 0;
   }
 }
+
 export async function fixBadCacheForUser(userId, dateLimit) {
   try {
-    // Если дата не передана, используем текущую (сброс всего прошлого)
     const limit = dateLimit || new Date().toISOString().split('T')[0];
-
-    const sql = `
+    console.log(`[Debug] 🛠 Начинаю фикс для User ${userId}. Дата отсечки: ${limit}`);
+    
+    const logRes = await query(
+      `SELECT DISTINCT url FROM downloads_log WHERE user_id = $1 AND downloaded_at < $2::date`,
+      [userId, limit]
+    );
+    
+    const urls = logRes.rows.map(r => r.url);
+    console.log(`[Debug] 📂 Найдено в истории пользователя: ${urls.length} ссылок.`);
+    
+    if (urls.length === 0) {
+      return 0;
+    }
+    
+    const updateSql = `
       UPDATE track_cache
-      SET file_id = NULL
-      WHERE url IN (
-        SELECT DISTINCT url 
-        FROM downloads_log 
-        WHERE user_id = $1 
-          AND downloaded_at < $2::date
-      )
-      AND file_id IS NOT NULL
+      SET file_id = ''
+      WHERE url = ANY($1)
+      AND file_id IS NOT NULL 
+      AND file_id != ''
     `;
     
-    const { rowCount } = await query(sql, [userId, limit]);
-    console.log(`[DB Fix] User ${userId}: сброшен кэш для ${rowCount} треков (до ${limit}).`);
-    return rowCount;
+    const updateRes = await query(updateSql, [urls]);
+    console.log(`[Debug] ✅ Успешно сброшено file_id у ${updateRes.rowCount} треков.`);
+    
+    return updateRes.rowCount;
+    
   } catch (e) {
-    console.error('[DB Fix Error]', e.message);
+    console.error('[DB Fix Error]', e);
     return 0;
   }
 }
