@@ -277,7 +277,55 @@ function sanitizeFilename(name) {
 
 // --- KARAOKE HANDLER ---
 // --- ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ---
-let isAdminUploadMode = false; // По умолчанию режим выключен
+let isAdminUploadMode = false;
+const uploadQueue = []; // Очередь файлов для загрузки
+let isUploading = false; // Флаг: работает ли сейчас обработчик
+async function processUploadQueue(ctx) {
+    if (isUploading || uploadQueue.length === 0) return;
+    isUploading = true;
+
+    while (uploadQueue.length > 0) {
+        const task = uploadQueue.shift(); // Берем первый файл
+        const { audio, performer, title } = task;
+
+        try {
+            // 1. Отправляем в канал-хранилище
+            const msg = await ctx.telegram.sendAudio(STORAGE_CHANNEL_ID, audio.file_id, {
+                caption: `#manual_upload\n${performer} - ${title}`,
+                title: `${title} (Instrumental)`,
+                performer: performer
+            });
+
+            // 2. Сохраняем в БД
+            await saveKaraokeCache(
+                audio.file_unique_id, 
+                msg.audio.file_id, 
+                null, 
+                performer, 
+                title
+            );
+            
+            console.log(`[Upload] Saved: ${title}`);
+
+        } catch (e) {
+            console.error(`[Upload Error] Failed ${title}:`, e.message);
+            
+            // Если словили лимит (429), ждем и пробуем снова
+            if (e.description && e.description.includes('Too Many Requests')) {
+                const waitTime = (e.parameters?.retry_after || 10) * 1000;
+                console.log(`[Upload] Rate limit hit. Waiting ${waitTime/1000}s...`);
+                uploadQueue.unshift(task); // Возвращаем задачу в начало
+                await new Promise(r => setTimeout(r, waitTime + 1000));
+            }
+        }
+
+        // ПАУЗА МЕЖДУ ФАЙЛАМИ (3 секунды), чтобы не злить Телеграм
+        await new Promise(r => setTimeout(r, 3000));
+    }
+
+    isUploading = false;
+    await ctx.telegram.sendMessage(ADMIN_ID, '✅ <b>Очередь загрузки завершена!</b>', { parse_mode: 'HTML' });
+}
 
 // --- КОМАНДЫ ВКЛЮЧЕНИЯ/ВЫКЛЮЧЕНИЯ ---
 
@@ -297,67 +345,45 @@ bot.command('upload_off', async (ctx) => {
 });
 
 
-// --- СПЕЦИАЛЬНЫЙ ОБРАБОТЧИК (Вместо того, что был раньше) ---
-// Вставь этот блок ВМЕСТО строки: bot.on(['voice', ...], handleMediaForShazam);
-
+// === СПЕЦИАЛЬНЫЙ ОБРАБОТЧИК ЗАГРУЗКИ ===
 bot.on(['voice', 'video_note', 'audio', 'video'], async (ctx, next) => {
     
-    // 1. ЕСЛИ РЕЖИМ ЗАГРУЗКИ ВКЛЮЧЕН И ЭТО АДМИН
+    // 1. РЕЖИМ ЗАГРУЗКИ (АДМИН)
     if (isAdminUploadMode && String(ctx.from.id) === String(ADMIN_ID)) {
-        
         const audio = ctx.message.audio || ctx.message.voice;
-        if (!audio) return; // На всякий случай
+        if (!audio) return;
 
-        try {
-            // Определяем Исполнителя и Название
-            let performer = audio.performer || 'Unknown Artist';
-            let title = audio.title || (audio.file_name ? path.parse(audio.file_name).name : 'Unknown Track');
+        // Чистим название
+        let performer = audio.performer || 'Unknown Artist';
+        let title = audio.title || (audio.file_name ? path.parse(audio.file_name).name : 'Unknown Track');
 
-            // --- ЧИСТКА НАЗВАНИЯ ---
-            // Убираем мусор типа (Instrumental), чтобы база была чистой
-            title = title
-                .replace(/\(Instrumental\)/gi, '')
-                .replace(/\(Minus\)/gi, '')
-                .replace(/\(Karaoke\)/gi, '')
-                .replace(/Instrumental/gi, '')
-                .replace(/Minus/gi, '')
-                .trim()
-                .replace(/^-+|-+$/g, '').trim(); // Убираем лишние дефисы по краям
+        title = title
+            .replace(/\(Instrumental\)/gi, '')
+            .replace(/\(Minus\)/gi, '')
+            .replace(/\(Karaoke\)/gi, '')
+            .replace(/Instrumental/gi, '')
+            .replace(/Minus/gi, '')
+            .replace(/_/g, ' ') // Заменяем нижние подчеркивания на пробелы
+            .trim()
+            .replace(/^-+|-+$/g, '').trim();
 
-            if (STORAGE_CHANNEL_ID) {
-                // 1. Пересылаем в канал-хранилище
-                const msg = await ctx.telegram.sendAudio(STORAGE_CHANNEL_ID, audio.file_id, {
-                    caption: `#manual_upload\n${performer} - ${title}`,
-                    title: `${title} (Instrumental)`, // Добавляем красоту для плеера
-                    performer: performer
-                });
-
-                // 2. Сохраняем в БД
-                // uniqueId берем от исходного файла, чтобы если что найти его
-                await saveKaraokeCache(
-                    audio.file_unique_id, 
-                    msg.audio.file_id, 
-                    null, 
-                    performer, 
-                    title
-                );
-
-                // Подтверждаем (можно убрать, если мешает при масс-загрузке)
-                await ctx.reply(`💾 Сохранено: <b>${performer} - ${title}</b>`, { parse_mode: 'HTML' });
-            } else {
-                await ctx.reply('❌ Ошибка: Не настроен STORAGE_CHANNEL_ID');
-            }
-
-        } catch (e) {
-            console.error('[Upload Mode Error]', e);
-            await ctx.reply(`❌ Ошибка с файлом: ${e.message}`);
+        // === ДОБАВЛЯЕМ В ОЧЕРЕДЬ ===
+        uploadQueue.push({ audio, performer, title });
+        
+        // Запускаем процессор, если он стоит
+        if (!isUploading) {
+            // Запускаем без await, чтобы бот не вис
+            processUploadQueue(ctx);
         }
 
-        // ВАЖНО: return прерывает цепочку. Шазам НЕ сработает.
-        return;
+        // НЕ ОТВЕЧАЕМ НА КАЖДОЕ СООБЩЕНИЕ (чтобы не спамить самому себе)
+        // Можно просто ничего не делать, или логировать в консоль
+        console.log(`[Queue] Added: ${title}. Size: ${uploadQueue.length}`);
+
+        return; // Прерываем
     }
 
-    // 2. ЕСЛИ РЕЖИМ ВЫКЛЮЧЕН — РАБОТАЕМ КАК ОБЫЧНО (Shazam)
+    // 2. ОБЫЧНЫЙ РЕЖИМ
     return handleMediaForShazam(ctx, next);
 });
 // Команда: /findminus Linkin Park
