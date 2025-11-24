@@ -28,33 +28,34 @@ async function downloadToTemp(url) {
 async function createTask(filePath) {
     const form = new FormData();
     form.append('audio_file', fs.createReadStream(filePath));
-    // 'bs_roformer' - одна из лучших моделей для вокала сейчас
-    // Можно поменять на 'demucs4_ht'
     form.append('sep_type', 'bs_roformer'); 
-    form.append('is_demo', '0'); // 0 - полная версия
+    form.append('is_demo', '0');
 
     const headers = {
         ...form.getHeaders(),
         'Authorization': `Bearer ${MVSEP_API_KEY}`
     };
 
-    const res = await axios.post(`${BASE_URL}/separation`, form, { headers });
-    if (res.data && res.data.success) {
-        return res.data.hash; // ID задачи
-    } else {
-        throw new Error(res.data.message || 'Ошибка загрузки на MVSEP');
+    try { // <--- ВОТ ЭТО БЫЛО ПРОПУЩЕНО
+        const res = await axios.post(`${BASE_URL}/separation`, form, { headers });
+        
+        if (res.data && res.data.success) {
+            return res.data.hash;
+        } else {
+            throw new Error(res.data.message || 'Ошибка загрузки на MVSEP');
         }
     } catch (error) {
-        // Логируем детальную ошибку от axios
         if (error.response) {
             console.error('[MVSEP API Error]', error.response.status, error.response.data);
+            throw new Error(`MVSEP Error: ${JSON.stringify(error.response.data)}`);
         }
         throw error;
     }
+}
 
 // 3. Проверка статуса (Polling)
 async function waitForResult(hash) {
-    const maxAttempts = 60; // Ждем максимум 5-10 минут (60 * 5-10 сек)
+    const maxAttempts = 60; 
     let attempts = 0;
 
     while (attempts < maxAttempts) {
@@ -66,14 +67,13 @@ async function waitForResult(hash) {
         const data = res.data;
         
         if (data.status === 'done') {
-            return data.files; // { "Vocals": "url...", "Instrumental": "url..." }
+            return data.files; 
         }
         
         if (data.status === 'error') {
             throw new Error('Ошибка обработки на стороне MVSEP');
         }
 
-        // Ждем 10 секунд перед следующей проверкой
         await new Promise(r => setTimeout(r, 10000));
         attempts++;
     }
@@ -84,20 +84,14 @@ async function waitForResult(hash) {
 export async function processKaraoke(fileUrl) {
     let tempFile = null;
     try {
-        // 1. Скачиваем
         tempFile = await downloadToTemp(fileUrl);
-        
-        // 2. Загружаем на сервис
         const hash = await createTask(tempFile);
         
-        // Удаляем локальный файл, он больше не нужен
         fs.unlink(tempFile, () => {});
         tempFile = null;
 
-        // 3. Ждем результат
         const files = await waitForResult(hash);
-        
-        return files; // Объект со ссылками
+        return files;
     } catch (e) {
         if (tempFile && fs.existsSync(tempFile)) fs.unlink(tempFile, () => {});
         throw e;
