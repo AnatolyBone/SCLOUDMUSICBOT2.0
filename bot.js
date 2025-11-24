@@ -10,6 +10,7 @@ import { performInlineSearch } from './services/searchManager.js';
 import { spotifyEnqueue } from './services/spotifyManager.js';
 import { downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
+import { processKaraoke } from './services/karaokeService.js';
 import { identifyTrack } from './services/shazamService.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
@@ -265,7 +266,57 @@ function sanitizeFilename(name) {
   if (!name || typeof name !== 'string') return 'track';
   return name.replace(/[<>:"/\\|?*]+/g, '').trim() || 'track';
 }
-// bot.js
+// --- KARAOKE HANDLER ---
+bot.command('minus', async (ctx) => {
+    // Проверка прав (опционально, можно разрешить только админу или премиумам)
+    // if (ctx.from.id !== ADMIN_ID) return ctx.reply('Эта функция в разработке.');
+
+    const reply = ctx.message.reply_to_message;
+    if (!reply || (!reply.audio && !reply.voice)) {
+        return ctx.reply('❌ Ответьте этой командой на аудиофайл или голосовое сообщение.');
+    }
+
+    const fileId = reply.audio ? reply.audio.file_id : reply.voice.file_id;
+    
+    let statusMsg;
+    try {
+        statusMsg = await ctx.reply('🔪 <b>Разделяю трек на музыку и голос...</b>\n⏳ Это займет 2-5 минут. Я пришлю файлы, когда закончу.', { parse_mode: 'HTML' });
+        
+        // 1. Получаем ссылку на файл
+        const fileLink = await ctx.telegram.getFileLink(fileId);
+        
+        // 2. Запускаем процесс (это долго, поэтому await тут задержит ответ)
+        // В идеале это нужно делать через очередь (как скачивание), но для теста сойдет так.
+        const resultFiles = await processKaraoke(fileLink.href);
+        
+        await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+        
+        // 3. Скачиваем результаты (по ссылкам) и отправляем как документы
+        // Отправляем Минус
+        if (resultFiles.Instrumental) {
+             await ctx.replyWithAudio({ url: resultFiles.Instrumental }, { 
+                 caption: '🎼 <b>Инструментал (Минус)</b>', 
+                 parse_mode: 'HTML',
+                 title: (reply.audio?.title || 'Track') + ' (Instrumental)',
+                 performer: reply.audio?.performer
+             });
+        }
+        
+        // Отправляем Голос (акапелла)
+        if (resultFiles.Vocals) {
+             await ctx.replyWithAudio({ url: resultFiles.Vocals }, { 
+                 caption: '🎤 <b>Вокал (Акапелла)</b>', 
+                 parse_mode: 'HTML',
+                 title: (reply.audio?.title || 'Track') + ' (Vocals)',
+                 performer: reply.audio?.performer
+             });
+        }
+
+    } catch (e) {
+        console.error('[Karaoke] Error:', e.message);
+        if (statusMsg) await ctx.editMessageText('❌ Ошибка при обработке. Возможно, файл слишком большой или сервис перегружен.');
+    }
+});
 
 bot.command('fixuser', async (ctx) => {
   // 1. Проверяем, что это админ
