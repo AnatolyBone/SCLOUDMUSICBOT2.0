@@ -13,7 +13,7 @@ import axios from 'axios';
 
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
 import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount, findCachedTrack,
-    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, getKaraokeCache, saveKaraokeCache, findKaraokeByMetadata, searchKaraoke, updateFileId } from './db.js';
+    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, getKaraokeCache, saveKaraokeCache, findKaraokeByMetadata, searchKaraoke, findKaraokeFuzzy, updateFileId } from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
 import { spotifyEnqueue } from './services/spotifyManager.js';
