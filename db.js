@@ -1613,22 +1613,64 @@ export async function getKaraokeCache(uniqueId) {
   }
 }
 
-// Сохранить запись в кэш
-export async function saveKaraokeCache(uniqueId, instrumentalId, vocalsId) {
+// 1. Сохраняем минус с названием и исполнителем
+export async function saveKaraokeCache(uniqueId, instrumentalId, vocalsId, performer = null, title = null) {
   try {
+    // Очищаем строки и приводим к нижнему регистру для поиска
+    const p = performer ? performer.trim() : null;
+    const t = title ? title.trim() : null;
+
     await pool.query(
-      `INSERT INTO karaoke_cache (file_unique_id, instrumental_file_id, vocals_file_id)
-       VALUES ($1, $2, $3)
+      `INSERT INTO karaoke_cache (file_unique_id, instrumental_file_id, vocals_file_id, performer, title)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (file_unique_id) DO UPDATE 
        SET instrumental_file_id = EXCLUDED.instrumental_file_id, 
            vocals_file_id = EXCLUDED.vocals_file_id,
+           performer = COALESCE(EXCLUDED.performer, karaoke_cache.performer),
+           title = COALESCE(EXCLUDED.title, karaoke_cache.title),
            created_at = NOW()`,
-      [uniqueId, instrumentalId, vocalsId]
+      [uniqueId, instrumentalId, vocalsId, p, t]
     );
-    console.log(`[DB] Saved karaoke cache for ${uniqueId}`);
+    console.log(`[DB] Saved cache: ${t} by ${p}`);
   } catch (e) {
     console.error('[DB] saveKaraokeCache error:', e.message);
   }
+}
+
+// 2. УМНЫЙ ПОИСК (Ищем по Исполнителю и Названию)
+export async function findKaraokeByMetadata(performer, title) {
+    if (!performer || !title) return null;
+    try {
+        // Используем ILIKE для поиска без учета регистра (Kygo = kygo)
+        const res = await pool.query(
+            `SELECT * FROM karaoke_cache 
+             WHERE performer ILIKE $1 AND title ILIKE $2 
+             AND instrumental_file_id IS NOT NULL 
+             LIMIT 1`,
+            [performer.trim(), title.trim()]
+        );
+        return res.rows[0];
+    } catch (e) {
+        console.error('[DB] findKaraokeByMetadata error:', e.message);
+        return null;
+    }
+}
+
+// 3. Поиск для ручной команды /findminus (частичное совпадение)
+export async function searchKaraoke(query) {
+    try {
+        const likeQuery = `%${query}%`;
+        const res = await pool.query(
+            `SELECT * FROM karaoke_cache 
+             WHERE (title ILIKE $1 OR performer ILIKE $1)
+             AND instrumental_file_id IS NOT NULL 
+             LIMIT 10`,
+            [likeQuery]
+        );
+        return res.rows;
+    } catch (e) {
+        return [];
+    }
 }
 export async function fixBadCacheForUser(userId, dateLimit) {
   try {
