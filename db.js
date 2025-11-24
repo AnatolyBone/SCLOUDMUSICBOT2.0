@@ -1600,7 +1600,36 @@ export async function resetCacheForUserHistory(userId, beforeDate = '2024-11-17'
 // =================================================================
 // ЗАМЕНИТЬ ФУНКЦИЮ fixBadCacheForUser В db.js (ВЕРСИЯ С ОТЛАДКОЙ)
 // =================================================================
+// --- KARAOKE CACHE FUNCTIONS ---
 
+// Получить запись из кэша
+export async function getKaraokeCache(uniqueId) {
+  try {
+    const res = await pool.query('SELECT * FROM karaoke_cache WHERE file_unique_id = $1', [uniqueId]);
+    return res.rows[0];
+  } catch (e) {
+    console.error('[DB] getKaraokeCache error:', e.message);
+    return null;
+  }
+}
+
+// Сохранить запись в кэш
+export async function saveKaraokeCache(uniqueId, instrumentalId, vocalsId) {
+  try {
+    await pool.query(
+      `INSERT INTO karaoke_cache (file_unique_id, instrumental_file_id, vocals_file_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (file_unique_id) DO UPDATE 
+       SET instrumental_file_id = EXCLUDED.instrumental_file_id, 
+           vocals_file_id = EXCLUDED.vocals_file_id,
+           created_at = NOW()`,
+      [uniqueId, instrumentalId, vocalsId]
+    );
+    console.log(`[DB] Saved karaoke cache for ${uniqueId}`);
+  } catch (e) {
+    console.error('[DB] saveKaraokeCache error:', e.message);
+  }
+}
 export async function fixBadCacheForUser(userId, dateLimit) {
   try {
     const limit = dateLimit || new Date().toISOString().split('T')[0];
