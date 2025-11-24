@@ -1108,15 +1108,14 @@ const handleMediaForShazam = async (ctx) => {
                 }
             }
 
-            if (!foundExact) {
-                await ctx.reply(`К сожалению, в кэше нет, но можно поискать:`, {
-                    reply_markup: {
-                        inline_keyboard: [[ 
-                            Markup.button.switchInlineQueryCurrentChat(query, `🔎 Найти: ${query}`) 
-                        ]]
-                    }
-                });
-            }
+          if (!foundExact) {
+    await ctx.reply(`К сожалению, в кэше нет, но можно поискать:`, 
+        Markup.inlineKeyboard([
+            // switchToCurrentChat принимает (text, query)
+            Markup.button.switchToCurrentChat(`🔎 Найти: ${query}`, query)
+        ])
+    );
+}
 
         } else {
             await ctx.reply('🤷‍♂️ Не удалось распознать.');
