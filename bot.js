@@ -312,9 +312,24 @@ bot.command('minus', async (ctx) => {
              });
         }
 
-    } catch (e) {
+       } catch (e) {
         console.error('[Karaoke] Error:', e.message);
-        if (statusMsg) await ctx.editMessageText('❌ Ошибка при обработке. Возможно, файл слишком большой или сервис перегружен.');
+        // Пробуем редактировать, если не получается - шлем новое сообщение
+        if (statusMessage) {
+            try {
+                await ctx.telegram.editMessageText(
+                    ctx.chat.id, 
+                    statusMessage.message_id, 
+                    undefined, 
+                    '❌ Ошибка при обработке. Сервис перегружен или файл недоступен.'
+                );
+            } catch (editErr) {
+                // Если редактировать нельзя (например, удалено), шлем новое
+                await ctx.reply('❌ Ошибка при обработке. Попробуйте позже.');
+            }
+        } else {
+            await ctx.reply('❌ Ошибка при обработке.');
+        }
     }
 });
 
