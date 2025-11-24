@@ -273,56 +273,80 @@ function sanitizeFilename(name) {
   return name.replace(/[<>:"/\\|?*]+/g, '').trim() || 'track';
 }
 
-// --- KARAOKE HANDLER (FIXED FILENAMES) ---
+// Импорт новой функции
+import { findKaraokeByMetadata } from './db.js'; 
+
+// --- KARAOKE HANDLER ---
 bot.command('minus', async (ctx) => {
     const reply = ctx.message.reply_to_message;
 
     if (!reply || (!reply.audio && !reply.voice)) {
-        return ctx.reply('❌ Ответьте этой командой на аудиофайл или голосовое сообщение.');
+        return ctx.reply('❌ Ответьте этой командой на аудиофайл.');
     }
 
     const audioObj = reply.audio || reply.voice;
     const fileId = audioObj.file_id;
     const uniqueId = audioObj.file_unique_id;
 
-    // 1. Формируем красивое имя файла
-    let originalFileName = audioObj.file_name || 'Audio Track';
-    // Убираем расширение .mp3/.m4a если оно есть в конце имени
-    originalFileName = path.parse(originalFileName).name;
+    // Чистим название для красивого отображения
+    let metaPerformer = audioObj.performer || 'Unknown Artist';
+    let metaTitle = audioObj.title || 'Unknown Track';
     
-    // Итоговое название файла (физическое)
-    const finalFileName = `${originalFileName} (Instrumental).mp3`;
-    
-    // Метаданные (название трека и исполнитель в плеере)
-    const metaTitle = (audioObj.title || originalFileName) + ' (Instrumental)';
-    const metaPerformer = audioObj.performer || 'SCloudMusic Bot';
+    // Убираем лишнее из названия файла (если это название файла, а не тег)
+    if (!audioObj.title && audioObj.file_name) {
+        metaTitle = path.parse(audioObj.file_name).name;
+    }
+
+    // Подготовка заголовка для отправки (для плеера)
+    const displayTitle = `${metaTitle} (Instrumental)`;
 
     let statusMsg = null;
     let lastStatusText = '';
 
     try {
-        // 2. ПРОВЕРКА КЭША
-        const cached = await getKaraokeCache(uniqueId);
+        // === 1. УМНЫЙ ПОИСК В КЭШЕ ===
+        
+        // А) Сначала ищем точную копию файла по Unique ID
+        let cached = await getKaraokeCache(uniqueId);
+        let foundBySmartSearch = false;
 
-        if (cached && cached.instrumental_file_id) {
-            await ctx.replyWithAudio(cached.instrumental_file_id, {
-                caption: '🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Сделано с помощью @SCloudMusicBot</i>',
-                parse_mode: 'HTML',
-                title: metaTitle,
-                performer: metaPerformer
-            });
-            return; 
+        // Б) Если не нашли, ищем по Названию + Исполнителю
+        if (!cached && metaPerformer !== 'Unknown Artist' && metaTitle !== 'Unknown Track') {
+            // Пробуем найти в базе готовый минус
+            const smartMatch = await findKaraokeByMetadata(metaPerformer, metaTitle);
+            if (smartMatch) {
+                cached = smartMatch;
+                foundBySmartSearch = true;
+                console.log(`[SmartSearch] Found match: ${metaPerformer} - ${metaTitle}`);
+            }
         }
 
-        // 3. ОБРАБОТКА
-        statusMsg = await ctx.reply('⏳ <b>Подключение к серверу...</b>', { parse_mode: 'HTML' });
+        // В) Если нашли (любым способом) — отдаем сразу!
+        if (cached && cached.instrumental_file_id) {
+            await ctx.replyWithAudio(cached.instrumental_file_id, {
+                caption: `🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Сделано с помощью @SCloudMusicBot</i>\n\n🤖 @${ctx.botInfo.username}`,
+                parse_mode: 'HTML',
+                title: displayTitle,
+                performer: metaPerformer
+            });
+
+            // Если нашли по названию, сохраним и ID оригинала, чтобы в след. раз было еще быстрее
+            if (foundBySmartSearch) {
+                await saveKaraokeCache(uniqueId, cached.instrumental_file_id, null, metaPerformer, metaTitle);
+            }
+            return;
+        }
+
+        // === 2. ЕСЛИ НЕ НАШЛИ — ОБРАБАТЫВАЕМ ===
+        
+        statusMsg = await ctx.reply('⏳ <b>Трек не найден в базе.</b>\nПодключаюсь к серверу обработки...', { parse_mode: 'HTML' });
         const fileLink = await ctx.telegram.getFileLink(fileId);
 
         const updateStatusBot = async (info) => {
             let text = '';
-            if (info.status === 'uploading') text = '🚀 <b>Загружаю файл на сервер...</b>';
-            else if (info.status === 'queue') text = `⏳ <b>Вы в очереди.</b> Позиция: <b>${info.position}</b>`;
-            else if (info.status === 'processing') text = '🔪 <b>Разделяю трек...</b> (2-5 мин)';
+            if (info.status === 'uploading') text = '🚀 <b>Загрузка...</b>';
+            else if (info.status === 'queue') text = `⏳ <b>Очередь:</b> ${info.position}`;
+            else if (info.status === 'processing') text = '🔪 <b>Разделение...</b> (2-5 мин)';
 
             if (text && text !== lastStatusText) {
                 try {
@@ -332,93 +356,65 @@ bot.command('minus', async (ctx) => {
             }
         };
 
-        // Запускаем сервис
         const resultFiles = await processKaraoke(fileLink.href, updateStatusBot);
         
-        if (!resultFiles.Instrumental) throw new Error('Instrumental URL not found');
+        if (!resultFiles.Instrumental) throw new Error('No instrumental generated');
 
-        await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, '✅ <b>Готово!</b> Обрабатываю файл...', { parse_mode: 'HTML' });
+        await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, '✅ <b>Готово!</b> Загружаю...', { parse_mode: 'HTML' });
 
-        // 4. СКАЧИВАНИЕ + ПЕРЕИМЕНОВАНИЕ + ЗАГРУЗКА В КЭШ
-        // Нам нужно скачать файл к себе, чтобы дать ему имя при загрузке в Телеграм
-        
+        // --- СКАЧИВАНИЕ И ПЕРЕИМЕНОВАНИЕ ---
         let cachedInstId = null;
-        const tempPath = path.join(os.tmpdir(), `processed_${Date.now()}.mp3`);
-
+        const tempPath = path.join(os.tmpdir(), `proc_${Date.now()}.mp3`);
+        
         try {
-            // Скачиваем результат от MVSEP на диск бота
+            // Качаем, чтобы дать нормальное имя файлу
             const writer = fs.createWriteStream(tempPath);
-            const response = await axios({
-                url: resultFiles.Instrumental,
-                method: 'GET',
-                responseType: 'stream'
-            });
+            const response = await axios({ url: resultFiles.Instrumental, method: 'GET', responseType: 'stream' });
             response.data.pipe(writer);
+            await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
 
-            await new Promise((resolve, reject) => {
-                writer.on('finish', resolve);
-                writer.on('error', reject);
-            });
-
-            // Загружаем в канал-хранилище с НОВЫМ ИМЕНЕМ
+            // Шлем в канал-хранилище
             if (STORAGE_CHANNEL_ID) {
-                const msg = await bot.telegram.sendAudio(STORAGE_CHANNEL_ID, {
-                    source: tempPath,      // Отправляем локальный файл
-                    filename: finalFileName // <--- ВОТ ТУТ МЕНЯЕТСЯ ИМЯ ФАЙЛА
+                const msg = await ctx.telegram.sendAudio(STORAGE_CHANNEL_ID, {
+                    source: tempPath,
+                    filename: `${metaPerformer} - ${metaTitle} (Instrumental).mp3` // Красивое имя файла
                 }, {
-                    title: metaTitle,
+                    title: displayTitle,
                     performer: metaPerformer,
-                    caption: `#karaoke_cache\nOrigin: ${uniqueId}`
+                    caption: `#karaoke_new\n${uniqueId}`
                 });
                 cachedInstId = msg.audio.file_id;
             }
-
-        } catch (uploadErr) {
-            console.error('Ошибка загрузки в кэш:', uploadErr);
-            // Если не вышло загрузить в кэш, cachedInstId останется null, отправим просто URL ниже
+        } catch (err) {
+            console.error('Upload error:', err);
         } finally {
-            // Удаляем временный файл с диска
-            if (fs.existsSync(tempPath)) fs.unlink(tempPath, () => {}); 
+            if (fs.existsSync(tempPath)) fs.unlink(tempPath, () => {});
         }
 
-        // Сохраняем ID в базу
+        // Сохраняем в базу (Обязательно с метаданными!)
         if (cachedInstId) {
-            await saveKaraokeCache(uniqueId, cachedInstId, null);
+            await saveKaraokeCache(uniqueId, cachedInstId, null, metaPerformer, metaTitle);
         }
 
-        // 5. ОТПРАВКА ПОЛЬЗОВАТЕЛЮ
-        // Если есть ID из кэша — отправляем его (там уже красивое имя).
-        // Если нет — отправляем локальный файл (если скачался) или URL (как запасной вариант)
+        // Отправляем юзеру
+        const finalSend = cachedInstId ? cachedInstId : { url: resultFiles.Instrumental };
         
-        if (cachedInstId) {
-            await ctx.replyWithAudio(cachedInstId, {
-                caption: '🎼 <b>Инструментал (Минус)</b>',
-                parse_mode: 'HTML',
-                title: metaTitle,
-                performer: metaPerformer
-            });
-        } else {
-            // Если с кэшем беда, отправляем по URL (имя будет кривое, но файл дойдет)
-            await ctx.replyWithAudio({ url: resultFiles.Instrumental }, {
-                caption: '🎼 <b>Инструментал (Минус)</b>\nСделано с помощью @SCloudMusicBot',
-                parse_mode: 'HTML',
-                title: metaTitle,
-                performer: metaPerformer
-            });
-        }
+        await ctx.replyWithAudio(finalSend, {
+            caption: `🎼 <b>Инструментал (Минус)</b>\n🤖 Сделано ботом @${ctx.botInfo.username}`,
+            parse_mode: 'HTML',
+            title: displayTitle,
+            performer: metaPerformer
+        });
 
         await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
 
     } catch (e) {
         console.error('[Karaoke Error]:', e.message);
-        let errorText = '❌ Ошибка при обработке.';
-        if (e.message === 'QUEUE_FULL') errorText = '⚠️ Очередь переполнена, попробуйте через пару минут.';
+        let errText = '❌ Ошибка обработки.';
+        if (e.message === 'QUEUE_FULL') errText = '⚠️ Сервер перегружен, попробуйте позже.';
         
-        if (statusMsg) {
-            try { await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, errorText); } catch (err) {}
-        } else {
-            await ctx.reply(errorText);
-        }
+        if (statusMsg) await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, errText).catch(()=>{});
+        else await ctx.reply(errText);
     }
 });
 bot.command('fixuser', async (ctx) => {
