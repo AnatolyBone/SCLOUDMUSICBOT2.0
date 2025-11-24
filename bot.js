@@ -440,112 +440,69 @@ bot.command('minus', async (ctx) => {
     const fileId = audioObj.file_id;
     const uniqueId = audioObj.file_unique_id;
 
-    // Чистим название для красивого отображения
-    let metaPerformer = audioObj.performer || 'Unknown Artist';
-    let metaTitle = audioObj.title || 'Unknown Track';
+    // 1. Собираем все данные о файле в одну большую строку поиска
+    let metaPerformer = audioObj.performer || '';
+    let metaTitle = audioObj.title || '';
+    let fileName = audioObj.file_name || '';
     
-    // Убираем лишнее из названия файла (если это название файла, а не тег)
-    if (!audioObj.title && audioObj.file_name) {
-        metaTitle = path.parse(audioObj.file_name).name;
+    // Если тегов нет, берем имя файла как название
+    if (!metaTitle && fileName) {
+        metaTitle = path.parse(fileName).name;
     }
 
-    // Подготовка заголовка для отправки (для плеера)
-    const displayTitle = `${metaTitle} (Instrumental)`;
+    // Полная строка для нечеткого поиска (Артист + Название + Имя файла)
+    // Например: "MUKKA – МУККА - ДЕВОЧКА С КАРЕ track.mp3"
+    const fullSearchString = `${metaPerformer} ${metaTitle} ${fileName}`.toLowerCase();
+
+    // Для красивого отображения в ответе (если найдем)
+    const displayPerformer = metaPerformer || 'Unknown Artist';
+    const displayTitle = metaTitle || 'Unknown Track';
 
     let statusMsg = null;
     let lastStatusText = '';
 
     try {
-        // === 1. УМНЫЙ ПОИСК В КЭШЕ ===
+        // === ПОИСК В БАЗЕ ===
         
-        // А) Сначала ищем точную копию файла по Unique ID
+        // 1. По ID файла (Самый быстрый и точный)
         let cached = await getKaraokeCache(uniqueId);
-        let foundBySmartSearch = false;
+        let matchType = 'ID';
 
-        // Б) Если не нашли, ищем по Названию + Исполнителю
-        if (!cached && metaPerformer !== 'Unknown Artist' && metaTitle !== 'Unknown Track') {
-            // Пробуем найти в базе готовый минус
-            const smartMatch = await findKaraokeByMetadata(metaPerformer, metaTitle);
-            if (smartMatch) {
-                cached = smartMatch;
-                foundBySmartSearch = true;
-                console.log(`[SmartSearch] Found match: ${metaPerformer} - ${metaTitle}`);
+        // 2. Если нет - Поиск по метаданным (Точное совпадение)
+        if (!cached && metaPerformer && metaTitle) {
+            cached = await findKaraokeByMetadata(metaPerformer, metaTitle);
+            if (cached) matchType = 'Metadata';
+        }
+
+        // 3. Если нет - Нечеткий поиск (Fuzzy)
+        // Ищем, содержится ли название из БД внутри строки пользователя
+        if (!cached) {
+            cached = await findKaraokeFuzzy(fullSearchString);
+            if (cached) {
+                matchType = 'Fuzzy';
+                console.log(`[SmartSearch] Fuzzy match: "${fullSearchString}" -> Found: "${cached.performer} - ${cached.title}"`);
             }
         }
 
-        // В) Если нашли (любым способом) — отдаем сразу!
+        // === ЕСЛИ НАШЛИ ===
         if (cached && cached.instrumental_file_id) {
+            // Используем название из БАЗЫ, так как оно там чистое и красивое
+            const finalTitle = cached.title || displayTitle;
+            const finalPerformer = cached.performer || displayPerformer;
+
             await ctx.replyWithAudio(cached.instrumental_file_id, {
-                caption: `🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Сделано с помощью @SCloudMusicBot</i>\n\n🤖 @${ctx.botInfo.username}`,
+                caption: `🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Найден в базе (${matchType})</i>\n🤖 @${ctx.botInfo.username}`,
                 parse_mode: 'HTML',
-                title: displayTitle,
-                performer: metaPerformer
+                title: `${finalTitle} (Instrumental)`,
+                performer: finalPerformer
             });
 
-            // Если нашли по названию, сохраним и ID оригинала, чтобы в след. раз было еще быстрее
-            if (foundBySmartSearch) {
-                await saveKaraokeCache(uniqueId, cached.instrumental_file_id, null, metaPerformer, metaTitle);
+            // Если нашли через умный поиск, сохраняем ID этого файла пользователя,
+            // чтобы в следующий раз для этого же кривого файла сработало мгновенно по ID
+            if (matchType !== 'ID') {
+                await saveKaraokeCache(uniqueId, cached.instrumental_file_id, null, finalPerformer, finalTitle);
             }
             return;
-        }
-
-        // === 2. ЕСЛИ НЕ НАШЛИ — ОБРАБАТЫВАЕМ ===
-        
-        statusMsg = await ctx.reply('⏳ <b>Трек не найден в базе.</b>\nПодключаюсь к серверу обработки...', { parse_mode: 'HTML' });
-        const fileLink = await ctx.telegram.getFileLink(fileId);
-
-        const updateStatusBot = async (info) => {
-            let text = '';
-            if (info.status === 'uploading') text = '🚀 <b>Загрузка...</b>';
-            else if (info.status === 'queue') text = `⏳ <b>Очередь:</b> ${info.position}`;
-            else if (info.status === 'processing') text = '🔪 <b>Разделение...</b> (2-5 мин)';
-
-            if (text && text !== lastStatusText) {
-                try {
-                    await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, text, { parse_mode: 'HTML' });
-                    lastStatusText = text;
-                } catch (e) {}
-            }
-        };
-
-        const resultFiles = await processKaraoke(fileLink.href, updateStatusBot);
-        
-        if (!resultFiles.Instrumental) throw new Error('No instrumental generated');
-
-        await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, '✅ <b>Готово!</b> Загружаю...', { parse_mode: 'HTML' });
-
-        // --- СКАЧИВАНИЕ И ПЕРЕИМЕНОВАНИЕ ---
-        let cachedInstId = null;
-        const tempPath = path.join(os.tmpdir(), `proc_${Date.now()}.mp3`);
-        
-        try {
-            // Качаем, чтобы дать нормальное имя файлу
-            const writer = fs.createWriteStream(tempPath);
-            const response = await axios({ url: resultFiles.Instrumental, method: 'GET', responseType: 'stream' });
-            response.data.pipe(writer);
-            await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
-
-            // Шлем в канал-хранилище
-            if (STORAGE_CHANNEL_ID) {
-                const msg = await ctx.telegram.sendAudio(STORAGE_CHANNEL_ID, {
-                    source: tempPath,
-                    filename: `${metaPerformer} - ${metaTitle} (Instrumental).mp3` // Красивое имя файла
-                }, {
-                    title: displayTitle,
-                    performer: metaPerformer,
-                    caption: `#karaoke_new\n${uniqueId}`
-                });
-                cachedInstId = msg.audio.file_id;
-            }
-        } catch (err) {
-            console.error('Upload error:', err);
-        } finally {
-            if (fs.existsSync(tempPath)) fs.unlink(tempPath, () => {});
-        }
-
-        // Сохраняем в базу (Обязательно с метаданными!)
-        if (cachedInstId) {
-            await saveKaraokeCache(uniqueId, cachedInstId, null, metaPerformer, metaTitle);
         }
 
         // Отправляем юзеру
