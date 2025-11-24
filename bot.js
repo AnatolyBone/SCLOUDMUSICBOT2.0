@@ -276,7 +276,90 @@ function sanitizeFilename(name) {
 
 
 // --- KARAOKE HANDLER ---
+// --- ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ---
+let isAdminUploadMode = false; // По умолчанию режим выключен
 
+// --- КОМАНДЫ ВКЛЮЧЕНИЯ/ВЫКЛЮЧЕНИЯ ---
+
+bot.command('upload_on', async (ctx) => {
+    // Проверка на админа (сравнение строк для надежности)
+    if (String(ctx.from.id) !== String(ADMIN_ID)) return;
+    
+    isAdminUploadMode = true;
+    await ctx.reply('📂 <b>Режим загрузки БД включен!</b>\n\nТеперь все аудиофайлы, которые вы пришлете, будут сохраняться в базу минусовок.\nШазам для вас временно отключен.\n\nКогда закончите, нажмите /upload_off', { parse_mode: 'HTML' });
+});
+
+bot.command('upload_off', async (ctx) => {
+    if (String(ctx.from.id) !== String(ADMIN_ID)) return;
+    
+    isAdminUploadMode = false;
+    await ctx.reply('✅ <b>Режим загрузки выключен.</b>\nБот возвращается в обычный режим.', { parse_mode: 'HTML' });
+});
+
+
+// --- СПЕЦИАЛЬНЫЙ ОБРАБОТЧИК (Вместо того, что был раньше) ---
+// Вставь этот блок ВМЕСТО строки: bot.on(['voice', ...], handleMediaForShazam);
+
+bot.on(['voice', 'video_note', 'audio', 'video'], async (ctx, next) => {
+    
+    // 1. ЕСЛИ РЕЖИМ ЗАГРУЗКИ ВКЛЮЧЕН И ЭТО АДМИН
+    if (isAdminUploadMode && String(ctx.from.id) === String(ADMIN_ID)) {
+        
+        const audio = ctx.message.audio || ctx.message.voice;
+        if (!audio) return; // На всякий случай
+
+        try {
+            // Определяем Исполнителя и Название
+            let performer = audio.performer || 'Unknown Artist';
+            let title = audio.title || (audio.file_name ? path.parse(audio.file_name).name : 'Unknown Track');
+
+            // --- ЧИСТКА НАЗВАНИЯ ---
+            // Убираем мусор типа (Instrumental), чтобы база была чистой
+            title = title
+                .replace(/\(Instrumental\)/gi, '')
+                .replace(/\(Minus\)/gi, '')
+                .replace(/\(Karaoke\)/gi, '')
+                .replace(/Instrumental/gi, '')
+                .replace(/Minus/gi, '')
+                .trim()
+                .replace(/^-+|-+$/g, '').trim(); // Убираем лишние дефисы по краям
+
+            if (STORAGE_CHANNEL_ID) {
+                // 1. Пересылаем в канал-хранилище
+                const msg = await ctx.telegram.sendAudio(STORAGE_CHANNEL_ID, audio.file_id, {
+                    caption: `#manual_upload\n${performer} - ${title}`,
+                    title: `${title} (Instrumental)`, // Добавляем красоту для плеера
+                    performer: performer
+                });
+
+                // 2. Сохраняем в БД
+                // uniqueId берем от исходного файла, чтобы если что найти его
+                await saveKaraokeCache(
+                    audio.file_unique_id, 
+                    msg.audio.file_id, 
+                    null, 
+                    performer, 
+                    title
+                );
+
+                // Подтверждаем (можно убрать, если мешает при масс-загрузке)
+                await ctx.reply(`💾 Сохранено: <b>${performer} - ${title}</b>`, { parse_mode: 'HTML' });
+            } else {
+                await ctx.reply('❌ Ошибка: Не настроен STORAGE_CHANNEL_ID');
+            }
+
+        } catch (e) {
+            console.error('[Upload Mode Error]', e);
+            await ctx.reply(`❌ Ошибка с файлом: ${e.message}`);
+        }
+
+        // ВАЖНО: return прерывает цепочку. Шазам НЕ сработает.
+        return;
+    }
+
+    // 2. ЕСЛИ РЕЖИМ ВЫКЛЮЧЕН — РАБОТАЕМ КАК ОБЫЧНО (Shazam)
+    return handleMediaForShazam(ctx, next);
+});
 // Команда: /findminus Linkin Park
 bot.command('findminus', async (ctx) => {
     const query = ctx.payload; // Текст после команды
