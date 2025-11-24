@@ -1051,6 +1051,12 @@ async function handleSoundCloudUrl(ctx, url) {
 
 const handleMediaForShazam = async (ctx) => {
     const message = ctx.message;
+
+    // 🛑 ФИКС: Если сообщение отправлено через этого же бота (результат поиска), игнорируем его
+    if (message.via_bot && message.via_bot.id === ctx.botInfo.id) {
+        return;
+    }
+
     let fileId = null;
 
     if (message.voice) fileId = message.voice.file_id;
