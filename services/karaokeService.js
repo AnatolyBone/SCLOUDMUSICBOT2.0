@@ -43,8 +43,14 @@ async function createTask(filePath) {
         return res.data.hash; // ID задачи
     } else {
         throw new Error(res.data.message || 'Ошибка загрузки на MVSEP');
+        }
+    } catch (error) {
+        // Логируем детальную ошибку от axios
+        if (error.response) {
+            console.error('[MVSEP API Error]', error.response.status, error.response.data);
+        }
+        throw error;
     }
-}
 
 // 3. Проверка статуса (Polling)
 async function waitForResult(hash) {
