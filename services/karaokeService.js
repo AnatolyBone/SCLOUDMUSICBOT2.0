@@ -7,12 +7,12 @@ import path from 'path';
 import os from 'os';
 import { MVSEP_API_KEY } from '../config.js';
 
-const BASE_URL = 'https://mvsep.com/api/v1';
+// Добавили www и убрали /api/v1 из базы, будем писать его явно
+const BASE_URL = 'https://mvsep.com/api/v1'; 
 const TEMP_DIR = path.join(os.tmpdir(), 'karaoke_tmp');
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// 1. Скачивание файла от Telegram во временную папку
 async function downloadToTemp(url) {
     const destPath = path.join(TEMP_DIR, `upload_${Date.now()}.mp3`);
     const writer = fs.createWriteStream(destPath);
@@ -24,7 +24,6 @@ async function downloadToTemp(url) {
     });
 }
 
-// 2. Создание задачи (Upload)
 async function createTask(filePath) {
     const form = new FormData();
     form.append('audio_file', fs.createReadStream(filePath));
@@ -36,8 +35,13 @@ async function createTask(filePath) {
         'Authorization': `Bearer ${MVSEP_API_KEY}`
     };
 
-    try { // <--- ВОТ ЭТО БЫЛО ПРОПУЩЕНО
-        const res = await axios.post(`${BASE_URL}/separation`, form, { headers });
+    try {
+        // Явно указываем полный путь, который работает в браузере
+        const res = await axios.post('https://mvsep.com/api/v1/separation', form, { 
+            headers,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+        });
         
         if (res.data && res.data.success) {
             return res.data.hash;
@@ -47,13 +51,12 @@ async function createTask(filePath) {
     } catch (error) {
         if (error.response) {
             console.error('[MVSEP API Error]', error.response.status, error.response.data);
-            throw new Error(`MVSEP Error: ${JSON.stringify(error.response.data)}`);
+            throw new Error(`MVSEP Error ${error.response.status}: ${JSON.stringify(error.response.data)}`);
         }
         throw error;
     }
 }
 
-// 3. Проверка статуса (Polling)
 async function waitForResult(hash) {
     const maxAttempts = 60; 
     let attempts = 0;
@@ -71,7 +74,7 @@ async function waitForResult(hash) {
         }
         
         if (data.status === 'error') {
-            throw new Error('Ошибка обработки на стороне MVSEP');
+            throw new Error('Ошибка обработки на стороне MVSEP: ' + data.message);
         }
 
         await new Promise(r => setTimeout(r, 10000));
@@ -80,7 +83,6 @@ async function waitForResult(hash) {
     throw new Error('Таймаут обработки');
 }
 
-// --- ГЛАВНАЯ ФУНКЦИЯ ---
 export async function processKaraoke(fileUrl) {
     let tempFile = null;
     try {
