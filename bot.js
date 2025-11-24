@@ -8,6 +8,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import axios from 'axios';
+import { findKaraokeByMetadata } from './db.js'; 
+
 // ----------------------------------------
 
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
@@ -273,8 +275,6 @@ function sanitizeFilename(name) {
   return name.replace(/[<>:"/\\|?*]+/g, '').trim() || 'track';
 }
 
-// Импорт новой функции
-import { findKaraokeByMetadata } from './db.js'; 
 
 // --- KARAOKE HANDLER ---
 bot.command('minus', async (ctx) => {
