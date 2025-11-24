@@ -291,7 +291,7 @@ bot.command('minus', async (ctx) => {
         if (cached && cached.instrumental_file_id) {
             // === ВАРИАНТ 1: ЕСТЬ В КЭШЕ ===
             await ctx.replyWithAudio(cached.instrumental_file_id, {
-                caption: '🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Взято из кэша (моментально)</i>',
+                caption: '🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Сделано с помощью @SCloudMusicBot</i>',
                 parse_mode: 'HTML',
                 title: (audioObj.title || 'Track') + ' (Instrumental)',
                 performer: audioObj.performer
@@ -366,7 +366,7 @@ bot.command('minus', async (ctx) => {
         const sendPayload = cachedInstId ? cachedInstId : { url: resultFiles.Instrumental };
 
         await ctx.replyWithAudio(sendPayload, {
-            caption: '🎼 <b>Инструментал (Минус)</b>\nСделано с помощью @SCloudMusicBot',
+            caption: '🎼 <b>Инструментал (Минус)</b>\n Сделано с помощью @SCloudMusicBot',
             parse_mode: 'HTML',
             title: (audioObj.title || 'Track') + ' (Instrumental)',
             performer: audioObj.performer
