@@ -1,4 +1,4 @@
-// src/services/karaokeService.js (Исправлено по новой документации)
+// src/services/karaokeService.js
 
 import axios from 'axios';
 import FormData from 'form-data';
@@ -10,8 +10,10 @@ import { MVSEP_API_KEY } from '../config.js';
 const API_BASE = 'https://mvsep.com/api/separation';
 const TEMP_DIR = path.join(os.tmpdir(), 'karaoke_tmp');
 
+// Создаем временную папку, если нет
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
+// 1. Скачивание файла во временную папку
 async function downloadToTemp(url) {
     const destPath = path.join(TEMP_DIR, `upload_${Date.now()}.mp3`);
     const writer = fs.createWriteStream(destPath);
@@ -23,20 +25,19 @@ async function downloadToTemp(url) {
     });
 }
 
+// 2. Создание задачи (Upload)
 async function createTask(filePath) {
     const form = new FormData();
     form.append('audiofile', fs.createReadStream(filePath));
-    form.append('api_token', MVSEP_API_KEY); // Токен в теле запроса!
-    form.append('sep_type', '40'); // BS Roformer (vocals, instrumental) - код 40 из доки
-    form.append('output_format', '0'); // MP3 320kbps
+    form.append('api_token', MVSEP_API_KEY);
+    form.append('sep_type', '40'); // 40 = BS Roformer (vocals, instrumental)
+    form.append('output_format', '0'); // 0 = MP3 320kbps
     form.append('is_demo', '0');
 
     const requestConfig = {
         method: 'post',
         url: `${API_BASE}/create`,
-        headers: { 
-            ...form.getHeaders()
-        },
+        headers: { ...form.getHeaders() },
         data: form,
         maxContentLength: Infinity,
         maxBodyLength: Infinity
@@ -46,90 +47,117 @@ async function createTask(filePath) {
         const res = await axios(requestConfig);
         
         if (res.data && res.data.success) {
-            return res.data.data.hash; // Хэш задачи
+            return res.data.data.hash; // Возвращаем хеш задачи
         } else {
-            throw new Error(res.data.data?.message || 'Ошибка загрузки на MVSEP');
+            throw new Error(res.data.data?.message || 'Ошибка создания задачи');
         }
     } catch (error) {
-        if (error.response) {
-            console.error('[MVSEP API Error]', error.response.status, error.response.data);
-            throw new Error(`MVSEP Error ${error.response.status}: ${JSON.stringify(error.response.data)}`);
+        // Обработка специфичной ошибки 400, когда очередь забита
+        if (error.response && error.response.data) {
+            const errData = error.response.data;
+            // Проверяем массив errors (как было в твоих логах) или message
+            const errStr = JSON.stringify(errData).toLowerCase();
+            
+            if (errStr.includes('unprocessed file') || errStr.includes('queue')) {
+                throw new Error('QUEUE_FULL');
+            }
+            
+            console.error('[MVSEP Upload Error]', errData);
+            throw new Error(`API Error: ${errStr}`);
         }
         throw error;
     }
 }
 
-async function waitForResult(hash) {
-    // Увеличим таймаут, так как MVSEP может быть медленным
-    const maxAttempts = 120; // ~20 минут
+// 3. Ожидание результата (Polling)
+async function waitForResult(hash, onStatusUpdate) {
+    const maxAttempts = 120; // ~20 минут максимум
     let attempts = 0;
 
     while (attempts < maxAttempts) {
         try {
-            const res = await axios.get(`${API_BASE}/get`, {
-                params: { hash }
-            });
-
+            const res = await axios.get(`${API_BASE}/get`, { params: { hash } });
             const body = res.data;
-            
-            if (!body.success) {
-                 // Хэш не найден или просрочен
-                 throw new Error('Задача не найдена или удалена');
-            }
 
-            const status = body.status; // waiting, processing, done, failed
+            if (!body.success) throw new Error('API не вернуло статус задачи');
+
+            const status = body.status; 
+            // Данные из документации:
+            // current_order - позиция пользователя в очереди
+            // queue_count - всего людей в очереди
+            const queuePos = body.data?.current_order || body.data?.queue_count || 0;
+
+            // --- ОБРАБОТКА СТАТУСОВ ---
             
-            if (status === 'done') {
-                // Формируем объект с результатами
-                // API возвращает массив файлов в data.files
-                const files = body.data.files;
+            // 1. Очередь
+            if (status === 'waiting') {
+                if (onStatusUpdate) onStatusUpdate({ status: 'queue', position: queuePos });
+            } 
+            // 2. Обработка (включая распределение и сборку файла)
+            else if (status === 'processing' || status === 'distributing' || status === 'merging') {
+                if (onStatusUpdate) onStatusUpdate({ status: 'processing' });
+            }
+            // 3. Готово
+            else if (status === 'done') {
+                const files = body.data.files; // Массив файлов
                 const result = {};
                 
                 if (Array.isArray(files)) {
                     files.forEach(f => {
-                        // Ищем вокал и инструмент по имени файла или описанию
-                        // Обычно BS Roformer дает vocals.mp3 и instrumental.mp3
-                        const lowerUrl = f.url.toLowerCase();
-                        if (lowerUrl.includes('vocals')) result.Vocals = f.url;
-                        else if (lowerUrl.includes('instrumental') || lowerUrl.includes('no_vocals')) result.Instrumental = f.url;
-                        else if (lowerUrl.includes('music')) result.Instrumental = f.url;
+                        const link = f.url;
+                        const name = link.toLowerCase();
+                        
+                        // Логика определения вокала и минуса
+                        if (name.includes('vocals')) {
+                            result.Vocals = link;
+                        } else if (name.includes('instrumental') || name.includes('no_vocals')) {
+                            result.Instrumental = link;
+                        }
                     });
                 }
-                
-                // Если не смогли распарсить, вернем что есть (первый как инструмент, второй как вокал)
-                if (!result.Vocals && files.length > 0) result.Vocals = files[0].url;
-                
-                return result; 
+
+                // Фолбэк: Если BS Roformer вернул 2 файла, но один не назван явно "instrumental"
+                // (обычно он возвращает "file_vocals.mp3" и "file_instrumental.mp3", но на всякий случай)
+                if (!result.Instrumental && files.length === 2) {
+                    const other = files.find(f => !f.url.toLowerCase().includes('vocals'));
+                    if (other) result.Instrumental = other.url;
+                }
+
+                return result;
             }
-            
-            if (status === 'failed') {
-                throw new Error('Ошибка обработки на стороне MVSEP: ' + (body.data?.message || 'Unknown error'));
+            // 4. Ошибка
+            else if (status === 'failed') {
+                throw new Error('Ошибка на сервере обработки: ' + (body.data?.message || 'Unknown'));
             }
-            
-            // waiting или processing - ждем
-            console.log(`[MVSEP] Status: ${status}, Queue: ${body.data?.queue_count || 0}`);
 
         } catch (e) {
-            console.warn('[MVSEP Polling] Warning:', e.message);
-            if (e.message.includes('Задача не найдена')) throw e;
+            console.warn('[MVSEP Polling Warning]', e.message);
+            // Не выбрасываем ошибку сразу, пробуем еще раз (кроме критических)
         }
 
-        await new Promise(r => setTimeout(r, 10000)); // 10 сек
+        await new Promise(r => setTimeout(r, 10000)); // Ждем 10 секунд перед следующим опросом
         attempts++;
     }
-    throw new Error('Таймаут обработки');
+    throw new Error('Таймаут ожидания (сервер обрабатывал файл слишком долго)');
 }
 
-export async function processKaraoke(fileUrl) {
+// Главная функция экспорта
+export async function processKaraoke(fileUrl, onProgress) {
     let tempFile = null;
     try {
+        // 1. Скачать
         tempFile = await downloadToTemp(fileUrl);
+        
+        // 2. Загрузить (сообщаем статус)
+        if (onProgress) onProgress({ status: 'uploading' });
         const hash = await createTask(tempFile);
         
+        // Удаляем локальный файл сразу после загрузки на MVSEP
         fs.unlink(tempFile, () => {});
         tempFile = null;
 
-        const files = await waitForResult(hash);
+        // 3. Ждать
+        const files = await waitForResult(hash, onProgress);
         return files;
     } catch (e) {
         if (tempFile && fs.existsSync(tempFile)) fs.unlink(tempFile, () => {});
