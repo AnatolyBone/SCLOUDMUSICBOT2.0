@@ -326,7 +326,34 @@ async function processUploadQueue(ctx) {
     isUploading = false;
     await ctx.telegram.sendMessage(ADMIN_ID, '✅ <b>Очередь загрузки завершена!</b>', { parse_mode: 'HTML' });
 }
+// --- ДИАГНОСТИКА БАЗЫ ---
+bot.command('dbcheck', async (ctx) => {
+    if (String(ctx.from.id) !== String(ADMIN_ID)) return;
 
+    try {
+        // Запрашиваем последние 10 записей
+        const res = await pool.query(`
+            SELECT performer, title, created_at 
+            FROM karaoke_cache 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        `);
+
+        if (res.rows.length === 0) {
+            return ctx.reply('📭 База минусовок пуста.');
+        }
+
+        let msg = '📂 <b>Последние 10 записей в базе:</b>\n\n';
+        res.rows.forEach((row, i) => {
+            const date = new Date(row.created_at).toLocaleTimeString();
+            msg += `${i+1}. 👤 <b>${row.performer}</b> — 🎵 <b>${row.title}</b>\n🕒 ${date}\n\n`;
+        });
+
+        await ctx.reply(msg, { parse_mode: 'HTML' });
+    } catch (e) {
+        ctx.reply('Ошибка чтения БД: ' + e.message);
+    }
+});
 // --- КОМАНДЫ ВКЛЮЧЕНИЯ/ВЫКЛЮЧЕНИЯ ---
 
 bot.command('upload_on', async (ctx) => {
