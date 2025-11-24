@@ -8,13 +8,12 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import axios from 'axios';
-import { findKaraokeByMetadata } from './db.js'; 
 
 // ----------------------------------------
 
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
 import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount, findCachedTrack,
-    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, getKaraokeCache, saveKaraokeCache, updateFileId } from './db.js';
+    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, getKaraokeCache, saveKaraokeCache, findKaraokeByMetadata, searchKaraoke, updateFileId } from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
 import { spotifyEnqueue } from './services/spotifyManager.js';
@@ -277,6 +276,50 @@ function sanitizeFilename(name) {
 
 
 // --- KARAOKE HANDLER ---
+
+// Команда: /findminus Linkin Park
+bot.command('findminus', async (ctx) => {
+    const query = ctx.payload; // Текст после команды
+    if (!query) {
+        return ctx.reply('🔍 Введите название песни.\nПример: <code>/findminus Eminem</code>', { parse_mode: 'HTML' });
+    }
+
+    const results = await searchKaraoke(query);
+
+    if (results.length === 0) {
+        return ctx.reply('❌ Минусовки не найдены в базе.');
+    }
+
+    // Если нашли 1 результат - сразу кидаем
+    if (results.length === 1) {
+        const track = results[0];
+        await ctx.replyWithAudio(track.instrumental_file_id, {
+            caption: `🔎 Результат поиска: <b>${track.performer} - ${track.title}</b>`,
+            parse_mode: 'HTML',
+            title: track.title + ' (Instrumental)',
+            performer: track.performer
+        });
+    } else {
+        // Если нашли много - выводим список (можно сделать кнопки, но пока текстом для простоты)
+        let msg = `🔎 <b>Найдено ${results.length} минусовок:</b>\n\n`;
+        results.forEach((t, i) => {
+            msg += `${i + 1}. <b>${t.performer} - ${t.title}</b>\n`;
+        });
+        msg += `\n<i>Чтобы скачать, используйте точный поиск.</i>`;
+        
+        // Тут можно усложнить и добавить инлайн-кнопки для выбора, но это объемный код.
+        // Для начала просто отправляем первый найденный, если их несколько, или пишем список.
+        // Самый простой вариант - отправить первый:
+        
+        const first = results[0];
+        await ctx.replyWithAudio(first.instrumental_file_id, {
+             caption: `🔎 Найдено несколько вариантов. Вот самый популярный:\n<b>${first.performer} - ${first.title}</b>`,
+             parse_mode: 'HTML',
+             title: first.title + ' (Inst)',
+             performer: first.performer
+        });
+    }
+});
 bot.command('minus', async (ctx) => {
     const reply = ctx.message.reply_to_message;
 
@@ -1281,7 +1324,71 @@ const handleMediaForShazam = async (ctx) => {
 };
 
 // Подключаем обработчик ко всем медиа-типам
-bot.on(['voice', 'video_note', 'audio', 'video'], handleMediaForShazam);
+// === ОБЪЕДИНЕННЫЙ ОБРАБОТЧИК МЕДИА ===
+// 1. Проверяет, не Админ ли сохраняет минус (#save)
+// 2. Если нет — отправляет файл на распознавание (Shazam)
+
+bot.on(['voice', 'video_note', 'audio', 'video'], async (ctx, next) => {
+    
+    // --- ЛОГИКА АДМИНА (Загрузка готовых минусов) ---
+    const isAudioOrVoice = ctx.message.audio || ctx.message.voice;
+    const isSaveCommand = ctx.message.caption && ctx.message.caption.includes('#save');
+
+    if (ctx.from.id === ADMIN_ID && isAudioOrVoice && isSaveCommand) {
+        const audio = ctx.message.audio || ctx.message.voice;
+        let performer = audio.performer || 'Unknown Artist';
+        let title = audio.title || 'Unknown Track';
+
+        // Очищаем название от слов "(Instrumental)" и т.д., чтобы в базе лежал чистый оригинал
+        title = title
+            .replace(/\(Instrumental\)/gi, '')
+            .replace(/\(Minus\)/gi, '')
+            .replace(/\(Karaoke\)/gi, '')
+            .replace(/Instrumental/gi, '')
+            .trim();
+
+        // Если нет тегов, пробуем взять из имени файла
+        if (title === 'Unknown Track' && audio.file_name) {
+            title = path.parse(audio.file_name).name
+                .replace(/\(Instrumental\)/gi, '')
+                .trim();
+        }
+
+        try {
+            if (STORAGE_CHANNEL_ID) {
+                // 1. Отправляем в канал-хранилище
+                const msg = await ctx.telegram.sendAudio(STORAGE_CHANNEL_ID, audio.file_id, {
+                    caption: `#manual_upload\n${performer} - ${title}`,
+                    title: `${title} (Instrumental)`,
+                    performer: performer
+                });
+
+                // 2. Сохраняем в БД с привязкой к Названию и Исполнителю
+                // (uniqueId берем от присланного файла, instrumentalId - от файла в канале)
+                await saveKaraokeCache(
+                    audio.file_unique_id, 
+                    msg.audio.file_id, 
+                    null, 
+                    performer, 
+                    title
+                );
+
+                await ctx.reply(`✅ <b>Минус сохранен в базу!</b>\nТеперь поиск по запросу <i>"${performer} - ${title}"</i> будет выдавать этот файл.`, { parse_mode: 'HTML' });
+            } else {
+                await ctx.reply('❌ Ошибка: Не настроен канал STORAGE_CHANNEL_ID');
+            }
+        } catch (e) {
+            console.error('[Admin Save Error]', e);
+            await ctx.reply(`❌ Ошибка сохранения: ${e.message}`);
+        }
+        
+        return; // ВАЖНО: Прерываем выполнение, чтобы Shazam не обрабатывал этот файл
+    }
+
+    // --- ЛОГИКА ПОЛЬЗОВАТЕЛЯ (Shazam) ---
+    // Если это не админская команда, вызываем старый обработчик
+    return handleMediaForShazam(ctx, next);
+});
 
 bot.on('text', async (ctx) => {
     if (isShuttingDown()) return;
