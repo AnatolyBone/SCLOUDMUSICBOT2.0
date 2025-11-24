@@ -1399,6 +1399,36 @@ export async function findUsersExpiringIn(days, flagField) {
   const { rows } = await query(sql, [Number(days) || 0]);
   return rows || [];
 }
+// --- НЕЧЕТКИЙ ПОИСК (FUZZY) ---
+export async function findKaraokeFuzzy(fullSearchString) {
+    if (!fullSearchString || fullSearchString.length < 3) return null;
+    
+    try {
+        // Очищаем строку поиска от мусора, оставляем только буквы и цифры
+        // Это повышает шанс найти "MUKKA" внутри "M.U.K.K.A" и т.д.
+        const cleanQuery = fullSearchString.toLowerCase().trim();
+
+        // Логика SQL:
+        // Найти запись, где Заголовок из БД (title) содержится ВНУТРИ строки пользователя ($1)
+        // И длина заголовка > 3 символов (чтобы не находить предлоги)
+        // Сортируем по длине заголовка (самое длинное совпадение - самое точное)
+        
+        const res = await pool.query(
+            `SELECT * FROM karaoke_cache 
+             WHERE length(title) > 3
+             AND $1 ILIKE '%' || title || '%'
+             AND ($1 ILIKE '%' || performer || '%' OR performer IS NULL)
+             ORDER BY length(title) DESC
+             LIMIT 1`,
+            [cleanQuery]
+        );
+        
+        return res.rows[0];
+    } catch (e) {
+        console.error('[DB] findKaraokeFuzzy error:', e.message);
+        return null;
+    }
+}
 export async function markStageNotified(userId, flagField) {
   const allowed = new Set(['notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d']);
   if (!allowed.has(flagField)) {
