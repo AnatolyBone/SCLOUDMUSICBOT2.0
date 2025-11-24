@@ -366,7 +366,7 @@ bot.command('minus', async (ctx) => {
         const sendPayload = cachedInstId ? cachedInstId : { url: resultFiles.Instrumental };
 
         await ctx.replyWithAudio(sendPayload, {
-            caption: '🎼 <b>Инструментал (Минус)</b>\n🤖 Processed by SCloudMusic Bot',
+            caption: '🎼 <b>Инструментал (Минус)</b>\nСделано с помощью @SCloudMusicBot',
             parse_mode: 'HTML',
             title: (audioObj.title || 'Track') + ' (Instrumental)',
             performer: audioObj.performer
