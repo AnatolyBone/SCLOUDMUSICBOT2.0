@@ -2,9 +2,17 @@
 
 import { Telegraf, Markup, TelegramError } from 'telegraf';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+
+// --- ДОБАВЛЕННЫЕ ИМПОРТЫ (ОБЯЗАТЕЛЬНО) ---
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import axios from 'axios';
+// ----------------------------------------
+
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
-import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,           // <--- ДОБАВИТЬ
-    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId,  getKaraokeCache, saveKaraokeCache, updateFileId} from './db.js';
+import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount, findCachedTrack,
+    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, getKaraokeCache, saveKaraokeCache, updateFileId } from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
 import { spotifyEnqueue } from './services/spotifyManager.js';
@@ -14,8 +22,6 @@ import { processKaraoke } from './services/karaokeService.js';
 import { identifyTrack } from './services/shazamService.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
-
-
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
