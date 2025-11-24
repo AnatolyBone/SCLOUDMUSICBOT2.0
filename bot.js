@@ -430,6 +430,7 @@ bot.command('findminus', async (ctx) => {
     }
 });
 // --- KARAOKE HANDLER (FIXED) ---
+// --- KARAOKE HANDLER (DEBUG VERSION) ---
 bot.command('minus', async (ctx) => {
     const reply = ctx.message.reply_to_message;
 
@@ -456,10 +457,16 @@ bot.command('minus', async (ctx) => {
     // Строка для нечеткого поиска
     const fullSearchString = `${metaPerformer} ${metaTitle} ${fileName}`.toLowerCase();
 
-    // ОБЪЯВЛЯЕМ ПЕРЕМЕННЫЕ В САМОМ НАЧАЛЕ, ЧТОБЫ ИЗБЕЖАТЬ ОШИБОК SCOPE
+    // --- ЛОГИ ДЛЯ ОТЛАДКИ ---
+    console.log('--- [Karaoke Debug] START ---');
+    console.log(`1. File Tags: Artist="${metaPerformer}", Title="${metaTitle}"`);
+    console.log(`2. File Name: "${fileName}"`);
+    console.log(`3. Fuzzy String: "${fullSearchString}"`);
+    // ------------------------
+
     let statusMsg = null;
     let lastStatusText = '';
-    let cachedInstId = null; // <--- Вот та самая переменная
+    let cachedInstId = null;
     let resultFiles = null;
 
     try {
@@ -467,21 +474,33 @@ bot.command('minus', async (ctx) => {
         let cached = await getKaraokeCache(uniqueId);
         let matchType = 'ID';
 
+        if (cached) console.log('4. Search by ID: HIT');
+        else console.log('4. Search by ID: MISS');
+
         // Умный поиск по метаданным
         if (!cached && metaPerformer && metaTitle) {
             cached = await findKaraokeByMetadata(metaPerformer, metaTitle);
-            if (cached) matchType = 'Metadata';
+            if (cached) {
+                matchType = 'Metadata';
+                console.log(`5. Search by Metadata: HIT (${cached.performer} - ${cached.title})`);
+            } else {
+                console.log('5. Search by Metadata: MISS');
+            }
         }
 
         // Нечеткий поиск
         if (!cached) {
             cached = await findKaraokeFuzzy(fullSearchString);
-            if (cached) matchType = 'Fuzzy';
+            if (cached) {
+                matchType = 'Fuzzy';
+                console.log(`6. Fuzzy Search: HIT (${cached.performer} - ${cached.title})`);
+            } else {
+                console.log('6. Fuzzy Search: MISS');
+            }
         }
 
         // Если нашли в базе — отдаем сразу
         if (cached && cached.instrumental_file_id) {
-            // Берем красивые названия из базы, если они там есть
             const finalTitle = cached.title || displayTitle;
             const finalPerformer = cached.performer || displayPerformer;
 
@@ -492,18 +511,20 @@ bot.command('minus', async (ctx) => {
                 performer: finalPerformer
             });
 
-            // Если нашли по названию, связываем с текущим ID файла
             if (matchType !== 'ID') {
                 await saveKaraokeCache(uniqueId, cached.instrumental_file_id, null, finalPerformer, finalTitle);
             }
+            console.log('--- [Karaoke Debug] END (Found) ---');
             return; 
         }
+
+        console.log('7. Result: NOT FOUND. Starting processing...');
+        console.log('--- [Karaoke Debug] END ---');
 
         // === 2. ЕСЛИ НЕ НАШЛИ — ОБРАБОТКА ===
         statusMsg = await ctx.reply('⏳ <b>Трек не найден в базе.</b>\nЗагружаю на сервер обработки...', { parse_mode: 'HTML' });
         const fileLink = await ctx.telegram.getFileLink(fileId);
 
-        // Функция обновления статуса
         const updateStatusBot = async (info) => {
             let text = '';
             if (info.status === 'uploading') text = '🚀 <b>Загрузка файла...</b>';
@@ -518,7 +539,6 @@ bot.command('minus', async (ctx) => {
             }
         };
 
-        // Запуск разделения
         resultFiles = await processKaraoke(fileLink.href, updateStatusBot);
         
         if (!resultFiles || !resultFiles.Instrumental) {
@@ -531,17 +551,11 @@ bot.command('minus', async (ctx) => {
         const tempPath = path.join(os.tmpdir(), `proc_${Date.now()}.mp3`);
         
         try {
-            // Скачиваем
             const writer = fs.createWriteStream(tempPath);
             const response = await axios({ url: resultFiles.Instrumental, method: 'GET', responseType: 'stream' });
             response.data.pipe(writer);
-            
-            await new Promise((resolve, reject) => { 
-                writer.on('finish', resolve); 
-                writer.on('error', reject); 
-            });
+            await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
 
-            // Отправляем в канал с красивым именем
             if (STORAGE_CHANNEL_ID) {
                 const msg = await ctx.telegram.sendAudio(STORAGE_CHANNEL_ID, {
                     source: tempPath,
@@ -555,17 +569,14 @@ bot.command('minus', async (ctx) => {
             }
         } catch (err) {
             console.error('Upload to storage failed:', err.message);
-            // Если не вышло загрузить в канал, cachedInstId останется null
         } finally {
             if (fs.existsSync(tempPath)) fs.unlink(tempPath, () => {});
         }
 
-        // Сохраняем в БД
         if (cachedInstId) {
             await saveKaraokeCache(uniqueId, cachedInstId, null, displayPerformer, displayTitle);
         }
 
-        // === 4. ОТПРАВКА ЮЗЕРУ ===
         const finalSend = cachedInstId ? cachedInstId : { url: resultFiles.Instrumental };
         
         await ctx.replyWithAudio(finalSend, {
@@ -580,7 +591,6 @@ bot.command('minus', async (ctx) => {
     } catch (e) {
         console.error('[Karaoke Error]:', e.message);
         let errText = '❌ Ошибка обработки.';
-        
         if (e.message === 'QUEUE_FULL') errText = '⚠️ Сервер перегружен, попробуйте через пару минут.';
         else if (e.message.includes('Таймаут')) errText = '❌ Время ожидания истекло.';
         
@@ -591,7 +601,6 @@ bot.command('minus', async (ctx) => {
         }
     }
 });
-
 
 bot.command('fixuser', async (ctx) => {
   // 1. Проверяем, что это админ
