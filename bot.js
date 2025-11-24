@@ -266,38 +266,42 @@ function sanitizeFilename(name) {
   if (!name || typeof name !== 'string') return 'track';
   return name.replace(/[<>:"/\\|?*]+/g, '').trim() || 'track';
 }
-// --- KARAOKE HANDLER ---
+
+// --- КОМАНДА /minus ---
 bot.command('minus', async (ctx) => {
     const reply = ctx.message.reply_to_message;
     
-    // Проверка: ответили ли на аудио/войс
+    // Проверка на ответ на аудио
     if (!reply || (!reply.audio && !reply.voice)) {
         return ctx.reply('❌ Ответьте этой командой на аудиофайл или голосовое сообщение.');
     }
 
     const fileId = reply.audio ? reply.audio.file_id : reply.voice.file_id;
     let statusMsg = null;
-    let lastStatusText = ''; // Чтобы не редактировать сообщение, если текст не поменялся
+    let lastStatusText = ''; // Храним последний текст, чтобы не дергать API телеграма зря
 
     try {
-        // 1. Отправляем стартовое сообщение
+        // 1. Первое сообщение
         statusMsg = await ctx.reply('⏳ <b>Подключение к серверу...</b>', { parse_mode: 'HTML' });
         
         const fileLink = await ctx.telegram.getFileLink(fileId);
 
-        // 2. Функция для обновления статуса (передаем её в сервис)
-        const onProgress = async (info) => {
+        // 2. Callback-функция, которую будет вызывать сервис
+        const updateStatusBot = async (info) => {
             let text = '';
             
             if (info.status === 'uploading') {
                 text = '🚀 <b>Загружаю файл на сервер обработки...</b>';
-            } else if (info.status === 'queue') {
-                text = `⏳ <b>Вы в очереди:</b> позиция ${info.position}\nОжидайте начала обработки...`;
-            } else if (info.status === 'processing') {
-                text = `🔪 <b>Разделяю трек...</b>\nПрогресс: ${info.progress}%`;
+            } 
+            else if (info.status === 'queue') {
+                // Берем current_order из документации
+                text = `⏳ <b>Вы в очереди.</b>\nВаша позиция: <b>${info.position}</b>\nОжидайте начала обработки.`;
+            } 
+            else if (info.status === 'processing') {
+                text = '🔪 <b>Идет разделение трека...</b>\nЭто занимает от 2 до 5 минут.';
             }
 
-            // Редактируем только если текст изменился
+            // Редактируем сообщение, ТОЛЬКО если текст изменился
             if (text && text !== lastStatusText) {
                 try {
                     await ctx.telegram.editMessageText(
@@ -308,74 +312,61 @@ bot.command('minus', async (ctx) => {
                         { parse_mode: 'HTML' }
                     );
                     lastStatusText = text;
-                } catch (ign) { /* Игнорируем ошибки телеграма при частых эдитах */ }
+                } catch (err) {
+                    // Игнорируем ошибки редактирования (Telegram API не любит частые изменения)
+                }
             }
         };
 
-        // 3. Запускаем процесс (передаем ссылку и функцию обновления)
-        // ВАЖНО: Убедись, что processKaraoke импортирован в начале файла bot.js
-        const resultFiles = await processKaraoke(fileLink.href, onProgress);
+        // 3. Запуск процесса
+        const resultFiles = await processKaraoke(fileLink.href, updateStatusBot);
         
-        // 4. Меняем статус на "Загрузка обратно"
+        // 4. Финал: меняем статус на "Скачивание"
         await ctx.telegram.editMessageText(
             ctx.chat.id, 
             statusMsg.message_id, 
             undefined, 
-            '✅ <b>Готово!</b> Скачиваю и отправляю...', 
+            '✅ <b>Готово!</b> Загружаю минус в чат...', 
             { parse_mode: 'HTML' }
         );
         
-        // 5. Отправляем МИНУС (Instrumental)
+        // 5. Отправка МИНУСА
         if (resultFiles.Instrumental) {
              await ctx.replyWithAudio({ url: resultFiles.Instrumental }, { 
-                 caption: '🎼 <b>Инструментал (Минус)</b>', 
+                 caption: '🎼 <b>Инструментал (Минус)</b>\n🤖 Processed by SCloudMusic Bot', 
                  parse_mode: 'HTML',
                  title: (reply.audio?.title || 'Track') + ' (Instrumental)',
                  performer: reply.audio?.performer
              });
         } else {
-            throw new Error('Не удалось получить инструментал.');
+            throw new Error('Инструментал не найден в ответе API');
         }
         
-        // Если нужна еще и акапелла, раскомментируй этот блок:
-        /*
-        if (resultFiles.Vocals) {
-             await ctx.replyWithAudio({ url: resultFiles.Vocals }, { 
-                 caption: '🎤 <b>Вокал (Акапелла)</b>', 
-                 parse_mode: 'HTML',
-                 title: (reply.audio?.title || 'Track') + ' (Vocals)',
-                 performer: reply.audio?.performer
-             });
-        }
-        */
-
-        // Удаляем сообщение о статусе в конце
+        // Удаляем сообщение со статусом
         await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
 
     } catch (e) {
-        console.error('[Karaoke] Error:', e.message);
+        console.error('[Karaoke Handler Error]:', e.message);
         
-        let errorText = '❌ <b>Ошибка при обработке.</b>';
+        let errorText = '❌ <b>Произошла ошибка.</b> Попробуйте позже.';
         
+        // Красивая обработка переполненной очереди (Error 400)
         if (e.message === 'QUEUE_FULL') {
-            errorText = '⚠️ <b>Очередь переполнена.</b>\nУ вас уже есть активная задача или сервер MVSEP перегружен. Подождите 2-3 минуты.';
+            errorText = '⚠️ <b>Сервер перегружен.</b>\nУ вас уже есть активная задача или сервер MVSEP сейчас занят. Пожалуйста, подождите 2-3 минуты и попробуйте снова.';
         } else if (e.message.includes('Таймаут')) {
-            errorText = '❌ <b>Время вышло.</b> Сервер обрабатывал файл слишком долго.';
+            errorText = '❌ <b>Время ожидания истекло.</b> Сервер не успел обработать файл.';
         }
 
-        // Пытаемся отредактировать сообщение с ошибкой
         if (statusMsg) {
             try {
                 await ctx.telegram.editMessageText(
                     ctx.chat.id, 
                     statusMsg.message_id, 
                     undefined, 
-                    errorText,
+                    errorText, 
                     { parse_mode: 'HTML' }
                 );
-            } catch (err) {
-                await ctx.reply(errorText, { parse_mode: 'HTML' });
-            }
+            } catch (err) { /* ignore */ }
         } else {
             await ctx.reply(errorText, { parse_mode: 'HTML' });
         }
