@@ -591,7 +591,7 @@ bot.command('minus', async (ctx) => {
     } catch (e) {
         console.error('[Karaoke Error]:', e.message);
         let errText = '❌ Ошибка обработки.';
-        if (e.message === 'QUEUE_FULL') errText = '⚠️ Сервер перегружен, попробуйте через пару минут.';
+        if (e.message === 'QUEUE_FULL') errText = 'Идет обработка, ожидайте.';
         else if (e.message.includes('Таймаут')) errText = '❌ Время ожидания истекло.';
         
         if (statusMsg) {
