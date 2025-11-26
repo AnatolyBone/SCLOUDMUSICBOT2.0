@@ -1399,26 +1399,36 @@ export async function findUsersExpiringIn(days, flagField) {
   const { rows } = await query(sql, [Number(days) || 0]);
   return rows || [];
 }
-// --- НЕЧЕТКИЙ ПОИСК (FUZZY V2) ---
+// --- НЕЧЕТКИЙ ПОИСК (V4 - Поиск по ключевым словам) ---
 export async function findKaraokeFuzzy(fullSearchString) {
-    if (!fullSearchString || fullSearchString.length < 3) return null;
+    if (!fullSearchString || fullSearchString.length < 2) return null;
     
     try {
         const cleanQuery = fullSearchString.toLowerCase().trim();
 
-        // УЛУЧШЕННЫЙ SQL ЗАПРОС:
-        // 1. Длина названия в базе должна быть > 2
-        // 2. Название из базы должно содержаться в строке поиска
-        // 3. Исполнитель: Либо совпадает, либо в базе он NULL, либо 'unknown', либо пустой
+        // ЛОГИКА V4:
+        // Мы ищем запись, у которой:
+        // 1. Title из базы содержится в строке пользователя
+        // 2. ИЛИ строка пользователя содержится в Title базы
+        // 3. ИЛИ (Самое мощное) Исполнитель и Название совпадают по отдельности
+        
         const res = await pool.query(
             `SELECT * FROM karaoke_cache 
-             WHERE length(title) > 2
-             AND $1 ILIKE '%' || title || '%'
+             WHERE length(title) > 1
              AND (
-                performer IS NULL 
-                OR performer = '' 
-                OR performer ILIKE 'unknown%' 
-                OR $1 ILIKE '%' || performer || '%'
+                -- Вариант А: Прямое вхождение названия
+                $1 ILIKE '%' || title || '%' 
+                
+                OR 
+                
+                -- Вариант Б: Если у нас есть и Артист и Название в базе, 
+                -- проверяем, есть ли оба этих слова в строке пользователя
+                (
+                    performer IS NOT NULL 
+                    AND length(performer) > 2
+                    AND $1 ILIKE '%' || performer || '%' 
+                    AND $1 ILIKE '%' || title || '%'
+                )
              )
              ORDER BY length(title) DESC
              LIMIT 1`,
