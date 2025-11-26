@@ -23,10 +23,25 @@ import { processKaraoke } from './services/karaokeService.js';
 import { identifyTrack } from './services/shazamService.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
-
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
 const TRACKS_PER_PAGE = 5;
+
+// === ВСТАВЬ ЭТОТ БЛОК ОБЯЗАТЕЛЬНО ===
+// Переменные для Караоке и Загрузки базы
+const processingSet = new Set();   // Защита от повторной обработки одного файла
+let isAdminUploadMode = false;     // Режим массовой загрузки для админа
+const uploadQueue = [];            // Очередь файлов для загрузки
+let isUploading = false;           // Флаг работы загрузчика
+
+// Функция для экранирования HTML (чтобы названия треков не ломали жирный шрифт)
+const escapeHTML = (str) => {
+    if (!str) return '';
+    return str.replace(/[&<>"']/g, (m) => ({ 
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' 
+    })[m]);
+};
+// ====================================
 
 function getYoutubeDl() {
     const options = {};
@@ -1003,7 +1018,6 @@ function generateSelectionMenu(userId) {
     const startIndex = currentPage * TRACKS_PER_PAGE;
     const tracksOnPage = tracks.slice(startIndex, startIndex + TRACKS_PER_PAGE);
     const trackRows = tracksOnPage.map((track, index) => {
-        const processingSet = new Set(); // Хранит список ID, которые сейчас обрабатываются
         const absoluteIndex = startIndex + index;
         const isSelected = selected.has(absoluteIndex);
         const icon = isSelected ? '✅' : '⬜️';
