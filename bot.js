@@ -433,24 +433,115 @@ bot.command('fixuser', async (ctx) => {
 });
 
 bot.command('fix', async (ctx) => {
-  if (!STORAGE_CHANNEL_ID) return ctx.reply('Нет хранилища.');
-  const msg = ctx.message.reply_to_message;
-  if (!msg?.audio) return ctx.reply('Ответьте на аудио.');
+  console.log(`[FIX_COMMAND] Команда /fix инициирована пользователем ${ctx.from.id}`);
+
+  // --- ПРОВЕРКИ ---
+  if (!ctx.message.reply_to_message) {
+    console.log('[FIX_COMMAND] Сбой: Нет реплая.');
+    return ctx.reply('ℹ️ Чтобы исправить файл, ответьте на сообщение с аудиозаписью этой командой.');
+  }
+  const repliedMessage = ctx.message.reply_to_message;
+
+  if (!repliedMessage.audio) {
+    console.log('[FIX_COMMAND] Сбой: Нет аудио.');
+    return ctx.reply('❌ Это не аудиофайл. Пожалуйста, ответьте на сообщение с музыкой.');
+  }
   
-  const status = await ctx.reply('Лечу...');
+  if (!STORAGE_CHANNEL_ID) {
+      console.log('[FIX_COMMAND] Сбой: Нет STORAGE_CHANNEL_ID.');
+      return ctx.reply('🛠 Функция временно недоступна.');
+  }
+
+  const oldFileId = repliedMessage.audio.file_id;
+  console.log(`[FIX_COMMAND] Старый file_id: ${oldFileId}`);
+  
+  let statusMessage;
+
   try {
-      const track = await findCachedTrackByFileId(msg.audio.file_id);
-      if (!track) return ctx.telegram.editMessageText(ctx.chat.id, status.message_id, undefined, 'Не нашел в базе.');
-      
-      const link = await bot.telegram.getFileLink(msg.audio.file_id);
-      const sent = await bot.telegram.sendAudio(STORAGE_CHANNEL_ID, { url: link.href, filename: `${sanitizeFilename(track.title)}.mp3` });
-      
-      if (sent.audio) {
-          await updateFileId(msg.audio.file_id, sent.audio.file_id);
-          await ctx.telegram.editMessageText(ctx.chat.id, status.message_id, undefined, '✅ Готово!');
-          await ctx.replyWithAudio(sent.audio.file_id);
+    // Отправляем сообщение о начале (если упадет - не страшно)
+    try {
+        statusMessage = await ctx.reply('🔬 Начинаю процедуру "лечения" файла...');
+    } catch (e) { console.warn('Не удалось отправить статусное сообщение:', e); }
+
+    // 1. Находим трек в БД
+    console.log('[FIX_COMMAND] Шаг 1: Поиск трека в БД...');
+    const trackInfo = await findCachedTrackByFileId(oldFileId);
+    
+    if (!trackInfo) {
+      console.log('[FIX_COMMAND] Шаг 1: Провал. Трек не найден.');
+      if (statusMessage) {
+          await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, '🤔 Не могу найти этот трек в базе. Возможно, он был скачан не мной.').catch(()=>{});
       }
-  } catch (e) { ctx.reply('Ошибка.'); }
+      return;
+    }
+    console.log('[FIX_COMMAND] Шаг 1: Успех. Найден трек:', trackInfo);
+
+    // 2. Получаем ссылку
+    console.log('[FIX_COMMAND] Шаг 2: Получение ссылки...');
+    const fileLink = await ctx.telegram.getFileLink(oldFileId);
+    console.log('[FIX_COMMAND] Шаг 2: Успех.');
+
+    // 3. Перезагружаем в хранилище
+    const title = trackInfo.title || 'Track';
+    const artist = trackInfo.artist || 'Artist';
+    console.log(`[FIX_COMMAND] Шаг 3: Перезагрузка "${title}"...`);
+    
+    const cleanTitle = sanitizeFilename(title);
+    const filename = cleanTitle.toLowerCase().endsWith('.mp3') ? cleanTitle : `${cleanTitle}.mp3`;
+
+    const sentToStorage = await bot.telegram.sendAudio(STORAGE_CHANNEL_ID, { 
+        url: fileLink.href, 
+        filename: filename,
+        title: title,        // Добавляем метаданные сразу
+        performer: artist 
+    });
+    
+    const newFileId = sentToStorage?.audio?.file_id;
+    if (!newFileId) throw new Error('Не удалось получить новый file_id.');
+    
+    console.log(`[FIX_COMMAND] Шаг 3: Успех. Новый file_id: ${newFileId}`);
+
+    // 4. Обновляем БД
+    console.log('[FIX_COMMAND] Шаг 4: Обновление БД...');
+    const updatedCount = await updateFileId(oldFileId, newFileId);
+    console.log(`[FIX_COMMAND] Шаг 4: Успех. Обновлено строк: ${updatedCount}`);
+    
+    if (updatedCount > 0) {
+        // --- УСПЕХ: Сначала шлем файл (самое важное) ---
+        try {
+            await ctx.replyWithAudio(newFileId, {
+                caption: '✅ Файл восстановлен и обновлен в базе!',
+                title: title,
+                performer: artist,
+                reply_to_message_id: repliedMessage.message_id // Отвечаем на оригинал
+            });
+        } catch (sendErr) {
+            console.error('Ошибка отправки исправленного файла:', sendErr);
+            await ctx.reply('✅ Файл исправлен в базе, но я не смог отправить его вам сюда.');
+        }
+
+        // --- Потом обновляем статус (менее важно) ---
+        if (statusMessage) {
+            try {
+                await ctx.telegram.deleteMessage(ctx.chat.id, statusMessage.message_id);
+            } catch (delErr) {
+                // Если не смогли удалить - пробуем отредактировать
+                await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, '✅ Готово!').catch(()=>{});
+            }
+        }
+    } else {
+        if (statusMessage) {
+             await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, '⚠️ Файл перезалит, но база данных не обновилась.').catch(()=>{});
+        }
+    }
+
+  } catch (error) {
+    console.error('❌ КРИТИЧЕСКАЯ ОШИБКА в команде /fix:', error);
+    if (statusMessage) {
+      // Пытаемся сообщить об ошибке, но не крашимся если не выйдет
+      await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, `❌ Ошибка при лечении файла.`).catch(()=>{});
+    }
+  }
 });
 
 // --- АДМИН И СТАТИСТИКА ---
