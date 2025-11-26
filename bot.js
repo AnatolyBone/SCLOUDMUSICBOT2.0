@@ -291,10 +291,6 @@ function sanitizeFilename(name) {
 
 
 // --- KARAOKE HANDLER ---
-// --- ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ---
-let isAdminUploadMode = false;
-const uploadQueue = []; // Очередь файлов для загрузки
-let isUploading = false; // Флаг: работает ли сейчас обработчик
 async function processUploadQueue(ctx) {
     if (isUploading || uploadQueue.length === 0) return;
     isUploading = true;
@@ -386,10 +382,6 @@ bot.command('upload_off', async (ctx) => {
     await ctx.reply('✅ <b>Режим загрузки выключен.</b>\nБот возвращается в обычный режим.', { parse_mode: 'HTML' });
 });
 
-
-// === СПЕЦИАЛЬНЫЙ ОБРАБОТЧИК ЗАГРУЗКИ ===
-bot.on(['voice', 'video_note', 'audio', 'video'], async (ctx, next) => {
-    
     // 1. РЕЖИМ ЗАГРУЗКИ (АДМИН)
     if (isAdminUploadMode && String(ctx.from.id) === String(ADMIN_ID)) {
         const audio = ctx.message.audio || ctx.message.voice;
