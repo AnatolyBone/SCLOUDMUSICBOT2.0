@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import axios from 'axios';
-
+import { getLyrics } from './services/lyricsService.js';
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
 import { 
     pool, 
@@ -34,7 +34,7 @@ import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './service
 
 const playlistSessions = new Map();
 const TRACKS_PER_PAGE = 5;
-
+const lyricsSessions = new Map(); 
 // Переменные для Караоке и Загрузки
 const processingSet = new Set();   
 let isAdminUploadMode = false;     
@@ -287,6 +287,7 @@ const handleMediaForShazam = async (ctx) => {
 // --- КАРАОКЕ И ФУНКЦИИ (/minus, /fix) ---
 // ==================================================
 
+// --- KARAOKE HANDLER (С КНОПКОЙ И БЕЗОПАСНЫМ HTML) ---
 bot.command('minus', async (ctx) => {
     const reply = ctx.message.reply_to_message;
     if (!reply || (!reply.audio && !reply.voice)) return ctx.reply('❌ Ответьте на аудиофайл.');
@@ -317,26 +318,36 @@ bot.command('minus', async (ctx) => {
             if (cached) matchType = 'Fuzzy';
         }
 
-        // Нашли
+        // === ЕСЛИ НАШЛИ В БАЗЕ ===
         if (cached && cached.instrumental_file_id) {
             const title = cached.title || metaTitle;
             const perf = cached.performer || metaPerformer;
-            const safeBot = escapeHTML(ctx.botInfo.username);
+            const safeBot = escapeHtml(ctx.botInfo.username);
             
+            // Создаем кнопку
+            const lyricsId = `ly_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 5)}`;
+            lyricsSessions.set(lyricsId, { artist: perf, title: title });
+
             try {
                 await ctx.replyWithAudio(cached.instrumental_file_id, {
                     caption: `🎼 <b>Инструментал (Минус)</b>\n⚡️ <i>Взято из базы</i>\n🤖 @${safeBot}`,
-                    parse_mode: 'HTML', title: `${title} (Inst)`, performer: perf
+                    parse_mode: 'HTML', 
+                    title: `${title} (Inst)`, 
+                    performer: perf,
+                    ...Markup.inlineKeyboard([
+                        Markup.button.callback('📜 Текст песни', lyricsId)
+                    ])
                 });
             } catch (e) {
-                await ctx.replyWithAudio(cached.instrumental_file_id, { caption: '🎼 Инструментал', title, performer: perf });
+                // Если HTML сломался — шлем без разметки и кнопок
+                await ctx.replyWithAudio(cached.instrumental_file_id, { caption: '🎼 Инструментал', title: `${title} (Inst)`, performer: perf });
             }
 
             if (matchType !== 'ID') await saveKaraokeCache(uniqueId, cached.instrumental_file_id, null, perf, title);
             return;
         }
 
-        // 2. Обработка
+        // === 2. ОБРАБОТКА НОВОГО ФАЙЛА ===
         statusMsg = await ctx.reply('⏳ <b>Не найдено в базе.</b>\nЗагружаю на сервер...', { parse_mode: 'HTML' });
         const link = await ctx.telegram.getFileLink(audioObj.file_id);
         
@@ -350,7 +361,7 @@ bot.command('minus', async (ctx) => {
 
         await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, '✅ <b>Готово!</b> Скачиваю...', { parse_mode: 'HTML' });
 
-        // 3. Сохранение
+        // 3. Скачивание и сохранение
         const tempPath = path.join(os.tmpdir(), `proc_${Date.now()}.mp3`);
         try {
             const writer = fs.createWriteStream(tempPath);
@@ -369,11 +380,30 @@ bot.command('minus', async (ctx) => {
 
         if (cachedInstId) await saveKaraokeCache(uniqueId, cachedInstId, null, metaPerformer, metaTitle);
 
+        // === ОТПРАВКА РЕЗУЛЬТАТА ===
         const finalSend = cachedInstId || { url: res.Instrumental };
-        await ctx.replyWithAudio(finalSend, {
-            caption: `🎼 <b>Инструментал (Минус)</b>\n🤖 Сделано ботом @${escapeHTML(ctx.botInfo.username)}`,
-            parse_mode: 'HTML', title: `${metaTitle} (Inst)`, performer: metaPerformer
-        });
+        
+        // Создаем кнопку
+        const lyricsId = `ly_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 5)}`;
+        lyricsSessions.set(lyricsId, { artist: metaPerformer, title: metaTitle });
+
+        try {
+            await ctx.replyWithAudio(finalSend, {
+                caption: `🎼 <b>Инструментал (Минус)</b>\n🤖 Сделано ботом @${escapeHtml(ctx.botInfo.username)}`,
+                parse_mode: 'HTML', 
+                title: `${metaTitle} (Inst)`, 
+                performer: metaPerformer,
+                ...Markup.inlineKeyboard([
+                    Markup.button.callback('📜 Текст песни', lyricsId)
+                ])
+            });
+        } catch (e) {
+             await ctx.replyWithAudio(finalSend, {
+                caption: `🎼 Инструментал (Минус)\n🤖 Сделано ботом @${ctx.botInfo?.username}`,
+                title: `${metaTitle} (Inst)`, performer: metaPerformer
+            });
+        }
+
         await ctx.deleteMessage(statusMsg.message_id).catch(()=>{});
 
     } catch (e) {
@@ -388,20 +418,80 @@ bot.command('minus', async (ctx) => {
         processingSet.delete(uniqueId);
     }
 });
-
+// --- ПОИСК МИНУСОВОК (С КНОПКАМИ) ---
 bot.command('findminus', async (ctx) => {
-    const query = ctx.payload;
-    if (!query) return ctx.reply('🔍 Пример: <code>/findminus Eminem</code>', { parse_mode: 'HTML' });
-    const res = await searchKaraoke(query);
-    if (res.length === 0) return ctx.reply('❌ Не найдено.');
+    const query = ctx.payload; // Текст после команды
     
-    const t = res[0];
-    await ctx.replyWithAudio(t.instrumental_file_id, {
-        caption: `🔎 Результат: <b>${t.performer} - ${t.title}</b>`, parse_mode: 'HTML',
-        title: t.title + ' (Inst)', performer: t.performer
+    if (!query) {
+        return ctx.reply('🔍 Введите название или исполнителя.\nПример: <code>/findminus Linkin Park</code>', { parse_mode: 'HTML' });
+    }
+
+    const results = await searchKaraoke(query);
+
+    if (results.length === 0) {
+        return ctx.reply('❌ Минусовки не найдены.');
+    }
+
+    // Если 1 результат — сразу кидаем файл
+    if (results.length === 1) {
+        const t = results[0];
+        return ctx.replyWithAudio(t.instrumental_file_id, {
+            caption: `🔎 Найдено: <b>${t.performer} - ${t.title}</b>`,
+            parse_mode: 'HTML',
+            title: `${t.title} (Inst)`,
+            performer: t.performer
+        });
+    }
+
+    // Если результатов много — показываем кнопки
+    const buttons = results.map(t => {
+        // Формируем текст кнопки: "Artist - Title"
+        let label = `${t.performer} - ${t.title}`;
+        if (label.length > 30) label = label.substring(0, 28) + '..';
+        
+        // Используем уникальный ID файла для коллбека
+        return [Markup.button.callback(`🎵 ${label}`, `km_${t.file_unique_id}`)];
+    });
+
+    // Добавляем кнопку отмены
+    buttons.push([Markup.button.callback('❌ Закрыть', 'delete_msg')]);
+
+    await ctx.reply(`🔎 <b>Найдено ${results.length} вариантов:</b>\nВыберите нужный:`, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard(buttons)
     });
 });
 
+// --- ОБРАБОТЧИК ВЫБОРА ИЗ ПОИСКА ---
+bot.action(/^km_(.+)/, async (ctx) => {
+    const uniqueId = ctx.match[1]; 
+
+    try {
+        await ctx.answerCbQuery('Загружаю...');
+        
+        // Ищем трек в базе
+        const cached = await getKaraokeCache(uniqueId);
+        
+        if (!cached || !cached.instrumental_file_id) {
+            return ctx.editMessageText('❌ Файл больше недоступен.');
+        }
+
+        // Отправляем файл
+        await ctx.replyWithAudio(cached.instrumental_file_id, {
+            caption: `🎼 <b>Инструментал (Минус)</b>\n🤖 @${escapeHtml(ctx.botInfo.username)}`,
+            parse_mode: 'HTML',
+            title: `${cached.title} (Inst)`,
+            performer: cached.performer
+        });
+
+    } catch (e) {
+        console.error(e);
+        ctx.answerCbQuery('Ошибка', { show_alert: true });
+    }
+});
+
+// Обработчик кнопки удаления (если его еще нет)
+bot.action('delete_msg', (ctx) => ctx.deleteMessage().catch(() => {}));
 // --- АДМИНСКИЕ УТИЛИТЫ (FIX USER / FIX FILE) ---
 
 bot.command('fixuser', async (ctx) => {
@@ -596,7 +686,43 @@ bot.hears(T('mytracks'), async (ctx) => {
         if (chunk.length) await ctx.replyWithMediaGroup(chunk.map(t => ({ type: 'audio', media: t.fileId })));
     }
 });
+// --- ОБРАБОТЧИК КНОПКИ ТЕКСТА ---
+bot.action(/^ly_/, async (ctx) => {
+    const id = ctx.match.input; // Получаем ID кнопки
+    const session = lyricsSessions.get(id);
 
+    if (!session) {
+        return ctx.answerCbQuery('⚠️ Срок действия кнопки истек.');
+    }
+
+    await ctx.answerCbQuery('🔍 Ищу текст...');
+    
+    try {
+        const result = await getLyrics(session.artist, session.title);
+
+        if (!result) {
+            return ctx.reply('😔 Текст для этой песни не найден.', { reply_to_message_id: ctx.callbackQuery.message.message_id });
+        }
+
+        // Если текст слишком длинный (лимит телеграма 4096), режем
+        const header = `🎤 <b>${result.artist} - ${result.title}</b>\n\n`;
+        let lyricsText = result.text;
+        
+        if (lyricsText.length > 3800) {
+            lyricsText = lyricsText.substring(0, 3800) + '...\n(Текст обрезан)';
+        }
+
+        // Отправляем текст
+        await ctx.reply(header + lyricsText, { 
+            parse_mode: 'HTML',
+            disable_web_page_preview: true 
+        });
+
+    } catch (e) {
+        console.error(e);
+        ctx.reply('Ошибка при получении текста.');
+    }
+});
 bot.hears('🆔 Распознать', (ctx) => ctx.reply('Отправьте аудио или голосовое...'));
 bot.hears(T('help'), (ctx) => ctx.reply(T('helpInfo'), { parse_mode: 'HTML' }));
 bot.hears(T('upgrade'), (ctx) => ctx.reply(T('upgradeInfo'), { parse_mode: 'HTML' }));
