@@ -1783,19 +1783,29 @@ export async function findKaraokeByMetadata(performer, title) {
     }
 }
 
-// 3. Поиск для ручной команды /findminus (частичное совпадение)
+// --- ПОИСК МИНУСОВОК (ПО КЛЮЧЕВЫМ СЛОВАМ) ---
 export async function searchKaraoke(query) {
+    if (!query) return [];
     try {
-        const likeQuery = `%${query}%`;
-        const res = await pool.query(
-            `SELECT * FROM karaoke_cache 
-             WHERE (title ILIKE $1 OR performer ILIKE $1)
-             AND instrumental_file_id IS NOT NULL 
-             LIMIT 10`,
-            [likeQuery]
-        );
+        // Разбиваем запрос на слова (например "Eminem Lose" -> ["Eminem", "Lose"])
+        const terms = query.trim().split(/\s+/).filter(t => t.length > 0);
+        if (terms.length === 0) return [];
+
+        let sql = `SELECT * FROM karaoke_cache WHERE instrumental_file_id IS NOT NULL`;
+        const params = [];
+
+        // Для каждого слова добавляем условие: слово должно быть в названии ИЛИ исполнителе
+        terms.forEach((term, index) => {
+            sql += ` AND (performer ILIKE $${index + 1} OR title ILIKE $${index + 1})`;
+            params.push(`%${term}%`); 
+        });
+
+        sql += ` ORDER BY created_at DESC LIMIT 10`;
+
+        const res = await pool.query(sql, params);
         return res.rows;
     } catch (e) {
+        console.error('[DB] Search error:', e.message);
         return [];
     }
 }
