@@ -41,13 +41,14 @@ let isAdminUploadMode = false;
 const uploadQueue = [];            
 let isUploading = false;           
 
-// Функция для экранирования HTML
-const escapeHTML = (str) => {
+// Функция для экранирования HTML (используется везде)
+function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/[&<>"']/g, (m) => ({ 
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' 
     })[m]);
-};
+}
+const escapeHTML = escapeHtml; // Алиас на случай, если где-то осталось старое имя
 
 function sanitizeFilename(name) {
   if (!name || typeof name !== 'string') return 'track';
