@@ -1005,7 +1005,7 @@ app.post('/tariffs/reset-others', requireAuth, async (req, res) => {
     }
   });
 
-  // 2. Починить кэш
+   // 2. Починить кэш
   app.post('/admin/user/:id/fix-cache', requireAuth, async (req, res) => {
     try {
       const userId = req.params.id;
@@ -1020,6 +1020,7 @@ app.post('/tariffs/reset-others', requireAuth, async (req, res) => {
     }
   });
 
-}
+} 
+
 // Запускаем приложение
 startApp();
