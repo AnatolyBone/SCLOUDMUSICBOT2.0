@@ -464,6 +464,7 @@ bot.command('findminus', async (ctx) => {
 });
 
 // --- ОБРАБОТЧИК ВЫБОРА ИЗ ПОИСКА ---
+// --- ОБРАБОТЧИК ВЫБОРА ИЗ ПОИСКА (/findminus) ---
 bot.action(/^km_(.+)/, async (ctx) => {
     const uniqueId = ctx.match[1]; 
 
@@ -477,12 +478,19 @@ bot.action(/^km_(.+)/, async (ctx) => {
             return ctx.editMessageText('❌ Файл больше недоступен.');
         }
 
-        // Отправляем файл
+        // --- СОЗДАЕМ КНОПКУ ТЕКСТА ---
+        const lyricsId = `ly_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 5)}`;
+        lyricsSessions.set(lyricsId, { artist: cached.performer, title: cached.title });
+
+        // Отправляем файл С КНОПКОЙ
         await ctx.replyWithAudio(cached.instrumental_file_id, {
-            caption: `🎼 <b>Инструментал (Минус)</b>\n🤖 @${escapeHtml(ctx.botInfo.username)}`,
+            caption: `🎼 <b>Инструментал (Минус)</b>\n🤖 @${escapeHTML(ctx.botInfo.username)}`,
             parse_mode: 'HTML',
             title: `${cached.title} (Inst)`,
-            performer: cached.performer
+            performer: cached.performer,
+            ...Markup.inlineKeyboard([
+                Markup.button.callback('📜 Текст песни', lyricsId) // <--- ВОТ ОНА
+            ])
         });
 
     } catch (e) {
