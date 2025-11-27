@@ -1,43 +1,64 @@
 // src/services/lyricsService.js
-import { Client } from "genius-lyrics";
+import axios from 'axios';
+import * as cheerio from 'cheerio'; // Библиотека для парсинга HTML
 
+// Получаем токен
 const GENIUS_TOKEN = process.env.GENIUS_ACCESS_TOKEN;
-
-// 1. Создаем клиент БЕЗ токена (чтобы избежать ошибки конструктора)
-const client = new Client(); 
 
 export async function getLyrics(artist, title) {
     try {
+        if (!GENIUS_TOKEN) throw new Error('Genius Token not set');
+
+        // 1. Поиск песни через API
         const query = `${artist} ${title}`
             .replace(/\(Instrumental\)/gi, '')
             .replace(/\(Minus\)/gi, '')
             .replace(/\(Karaoke\)/gi, '')
             .trim();
+
+        const searchUrl = `https://api.genius.com/search?q=${encodeURIComponent(query)}`;
         
-        // 2. Передаем токен ПРЯМО В ЗАПРОС (apiKey)
-        const searches = await client.songs.search(query, { 
-            apiKey: GENIUS_TOKEN,
-            optimizeQuery: true 
+        const searchRes = await axios.get(searchUrl, {
+            headers: { 'Authorization': `Bearer ${GENIUS_TOKEN}` }
         });
+
+        const hits = searchRes.data?.response?.hits;
+        if (!hits || hits.length === 0) return null;
+
+        const song = hits[0].result;
+        const songUrl = song.url;
+
+        // 2. Парсинг текста со страницы (Genius API не отдает сам текст, только ссылку)
+        // Мы идем на страницу и берем текст оттуда.
+        const pageRes = await axios.get(songUrl);
+        const $ = cheerio.load(pageRes.data);
+
+        // Genius часто меняет классы, поэтому пробуем разные селекторы
+        let lyrics = $('div[class*="Lyrics__Container"]').text(); 
         
-        if (!searches || searches.length === 0) {
-            return null;
+        // Если новый дизайн не сработал, пробуем старый
+        if (!lyrics) {
+            lyrics = $('.lyrics').text();
         }
 
-        const firstSong = searches[0];
-        const lyrics = await firstSong.lyrics();
-        
+        // Чистим текст (добавляем переносы строк, где они склеились)
+        // Cheerio .text() склеивает блоки, поэтому нужно аккуратно форматировать.
+        // Но для простоты пока вернем как есть, или используем спец. трюк:
+        $('br').replaceWith('\n');
+        lyrics = $('div[class*="Lyrics__Container"]').text();
+
         if (!lyrics) return null;
 
         return {
-            text: lyrics,
-            title: firstSong.title,
-            artist: firstSong.artist.name,
-            image: firstSong.thumbnail,
-            url: firstSong.url
+            text: lyrics.trim(),
+            title: song.title,
+            artist: song.primary_artist.name,
+            image: song.song_art_image_thumbnail_url,
+            url: songUrl
         };
+
     } catch (e) {
-        console.error('[Lyrics] Error:', e.message);
+        console.error('[Lyrics] Manual Fetch Error:', e.message);
         return null;
     }
 }
