@@ -1,78 +1,95 @@
 // src/services/lyricsService.js
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-
-const GENIUS_TOKEN = process.env.GENIUS_ACCESS_TOKEN;
+import puppeteer from 'puppeteer';
 
 export async function getLyrics(artist, title) {
+    let browser = null;
     try {
-        if (!GENIUS_TOKEN) throw new Error('Genius Token not set');
-
-        // 1. Чистим запрос
+        // 1. Чистим запрос (удаляем мусор)
         const query = `${artist} ${title}`
             .replace(/\(Instrumental\)/gi, '')
             .replace(/\(Minus\)/gi, '')
-            .replace(/\(Karaoke\)/gi, '')
+            .replace(/\(Karaoke\)/gi, '') // Убираем слово Караоке
+            .replace(/Karaoke/gi, '')     // На всякий случай без скобок
             .trim();
 
         console.log(`[Lyrics] Searching for: ${query}`);
 
-        // 2. Ищем песню через API
-        // ВАЖНО: Добавляем User-Agent, чтобы Genius не блокировал
-        const searchRes = await axios.get(`https://api.genius.com/search?q=${encodeURIComponent(query)}`, {
-            headers: { 
-                'Authorization': `Bearer ${GENIUS_TOKEN}`,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
+        // 2. Запускаем браузер
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: ['--no-sandbox', '--disable-setuid-sandbox'] // Нужно для Render
         });
+        const page = await browser.newPage();
+        
+        // Притворяемся обычным пользователем
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-        const hits = searchRes.data?.response?.hits;
-        if (!hits || hits.length === 0) {
-            console.log('[Lyrics] No hits found');
+        // 3. Идем в Google (лайфхак: ищем "genius.com + название песни")
+        // Это работает лучше, чем поиск на самом Genius
+        await page.goto(`https://www.google.com/search?q=site:genius.com+${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded' });
+
+        // Ищем первую ссылку на genius.com в выдаче
+        const linkSelector = 'a[href*="genius.com"]';
+        await page.waitForSelector(linkSelector, { timeout: 5000 }); // Ждем 5 сек
+        
+        const songUrl = await page.$eval(linkSelector, el => el.href);
+        
+        if (!songUrl) {
+            console.log('[Lyrics] Not found in Google');
             return null;
         }
+        console.log(`[Lyrics] Found URL: ${songUrl}`);
 
-        const song = hits[0].result;
-        const songUrl = song.url;
-        console.log(`[Lyrics] Found: ${song.full_title} (${songUrl})`);
+        // 4. Идем на страницу песни
+        await page.goto(songUrl, { waitUntil: 'domcontentloaded' });
 
-        // 3. Парсим страницу с текстом
-        const pageRes = await axios.get(songUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        // 5. Парсим текст (ищем контейнеры с текстом)
+        const lyrics = await page.evaluate(() => {
+            // Скрипт выполняется ВНУТРИ страницы
+            let text = '';
+            const containers = document.querySelectorAll('[data-lyrics-container="true"]');
+            
+            if (containers.length > 0) {
+                containers.forEach(div => {
+                    // Заменяем <br> на \n для сохранения переносов
+                    div.innerHTML = div.innerHTML.replace(/<br\s*\/?>/gi, '\n');
+                    text += div.innerText + '\n\n';
+                });
+            } else {
+                // Старый дизайн
+                const oldDiv = document.querySelector('.lyrics');
+                if (oldDiv) {
+                    oldDiv.innerHTML = oldDiv.innerHTML.replace(/<br\s*\/?>/gi, '\n');
+                    text = oldDiv.innerText;
+                }
             }
+            return text.trim();
         });
 
-        const $ = cheerio.load(pageRes.data);
-
-        // Пытаемся найти контейнеры с текстом
-        let lyrics = '';
-        
-        // Новый дизайн Genius (несколько контейнеров)
-        $('div[data-lyrics-container="true"]').each((i, elem) => {
-            // Заменяем <br> на переносы строк перед получением текста
-            $(elem).find('br').replaceWith('\n');
-            lyrics += $(elem).text() + '\n\n';
+        // Парсим заголовок и картинку
+        const meta = await page.evaluate(() => {
+            const titleEl = document.querySelector('h1');
+            const imgEl = document.querySelector('meta[property="og:image"]');
+            return {
+                title: titleEl ? titleEl.innerText : 'Unknown',
+                image: imgEl ? imgEl.content : null
+            };
         });
 
-        // Старый дизайн (на всякий случай)
-        if (!lyrics.trim()) {
-            $('.lyrics').find('br').replaceWith('\n');
-            lyrics = $('.lyrics').text();
-        }
-
-        if (!lyrics.trim()) return null;
+        if (!lyrics) return null;
 
         return {
-            text: lyrics.trim(),
-            title: song.title,
-            artist: song.primary_artist.name,
-            image: song.song_art_image_thumbnail_url,
+            text: lyrics,
+            title: meta.title, // Берем реальное название с сайта
+            artist: artist,    // Артиста оставляем нашего (для простоты)
+            image: meta.image,
             url: songUrl
         };
 
     } catch (e) {
-        console.error(`[Lyrics] Manual Fetch Error: ${e.message}`);
+        console.error(`[Lyrics] Puppeteer Error: ${e.message}`);
         return null;
+    } finally {
+        if (browser) await browser.close();
     }
 }
