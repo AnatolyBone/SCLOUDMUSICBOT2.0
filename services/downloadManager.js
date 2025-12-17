@@ -79,10 +79,12 @@ export const QUALITY_PRESETS = {
  */
 async function downloadWithYtdlp(url, quality = 'high') {
   const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.high;
-  const outputPath = path.join(TEMP_DIR, `dl_${Date.now()}.mp3`);
+  const outputDir = TEMP_DIR;
+  const baseName = `dl_${Date.now()}`;
+  const outputTemplate = path.join(outputDir, `${baseName}.%(ext)s`);
   
   const options = {
-    output: outputPath,
+    output: outputTemplate,
     format: 'bestaudio',
     'extract-audio': true,
     'audio-format': 'mp3',
@@ -90,13 +92,21 @@ async function downloadWithYtdlp(url, quality = 'high') {
     ...YTDL_COMMON
   };
   
+  console.log(`[yt-dlp] Скачиваю: ${url}`);
   await ytdl(url, options);
   
-  if (!fs.existsSync(outputPath)) {
+  // Ищем скачанный файл (может быть .mp3, .m4a, .webm и т.д.)
+  const files = fs.readdirSync(outputDir);
+  const downloadedFile = files.find(f => f.startsWith(baseName));
+  
+  if (!downloadedFile) {
+    console.error('[yt-dlp] Файлы в папке:', files);
     throw new Error('Файл не скачан');
   }
   
-  return outputPath;
+  const filePath = path.join(outputDir, downloadedFile);
+  console.log(`[yt-dlp] Скачан: ${filePath}`);
+  return filePath;
 }
 
 // --- Вспомогательные функции ---
