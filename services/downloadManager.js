@@ -75,37 +75,56 @@ export const QUALITY_PRESETS = {
 };
 
 /**
- * Скачивает трек через yt-dlp в файл (fallback, когда потоковая не работает)
+ * Скачивает трек через yt-dlp в файл
  */
 async function downloadWithYtdlp(url, quality = 'high') {
   const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.high;
-  const outputDir = TEMP_DIR;
   const baseName = `dl_${Date.now()}`;
-  const outputTemplate = path.join(outputDir, `${baseName}.%(ext)s`);
+  const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
+  
+  // Убираем кавычки из поискового запроса если есть
+  let searchUrl = url;
+  if (url.startsWith('ytsearch1:')) {
+    // Формат: ytsearch1:"query" -> ytsearch1:query
+    searchUrl = url.replace(/^(ytsearch1:)"?(.+?)"?$/, '$1$2');
+  }
   
   const options = {
     output: outputTemplate,
-    format: 'bestaudio',
+    format: 'bestaudio[ext=m4a]/bestaudio',
     'extract-audio': true,
     'audio-format': 'mp3',
     'audio-quality': preset.bitrate,
-    ...YTDL_COMMON
+    'no-playlist': true,
+    'no-warnings': true,
+    'ffmpeg-location': ffmpegPath,
+    'default-search': 'ytsearch',
+    proxy: PROXY_URL || undefined
   };
   
-  console.log(`[yt-dlp] Скачиваю: ${url}`);
-  await ytdl(url, options);
+  console.log(`[yt-dlp] Скачиваю: ${searchUrl}`);
   
-  // Ищем скачанный файл (может быть .mp3, .m4a, .webm и т.д.)
-  const files = fs.readdirSync(outputDir);
-  const downloadedFile = files.find(f => f.startsWith(baseName));
-  
-  if (!downloadedFile) {
-    console.error('[yt-dlp] Файлы в папке:', files);
-    throw new Error('Файл не скачан');
+  try {
+    const result = await ytdl(searchUrl, options);
+    console.log(`[yt-dlp] Результат:`, result?.stdout?.slice(0, 200) || 'OK');
+  } catch (e) {
+    console.error(`[yt-dlp] Ошибка выполнения:`, e.stderr || e.message);
+    throw e;
   }
   
-  const filePath = path.join(outputDir, downloadedFile);
-  console.log(`[yt-dlp] Скачан: ${filePath}`);
+  // Ищем скачанный файл
+  const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
+  
+  if (files.length === 0) {
+    // Попробуем найти любой недавний файл
+    const allFiles = fs.readdirSync(TEMP_DIR);
+    console.error('[yt-dlp] Нет файлов с префиксом', baseName);
+    console.error('[yt-dlp] Все файлы в папке:', allFiles.slice(0, 10));
+    throw new Error('Файл не скачан - yt-dlp не создал выходной файл');
+  }
+  
+  const filePath = path.join(TEMP_DIR, files[0]);
+  console.log(`[yt-dlp] Скачан: ${filePath} (${fs.statSync(filePath).size} bytes)`);
   return filePath;
 }
 

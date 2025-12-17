@@ -298,11 +298,17 @@ export async function handleQualitySelection(ctx, sessionId, quality) {
   
   // Добавляем в очередь - ищем на YouTube
   for (const track of tracksToProcess) {
+    // Формируем чистый поисковый запрос без спецсимволов
+    const cleanQuery = track.searchQuery
+      .replace(/[^\w\sа-яёА-ЯЁ-]/g, ' ')  // Убираем спецсимволы
+      .replace(/\s+/g, ' ')                // Убираем лишние пробелы
+      .trim();
+    
     const task = {
       userId,
       source: 'spotify',
       // Поиск на YouTube по названию
-      url: `ytsearch1:${track.searchQuery}`,
+      url: `ytsearch1:${cleanQuery}`,
       originalUrl: track.originalUrl,
       quality: quality,
       metadata: {
@@ -314,6 +320,7 @@ export async function handleQualitySelection(ctx, sessionId, quality) {
       priority: user.premium_limit || 5
     };
     
+    console.log(`[Spotify] Добавляю в очередь: "${cleanQuery}"`);
     downloadQueue.add(task);
   }
   
