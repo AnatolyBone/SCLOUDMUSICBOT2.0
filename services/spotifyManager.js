@@ -1,8 +1,6 @@
-// services/spotifyManager.js - Лёгкая версия для Render Free Tier
-// Использует yt-dlp для поиска на YouTube вместо тяжёлого spotdl
+// services/spotifyManager.js - Spotify через официальный API
 
-import ytdl from 'youtube-dl-exec';
-import { PROXY_URL } from '../config.js';
+import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
 
@@ -14,23 +12,69 @@ export const QUALITY_PRESETS = {
   high: { label: '🎧 320 kbps', bitrate: '320K', format: 'mp3' }
 };
 
-// Базовые опции yt-dlp
-const YTDL_COMMON = {
-  'no-warnings': true,
-  'no-playlist': true,
-  proxy: PROXY_URL || undefined
-};
+// ========================= SPOTIFY API =========================
 
-// ========================= SPOTIFY URL PARSING =========================
+let spotifyToken = null;
+let tokenExpiry = 0;
 
-const SPOTIFY_PATTERNS = {
-  track: /spotify\.com\/track\/([a-zA-Z0-9]+)/,
-  album: /spotify\.com\/album\/([a-zA-Z0-9]+)/,
-  playlist: /spotify\.com\/playlist\/([a-zA-Z0-9]+)/
-};
+/**
+ * Получает access token через Client Credentials Flow
+ */
+async function getSpotifyToken() {
+  if (spotifyToken && Date.now() < tokenExpiry) {
+    return spotifyToken;
+  }
+  
+  const credentials = Buffer.from(`${SPOTIPY_CLIENT_ID}:${SPOTIPY_CLIENT_SECRET}`).toString('base64');
+  
+  const response = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${credentials}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: 'grant_type=client_credentials'
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Spotify auth failed: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  spotifyToken = data.access_token;
+  tokenExpiry = Date.now() + (data.expires_in - 60) * 1000; // Обновляем за минуту до истечения
+  
+  console.log('[Spotify] Token получен, истекает через', data.expires_in, 'сек');
+  return spotifyToken;
+}
+
+/**
+ * Делает запрос к Spotify API
+ */
+async function spotifyApi(endpoint) {
+  const token = await getSpotifyToken();
+  
+  const response = await fetch(`https://api.spotify.com/v1${endpoint}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Spotify API error: ${response.status}`);
+  }
+  
+  return response.json();
+}
+
+// ========================= URL PARSING =========================
 
 function parseSpotifyUrl(url) {
-  for (const [type, pattern] of Object.entries(SPOTIFY_PATTERNS)) {
+  const patterns = {
+    track: /spotify\.com\/(?:intl-\w+\/)?track\/([a-zA-Z0-9]+)/,
+    album: /spotify\.com\/(?:intl-\w+\/)?album\/([a-zA-Z0-9]+)/,
+    playlist: /spotify\.com\/(?:intl-\w+\/)?playlist\/([a-zA-Z0-9]+)/
+  };
+  
+  for (const [type, pattern] of Object.entries(patterns)) {
     const match = url.match(pattern);
     if (match) return { type, id: match[1] };
   }
@@ -40,41 +84,62 @@ function parseSpotifyUrl(url) {
 // ========================= METADATA EXTRACTION =========================
 
 /**
- * Получает метаданные Spotify трека через yt-dlp (он умеет парсить Spotify)
+ * Получает метаданные через Spotify API
  */
 async function getSpotifyTrackInfo(url) {
-  try {
-    const info = await ytdl(url, {
-      'dump-single-json': true,
-      'flat-playlist': true,
-      ...YTDL_COMMON
-    });
-    
-    if (info.entries) {
-      // Плейлист/альбом
-      return info.entries.map(entry => ({
-        title: entry.title,
-        artist: entry.artist || entry.uploader || 'Unknown',
-        duration: entry.duration,
-        thumbnail: entry.thumbnail,
-        searchQuery: `${entry.artist || ''} ${entry.title}`.trim(),
-        originalUrl: entry.url || url
-      }));
-    } else {
-      // Одиночный трек
-      return [{
-        title: info.title,
-        artist: info.artist || info.uploader || 'Unknown',
-        duration: info.duration,
-        thumbnail: info.thumbnail,
-        searchQuery: `${info.artist || ''} ${info.title}`.trim(),
-        originalUrl: url
-      }];
-    }
-  } catch (e) {
-    console.error('[Spotify] yt-dlp metadata error:', e.message);
+  const parsed = parseSpotifyUrl(url);
+  
+  if (!parsed) {
+    console.error('[Spotify] Не удалось распарсить URL:', url);
     return null;
   }
+  
+  try {
+    if (parsed.type === 'track') {
+      // Одиночный трек
+      const track = await spotifyApi(`/tracks/${parsed.id}`);
+      return [{
+        title: track.name,
+        artist: track.artists.map(a => a.name).join(', '),
+        duration: Math.round(track.duration_ms / 1000),
+        thumbnail: track.album?.images?.[0]?.url,
+        searchQuery: `${track.artists[0]?.name} - ${track.name}`,
+        originalUrl: url
+      }];
+      
+    } else if (parsed.type === 'album') {
+      // Альбом
+      const album = await spotifyApi(`/albums/${parsed.id}`);
+      return album.tracks.items.map(track => ({
+        title: track.name,
+        artist: track.artists.map(a => a.name).join(', '),
+        duration: Math.round(track.duration_ms / 1000),
+        thumbnail: album.images?.[0]?.url,
+        searchQuery: `${track.artists[0]?.name} - ${track.name}`,
+        originalUrl: track.external_urls?.spotify || url
+      }));
+      
+    } else if (parsed.type === 'playlist') {
+      // Плейлист
+      const playlist = await spotifyApi(`/playlists/${parsed.id}?fields=name,tracks.items(track(name,artists,duration_ms,album(images),external_urls))`);
+      return playlist.tracks.items
+        .filter(item => item.track) // Иногда бывают null
+        .map(item => ({
+          title: item.track.name,
+          artist: item.track.artists.map(a => a.name).join(', '),
+          duration: Math.round(item.track.duration_ms / 1000),
+          thumbnail: item.track.album?.images?.[0]?.url,
+          searchQuery: `${item.track.artists[0]?.name} - ${item.track.name}`,
+          originalUrl: item.track.external_urls?.spotify || url
+        }));
+    }
+    
+  } catch (e) {
+    console.error('[Spotify] API error:', e.message);
+    return null;
+  }
+  
+  return null;
 }
 
 // ========================= SESSION MANAGEMENT =========================
@@ -105,7 +170,12 @@ export async function handleSpotifyUrl(ctx, url) {
   let statusMessage = null;
   
   try {
-    statusMessage = await ctx.reply('🔍 Анализирую ссылку Spotify...');
+    // Проверяем наличие API ключей
+    if (!SPOTIPY_CLIENT_ID || !SPOTIPY_CLIENT_SECRET) {
+      return await ctx.reply('❌ Spotify API не настроен. Обратитесь к администратору.');
+    }
+    
+    statusMessage = await ctx.reply('🔍 Получаю информацию из Spotify...');
     
     const tracks = await getSpotifyTrackInfo(url);
     
@@ -166,9 +236,8 @@ export async function handleSpotifyUrl(ctx, url) {
       const tracksToShow = Math.min(tracks.length, remainingLimit);
       await ctx.telegram.editMessageText(
         ctx.chat.id, statusMessage.message_id, undefined,
-        `📀 <b>Найден плейлист/альбом</b>\n\n` +
-        `🎵 Треков: <b>${tracks.length}</b>\n` +
-        `📥 Доступно: <b>${tracksToShow}</b>\n\n` +
+        `📀 <b>Найдено треков: ${tracks.length}</b>\n\n` +
+        `📥 Доступно для скачивания: <b>${tracksToShow}</b>\n\n` +
         `Выберите качество:`,
         {
           parse_mode: 'HTML',
