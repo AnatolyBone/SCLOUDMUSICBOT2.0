@@ -1,6 +1,6 @@
 // =====================================================================================
-//      СКОПИРУЙТЕ ВЕСЬ ЭТОТ КОД И ПОЛНОСТЬЮ ЗАМЕНИТЕ ИМ СОДЕРЖИМОЕ
-//                       ФАЙЛА services/downloadManager.js
+//      DOWNLOAD MANAGER - ОПТИМИЗИРОВАН ДЛЯ RENDER FREE TIER
+//      Приоритет: потоковая отправка (быстро, без записи на диск)
 // =====================================================================================
 
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL } from '../config.js';
@@ -65,6 +65,39 @@ const YTDL_OPTIONS = {
   'no-playlist': true,
   'ignore-errors': true
 };
+
+// ========================= QUALITY PRESETS =========================
+
+export const QUALITY_PRESETS = {
+  low: { bitrate: '128K', format: 'mp3', label: '128 kbps' },
+  medium: { bitrate: '192K', format: 'mp3', label: '192 kbps' },
+  high: { bitrate: '320K', format: 'mp3', label: '320 kbps' }
+};
+
+/**
+ * Скачивает трек через yt-dlp в файл (fallback, когда потоковая не работает)
+ */
+async function downloadWithYtdlp(url, quality = 'high') {
+  const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.high;
+  const outputPath = path.join(TEMP_DIR, `dl_${Date.now()}.mp3`);
+  
+  const options = {
+    output: outputPath,
+    format: 'bestaudio',
+    'extract-audio': true,
+    'audio-format': 'mp3',
+    'audio-quality': preset.bitrate,
+    ...YTDL_COMMON
+  };
+  
+  await ytdl(url, options);
+  
+  if (!fs.existsSync(outputPath)) {
+    throw new Error('Файл не скачан');
+  }
+  
+  return outputPath;
+}
 
 // --- Вспомогательные функции ---
 
@@ -231,9 +264,11 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
 
 export async function trackDownloadProcessor(task) {
   let statusMessage = null;
-  let tempFilePath = null; // Путь к файлу, если придется качать через yt-dlp
-  let thumbPath = null; // Путь к обложке
+  let tempFilePath = null;
+  let thumbPath = null;
   const userId = parseInt(task.userId, 10);
+  const source = task.source || 'soundcloud';
+  const quality = task.quality || 'high';
   
   try {
     // 1. Проверка лимитов
@@ -244,15 +279,31 @@ export async function trackDownloadProcessor(task) {
     }
 
     // 2. Получение метаданных
-    const ensured = await ensureTaskMetadata(task);
-    const { metadata, cacheKey } = ensured;
-    const { title, uploader, duration, webpage_url: fullUrl } = metadata;
-    const roundedDuration = duration ? Math.round(duration) : undefined;
+    let metadata, cacheKey, fullUrl, title, uploader, roundedDuration;
+    
+    if (source === 'spotify' || source === 'youtube') {
+      // Spotify/YouTube - метаданные уже есть в task, URL = поисковый запрос
+      metadata = task.metadata || {};
+      title = metadata.title || 'Unknown';
+      uploader = metadata.uploader || 'Unknown';
+      roundedDuration = metadata.duration ? Math.round(metadata.duration) : undefined;
+      fullUrl = task.url; // ytsearch1:... или youtube url
+      cacheKey = `${source}:${title}:${uploader}`;
+    } else {
+      // SoundCloud - старая логика
+      const ensured = await ensureTaskMetadata(task);
+      metadata = ensured.metadata;
+      cacheKey = ensured.cacheKey;
+      title = metadata.title;
+      uploader = metadata.uploader;
+      roundedDuration = metadata.duration ? Math.round(metadata.duration) : undefined;
+      fullUrl = metadata.webpage_url || task.url;
+    }
     
     if (!fullUrl) throw new Error(`Нет ссылки на трек: ${title}`);
 
-    // 3. Проверка КЭША (вдруг уже скачали, пока задача лежала в очереди)
-    let cached = await db.findCachedTrack(cacheKey) || await db.findCachedTrack(fullUrl);
+    // 3. Проверка КЭША
+    let cached = await db.findCachedTrack(cacheKey);
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.title}" из кэша.`);
       await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist || uploader, duration: roundedDuration });
@@ -260,36 +311,30 @@ export async function trackDownloadProcessor(task) {
       return;
     }
 
-    statusMessage = await safeSendMessage(userId, `⏳ Начинаю обработку: "${title}"`);
+    const qualityLabel = QUALITY_PRESETS[quality]?.label || quality;
+    statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}" (${qualityLabel})`);
     
     let stream;
     let usedFallback = false;
 
-    // 4. СКАЧИВАНИЕ
-    // Попытка 1: SCDL (быстро, в оперативную память)
-    try {
-        console.log(`[Worker/Stream] (SCDL) Пробую скачать: ${fullUrl}`);
+    // 4. СКАЧИВАНИЕ - ПРИОРИТЕТ ПОТОКОВОЙ ОТПРАВКЕ
+    if (source === 'soundcloud' && fullUrl.includes('soundcloud.com')) {
+      // SoundCloud - потоковая через scdl (БЫСТРО!)
+      try {
+        console.log(`[Worker/Stream] (SCDL) Потоковое скачивание: ${fullUrl}`);
         stream = await scdl.default.download(fullUrl);
-    } catch (scdlError) {
-        // Попытка 2: Fallback YT-DLP (медленнее, через файл, но надежнее для 404/Geo)
-        console.warn(`[Worker] SCDL ошибка (${scdlError.message}). Переключаюсь на YT-DLP...`);
-        
-        tempFilePath = path.join(TEMP_DIR, `dl_${Date.now()}_${userId}.mp3`);
+      } catch (scdlError) {
+        console.warn(`[Worker] SCDL ошибка (${scdlError.message}). Fallback на YT-DLP...`);
+        tempFilePath = await downloadWithYtdlp(fullUrl, quality);
+        stream = fs.createReadStream(tempFilePath);
         usedFallback = true;
-
-        await ytdl(fullUrl, {
-            output: tempFilePath,
-            format: 'bestaudio[ext=mp3]/bestaudio',
-            noPlaylist: true,
-            ...YTDL_COMMON
-        });
-
-        if (fs.existsSync(tempFilePath)) {
-            console.log(`[Worker/Fallback] Файл скачан: ${tempFilePath}`);
-            stream = fs.createReadStream(tempFilePath);
-        } else {
-            throw new Error(`Не удалось скачать трек. Ошибка SCDL: ${scdlError.message}`);
-        }
+      }
+    } else {
+      // Spotify/YouTube - через yt-dlp (поиск на YouTube)
+      console.log(`[Worker/${source}] Скачиваю через yt-dlp: "${title}" (${qualityLabel})`);
+      tempFilePath = await downloadWithYtdlp(fullUrl, quality);
+      stream = fs.createReadStream(tempFilePath);
+      usedFallback = true;
     }
 
     // 5. ОТПРАВКА В TELEGRAM
@@ -392,22 +437,14 @@ export async function trackDownloadProcessor(task) {
 
   } finally {
     // 6. ОЧИСТКА
-    // Удаляем сообщение "Начинаю обработку" ВСЕГДА
     if (statusMessage) {
-      try {
-        await bot.telegram.deleteMessage(userId, statusMessage.message_id);
-      } catch (e) {}
+      try { await bot.telegram.deleteMessage(userId, statusMessage.message_id); } catch (e) {}
     }
     
-    // Удаляем временный файл
     if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try {
-        fs.unlinkSync(tempFilePath);
-        console.log(`[Worker] Временный файл удален.`);
-      } catch (e) { console.error('Ошибка удаления tmp файла:', e); }
+      try { fs.unlinkSync(tempFilePath); } catch (e) {}
     }
     
-    // Удаляем обложку
     if (thumbPath && fs.existsSync(thumbPath)) {
       try { fs.unlinkSync(thumbPath); } catch (e) {}
     }

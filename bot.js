@@ -8,7 +8,8 @@ import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDai
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
-import { spotifyEnqueue } from './services/spotifyManager.js';
+import { handleSpotifyUrl, handleQualitySelection as handleSpotifyQuality } from './services/spotifyManager.js';
+import { handleYouTubeUrl, handleYouTubeQualitySelection } from './services/youtubeManager.js';
 import { downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
 import { identifyTrack } from './services/shazamService.js';
@@ -698,6 +699,24 @@ bot.action('check_subscription', async (ctx) => {
         await ctx.answerCbQuery('Произошла ошибка. Пожалуйста, попробуйте позже.', { show_alert: true });
     }
 });
+
+// ========================= ОБРАБОТЧИКИ ВЫБОРА КАЧЕСТВА =========================
+
+// Spotify качество
+bot.action(/^spq:(.+):(.+)$/, async (ctx) => {
+    const sessionId = ctx.match[1];
+    const quality = ctx.match[2];
+    console.log(`[Spotify] Выбор качества: session=${sessionId}, quality=${quality}`);
+    await handleSpotifyQuality(ctx, sessionId, quality);
+});
+
+// YouTube качество
+bot.action(/^ytq:(.+):(.+)$/, async (ctx) => {
+    const sessionId = ctx.match[1];
+    const quality = ctx.match[2];
+    console.log(`[YouTube] Выбор качества: session=${sessionId}, quality=${quality}`);
+    await handleYouTubeQualitySelection(ctx, sessionId, quality);
+});
 bot.hears(T('menu'), async (ctx) => {
     // 1. Получаем пользователя. Наша новая функция getUser теперь вернет и user.referral_count
     const user = await getUser(ctx.from.id);
@@ -1329,28 +1348,42 @@ bot.on('text', async (ctx) => {
     
     const url = urlMatch[0];
 
-    if (url.includes('soundcloud.com')) {
-        // Для админа пропускаем проверку лимитов
-        if (!isAdmin) {
-            const user = await getUser(ctx.from.id);
-            if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-                const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-                const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-                const bonusText = bonusAvailable
-                  ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-                  : '';
-                const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-                if (bonusAvailable) {
-                  extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
-                }
-                await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
-                return;
+    // Проверка лимитов (для всех, кроме админа)
+    if (!isAdmin) {
+        const user = await getUser(ctx.from.id);
+        if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
+            const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+            const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+            const bonusText = bonusAvailable
+              ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+              : '';
+            const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+            if (bonusAvailable) {
+              extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
             }
+            await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+            return;
         }
+    }
+
+    // Определяем источник и обрабатываем
+    if (url.includes('soundcloud.com')) {
+        // SoundCloud
         handleSoundCloudUrl(ctx, url);
-    } else if (url.includes('open.spotify.com')) {
-        await ctx.reply('🛠 Скачивание из Spotify временно недоступно.');
+    } else if (url.includes('open.spotify.com') || url.includes('spotify.com')) {
+        // Spotify - показываем меню выбора качества
+        handleSpotifyUrl(ctx, url);
+    } else if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')) {
+        // YouTube / YouTube Music - показываем меню выбора качества
+        handleYouTubeUrl(ctx, url);
     } else {
-        await ctx.reply('Я умею скачивать треки из SoundCloud.');
+        await ctx.reply(
+            '🎵 Я умею скачивать музыку из:\n\n' +
+            '• SoundCloud (soundcloud.com)\n' +
+            '• Spotify (open.spotify.com)\n' +
+            '• YouTube Music (music.youtube.com)\n' +
+            '• YouTube (youtube.com)\n\n' +
+            'Просто отправь ссылку!'
+        );
     }
 });

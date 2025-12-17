@@ -1,1 +1,8 @@
+# SoundCloud Downloader
 scdl
+
+# Spotify Downloader (CLI для скачивания из Spotify через YouTube)
+spotdl>=4.2.0
+
+# Shazam для распознавания музыки
+shazamio>=0.4.0
