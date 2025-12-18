@@ -101,6 +101,10 @@ async function downloadWithSpotdl(url, quality = 'high') {
         args.push('--client-id', SPOTIPY_CLIENT_ID, '--client-secret', SPOTIPY_CLIENT_SECRET);
     }
 
+    if (PROXY_URL) {
+        args.push('--proxy', PROXY_URL);
+    }
+
     console.log(`[spotdl] Запуск: python3 ${args.join(' ')}`);
     
     const proc = spawn('python3', args, { cwd: outputDir });
@@ -150,13 +154,15 @@ async function downloadWithYtdlpStream(url) {
       '--no-warnings',
       '--quiet',
       '--no-check-certificates',
-      '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       '--geo-bypass',
-      '--extractor-args', 'youtube:player_client=android,web_music;skip=dash,hls'
+      // Улучшенные аргументы для обхода блокировок
+      '--extractor-args', 'youtube:player_client=ios,web_music;skip=dash,hls',
+      '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
     ];
     
     if (PROXY_URL) {
       args.push('--proxy', PROXY_URL);
+      console.log(`[yt-dlp/stream] Использую прокси: ${PROXY_URL.split('@').pop()}`); // Скрываем логин/пароль
     }
     
     console.log(`[yt-dlp/stream] Запуск: python3 ${args.slice(0, 4).join(' ')}...`);
