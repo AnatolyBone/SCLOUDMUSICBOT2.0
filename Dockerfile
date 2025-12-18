@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir --upgrade --break-system-packages pip && \
     pip3 install --no-cache-dir --upgrade --break-system-packages -r requirements.txt && \
-    pip3 install --no-cache-dir --upgrade --break-system-packages yt-dlp
+    pip3 install --no-cache-dir --upgrade --break-system-packages yt-dlp spotdl
 
 # Node.js зависимости
 COPY package*.json ./
@@ -26,6 +26,6 @@ RUN npm ci --omit=dev
 COPY . .
 
 ENV NODE_ENV=production
-EXPOSE 3000
+EXPOSE 10000
 
 CMD ["node", "index.js"]

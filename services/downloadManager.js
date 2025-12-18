@@ -84,21 +84,22 @@ async function downloadWithSpotdl(url, quality = 'high') {
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
   return new Promise((resolve, reject) => {
-    // spotdl скачивает в текущую папку, поэтому меняем cwd
-    // Используем --format mp3 и --bitrate из пресета
     const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.high;
+    
+    // Вызываем через python3 -m spotdl для надежности
     const args = [
+        '-m', 'spotdl',
         url,
         '--format', 'mp3',
         '--bitrate', preset.bitrate.toLowerCase(),
         '--output', '{title} - {artist}.{output-ext}',
-        '--threads', '1', // Важно для Render!
+        '--threads', '1',
         '--no-cache'
     ];
 
-    console.log(`[spotdl] Запуск: spotdl ${args.join(' ')}`);
+    console.log(`[spotdl] Запуск: python3 ${args.join(' ')}`);
     
-    const proc = spawn('spotdl', args, { cwd: outputDir });
+    const proc = spawn('python3', args, { cwd: outputDir });
 
     proc.stderr.on('data', (data) => {
       const msg = data.toString();
@@ -135,8 +136,9 @@ async function downloadWithYtdlpStream(url) {
   const { spawn } = await import('child_process');
   
   return new Promise((resolve, reject) => {
-    // Формируем аргументы для yt-dlp
+    // Формируем аргументы для yt-dlp через python модуль
     const args = [
+      '-m', 'yt_dlp',
       url,
       '-f', 'bestaudio',
       '-o', '-',  // Вывод в stdout
@@ -144,10 +146,7 @@ async function downloadWithYtdlpStream(url) {
       '--no-warnings',
       '--quiet',
       '--no-check-certificates',
-      '--prefer-free-formats',
-      '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      '--add-header', 'Accept-Language:en-US,en;q=0.5',
+      '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       '--geo-bypass'
     ];
     
@@ -155,9 +154,9 @@ async function downloadWithYtdlpStream(url) {
       args.push('--proxy', PROXY_URL);
     }
     
-    console.log(`[yt-dlp/stream] Запуск: yt-dlp ${args.slice(0, 3).join(' ')}...`);
+    console.log(`[yt-dlp/stream] Запуск: python3 ${args.slice(0, 4).join(' ')}...`);
     
-    const proc = spawn('yt-dlp', args);
+    const proc = spawn('python3', args);
     
     const chunks = [];
     
