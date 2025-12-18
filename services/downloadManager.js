@@ -118,10 +118,11 @@ async function downloadWithSpotdl(url, quality = 'high') {
     }
     */
 
-    if (fs.existsSync(COOKIES_PATH)) {
-        args.push('--cookie-file', COOKIES_PATH);
-        console.log('[spotdl] Использую куки для авторизации');
-    }
+    // spotdl v4.x плохо работает с куками YouTube, поэтому убираем их здесь
+    // if (fs.existsSync(COOKIES_PATH)) {
+    //     args.push('--cookie-file', COOKIES_PATH);
+    //     console.log('[spotdl] Использую куки для авторизации');
+    // }
 
     console.log(`[spotdl] Запуск: python3 ${args.join(' ')}`);
     
@@ -155,7 +156,7 @@ async function downloadWithSpotdl(url, quality = 'high') {
         return reject(new Error('spotdl не создал mp3 файл'));
       }
       
-      const filePath = path.join(outputDir, files[0]);
+      const filePath = path.join(outputDir, mp3Files[0]);
       console.log(`[spotdl] Скачан: ${filePath}`);
       resolve(filePath);
     });
@@ -174,9 +175,13 @@ async function downloadWithYtdlpStream(url) {
   
   return new Promise((resolve, reject) => {
     // Формируем аргументы для yt-dlp через python модуль
+    const searchUrl = url.includes('youtube.com') || url.includes('youtu.be') || url.startsWith('http') 
+      ? url 
+      : `ytsearch1:${url.replace(/^(ytsearch1:|ytmsearch1:)/, '')}`;
+
     const args = [
       '-m', 'yt_dlp',
-      url,
+      searchUrl,
       '-f', 'ba./best', // 100%-рабочий формат на декабрь 2025 — январь 2026
       '-o', '-',  // Вывод в stdout
       '--no-playlist',
@@ -185,7 +190,10 @@ async function downloadWithYtdlpStream(url) {
       '--no-check-certificates',
       '--geo-bypass',
       '--concurrent-fragments', '16',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      '--retries', '10',
+      '--fragment-retries', '20',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      '--referer', 'https://music.youtube.com/'
     ];
     
     if (fs.existsSync(COOKIES_PATH)) {
