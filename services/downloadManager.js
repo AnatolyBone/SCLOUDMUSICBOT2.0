@@ -3,7 +3,11 @@
 //      Приоритет: потоковая отправка (быстро, без записи на диск)
 // =====================================================================================
 
+import fs from 'fs';
+import path from 'path';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
+
+const COOKIES_PATH = '/app/youtube_cookies.txt';
 import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
@@ -106,6 +110,11 @@ async function downloadWithSpotdl(url, quality = 'high') {
         args.push('--proxy', PROXY_URL);
     }
 
+    if (fs.existsSync(COOKIES_PATH)) {
+        args.push('--cookie-file', COOKIES_PATH);
+        console.log('[spotdl] Использую куки для авторизации');
+    }
+
     console.log(`[spotdl] Запуск: python3 ${args.join(' ')}`);
     
     const proc = spawn('python3', args, { cwd: outputDir });
@@ -160,6 +169,11 @@ async function downloadWithYtdlpStream(url) {
       '--extractor-args', 'youtube:player_client=web_embedded,web_music;skip=dash,hls',
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
+    
+    if (fs.existsSync(COOKIES_PATH)) {
+      args.push('--cookies', COOKIES_PATH);
+      console.log('[yt-dlp/stream] Использую куки для авторизации');
+    }
     
     if (PROXY_URL) {
       args.push('--proxy', PROXY_URL);
