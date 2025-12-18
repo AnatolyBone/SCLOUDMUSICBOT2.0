@@ -193,7 +193,8 @@ async function downloadWithYtdlpStream(url) {
     const args = [
       '-m', 'yt_dlp',
       searchUrl,
-      '-f', 'ba./best', // 100%-рабочий формат на декабрь 2025 — январь 2026
+      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best', // Предпочитаем сжатые форматы
+      '--max-filesize', '49M', // Жесткое ограничение Телеграма
       '-o', '-',  // Вывод в stdout
       '--no-playlist',
       '--no-warnings',
@@ -271,18 +272,17 @@ async function downloadWithYtdlp(url, quality = 'high') {
   
   const options = {
     output: outputPath,
-    format: 'bestaudio',
+    format: 'bestaudio/best',
     'extract-audio': true,
     'audio-format': 'mp3',
-    'audio-quality': preset.bitrate,
+    'audio-quality': preset.bitrate.replace('K', ''), // yt-dlp хочет просто число
     'no-playlist': true,
     'no-warnings': true,
     'ffmpeg-location': ffmpegPath,
-    proxy: PROXY_URL || undefined,
     'no-check-certificates': true,
+    'max-filesize': '49M',
     'add-header': [
-      'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-      'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+      'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ]
   };
   
@@ -290,23 +290,21 @@ async function downloadWithYtdlp(url, quality = 'high') {
   
   try {
     await ytdl(url, options);
-  } catch (e) {
-    console.error(`[yt-dlp] Ошибка:`, e.stderr || e.message);
-    throw e;
-  }
-  
-  // Проверяем файл
-  if (!fs.existsSync(outputPath)) {
-    // Ищем файл с любым расширением
+    
+    // Проверяем основной путь
+    if (fs.existsSync(outputPath)) return outputPath;
+
+    // Если yt-dlp добавил расширение сам (например .mp3.mp3 или .m4a)
     const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
     if (files.length > 0) {
       return path.join(TEMP_DIR, files[0]);
     }
-    throw new Error('Файл не создан');
+    
+    throw new Error('Файл не найден после скачивания');
+  } catch (e) {
+    console.error(`[yt-dlp] Ошибка скачивания в файл:`, e.message);
+    throw e;
   }
-  
-  console.log(`[yt-dlp] Скачан: ${outputPath} (${fs.statSync(outputPath).size} bytes)`);
-  return outputPath;
 }
 
 // --- Вспомогательные функции ---
