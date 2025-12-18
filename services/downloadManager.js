@@ -88,12 +88,11 @@ async function downloadWithSpotdl(url, quality = 'high') {
     // Используем --format mp3 и --bitrate из пресета
     const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.high;
     const args = [
-        'download',
         url,
         '--format', 'mp3',
         '--bitrate', preset.bitrate.toLowerCase(),
         '--output', '{title} - {artist}.{output-ext}',
-        '--threads', '1', // Важно для Render! Не более 1 потока
+        '--threads', '1', // Важно для Render!
         '--no-cache'
     ];
 
@@ -483,17 +482,17 @@ export async function trackDownloadProcessor(task) {
         usedFallback = true;
       } catch (spotdlErr) {
         console.warn(`[Worker] spotdl ошибка (${spotdlErr.message}). Fallback на YT-DLP stream...`);
-        // Если spotdl упал, пробуем поиск на YouTube через ytmsearch
-        const cleanQuery = title + ' ' + uploader;
-        stream = await downloadWithYtdlpStream(`ytmsearch1:${cleanQuery}`);
-        usedFallback = false; // Мы не знаем путь к файлу здесь
+        // Если spotdl упал, пробуем поиск на YouTube через ytsearch
+        const cleanQuery = `${title} ${uploader}`;
+        stream = await downloadWithYtdlpStream(`ytsearch1:${cleanQuery}`);
+        usedFallback = false;
       }
     } else {
       // YouTube или поиск - потоковая через yt-dlp
       let searchUrl = fullUrl;
       if (!fullUrl.startsWith('http')) {
         const cleanQuery = fullUrl.replace(/^(ytsearch1:|ytmsearch1:)/, '');
-        searchUrl = `ytmsearch1:${cleanQuery}`;
+        searchUrl = `ytsearch1:${cleanQuery}`; // Используем ytsearch1 как более стабильный
       }
       
       console.log(`[Worker/${source}] Потоковое скачивание через yt-dlp: ${searchUrl}`);

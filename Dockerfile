@@ -7,18 +7,16 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
-    python3-venv \
     ffmpeg \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаем venv для Python и устанавливаем зависимости
+# Устанавливаем зависимости Python глобально
+# --break-system-packages нужен для новых версий Debian/Ubuntu в Docker
 COPY requirements.txt .
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir -r requirements.txt && \
-    pip3 install --no-cache-dir yt-dlp
+RUN pip3 install --no-cache-dir --upgrade --break-system-packages pip && \
+    pip3 install --no-cache-dir --upgrade --break-system-packages -r requirements.txt && \
+    pip3 install --no-cache-dir --upgrade --break-system-packages yt-dlp
 
 # Node.js зависимости
 COPY package*.json ./
