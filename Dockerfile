@@ -1,5 +1,5 @@
-# Минимальный образ Node 18 (Debian slim)
-FROM node:18-slim
+# Минимальный образ Node 20 (Debian slim)
+FROM node:20-slim
 
 WORKDIR /app
 

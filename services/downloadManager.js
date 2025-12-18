@@ -7,7 +7,14 @@ import fs from 'fs';
 import path from 'path';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
 
-const COOKIES_PATH = '/app/youtube_cookies.txt';
+const COOKIES_PATH = path.join(process.cwd(), 'youtube_cookies.txt');
+
+// Добавим проверку при загрузке модуля
+if (fs.existsSync(COOKIES_PATH)) {
+    console.log('🍪 [Cookies] Файл найден по пути:', COOKIES_PATH);
+} else {
+    console.log('🍪 [Cookies] Файл НЕ найден. Ожидался по пути:', COOKIES_PATH);
+}
 import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
