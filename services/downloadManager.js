@@ -127,7 +127,9 @@ async function downloadWithSpotdl(url, quality = 'high') {
     
     const proc = spawn('python3', args, { cwd: outputDir });
 
+    let stderrOutput = '';
     proc.stderr.on('data', (data) => {
+      stderrOutput += data.toString();
       const msg = data.toString();
       if (msg.includes('ERROR') || msg.includes('Exception')) {
           console.error(`[spotdl] stderr: ${msg.trim()}`);
@@ -136,6 +138,7 @@ async function downloadWithSpotdl(url, quality = 'high') {
 
     proc.on('close', (code) => {
       if (code !== 0) {
+        console.error(`[spotdl] Процесс завершился с кодом ${code}. Stderr: ${stderrOutput}`);
         return reject(new Error(`spotdl exited with code ${code}`));
       }
       
@@ -166,13 +169,14 @@ async function downloadWithYtdlpStream(url) {
     const args = [
       '-m', 'yt_dlp',
       url,
-      '-f', 'bestaudio',
+      '-f', 'ba/b', // "Пуленепробиваемый" формат: лучшее аудио или лучший поток вообще
       '-o', '-',  // Вывод в stdout
       '--no-playlist',
       '--no-warnings',
       '--quiet',
       '--no-check-certificates',
       '--geo-bypass',
+      '--concurrent-fragments', '16', // Ускоряем скачивание фрагментов
       // Улучшенные аргументы для обхода блокировок
       '--extractor-args', 'youtube:player_client=web_embedded,web_music;skip=dash,hls',
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
