@@ -179,80 +179,103 @@ async function downloadWithSpotdl(url, quality = 'high') {
 }
 
 /**
- * Скачивает трек через yt-dlp и возвращает поток (без записи на диск)
+ * Скачивает трек через yt-dlp + ffmpeg и возвращает путь к mp3 файлу
+ * (Потоковая отправка не работает для больших файлов, поэтому качаем в файл)
  */
-async function downloadWithYtdlpStream(url) {
+async function downloadWithYtdlpStream(url, quality = 'high') {
   const { spawn } = await import('child_process');
   
   return new Promise((resolve, reject) => {
-    // Формируем аргументы для yt-dlp через python модуль
     const searchUrl = url.includes('youtube.com') || url.includes('youtu.be') || url.startsWith('http') 
       ? url 
       : `ytsearch1:${url.replace(/^(ytsearch1:|ytmsearch1:)/, '')}`;
 
+    const baseName = `stream_${Date.now()}`;
+    const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
+
+    // Определяем битрейт
+    const bitrate = quality === 'high' ? '320K' : quality === 'medium' ? '192K' : '128K';
+
     const args = [
       '-m', 'yt_dlp',
       searchUrl,
-      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best', // Предпочитаем сжатые форматы
-      '--max-filesize', '49M', // Жесткое ограничение Телеграма
-      '-o', '-',  // Вывод в stdout
+      '-f', 'bestaudio',
+      '-x',                              // Extract audio
+      '--audio-format', 'mp3',           // Конвертируем в mp3!
+      '--audio-quality', bitrate,        // Битрейт
+      '-o', outputTemplate,
       '--no-playlist',
       '--no-warnings',
-      '--quiet',
       '--no-check-certificates',
       '--geo-bypass',
-      '--concurrent-fragments', '16',
-      '--retries', '10',
-      '--fragment-retries', '20',
+      '--ffmpeg-location', ffmpegPath,
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      '--referer', 'https://music.youtube.com/'
+      '--retries', '3',
+      '--fragment-retries', '5',
     ];
     
     if (fs.existsSync(COOKIES_PATH)) {
       args.push('--cookies', COOKIES_PATH);
-      console.log('[yt-dlp/stream] Использую куки для авторизации');
+      console.log('[yt-dlp/file] Использую куки');
     }
     
-    // Прокси для yt-dlp на Render с куками обычно вредит, поэтому убираем его
-    // if (PROXY_URL) {
-    //   args.push('--proxy', PROXY_URL);
-    //   console.log(`[yt-dlp/stream] Использую прокси: ${PROXY_URL.split('@').pop()}`);
-    // }
-    
-    console.log(`[yt-dlp/stream] Запуск: python3 ${args.slice(0, 4).join(' ')}...`);
+    console.log(`[yt-dlp/file] Скачиваю: ${searchUrl.slice(0, 60)}...`);
+    console.log(`[yt-dlp/file] Качество: ${bitrate}`);
     
     const proc = spawn('python3', args);
     
-    const chunks = [];
     let stderrOutput = '';
     
-    proc.stdout.on('data', (chunk) => {
-      chunks.push(chunk);
+    proc.stdout.on('data', (data) => {
+      // yt-dlp пишет прогресс в stdout иногда
+      console.log(`[yt-dlp] ${data.toString().slice(0, 100)}`);
     });
     
     proc.stderr.on('data', (data) => {
       const msg = data.toString();
       stderrOutput += msg;
-      if (!msg.includes('WARNING')) {
-        console.log(`[yt-dlp/stream] stderr: ${msg.slice(0, 100)}`);
+      // Показываем прогресс скачивания
+      if (msg.includes('%')) {
+        const match = msg.match(/(\d+\.?\d*)%/);
+        if (match) {
+          process.stdout.write(`\r[yt-dlp] Прогресс: ${match[1]}%`);
+        }
       }
     });
     
     proc.on('close', (code) => {
+      console.log(''); // Новая строка после прогресса
+      
       if (code !== 0) {
-        console.error(`[yt-dlp/stream] Ошибка ${code}. Stderr: ${stderrOutput}`);
+        console.error(`[yt-dlp/file] Код выхода: ${code}`);
+        console.error(`[yt-dlp/file] Stderr: ${stderrOutput.slice(-500)}`);
         return reject(new Error(`yt-dlp exited with code ${code}`));
       }
       
-      if (chunks.length === 0) {
-        return reject(new Error('yt-dlp не вернул данные'));
+      // Ищем созданный файл
+      const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
+      
+      if (files.length === 0) {
+        console.error('[yt-dlp/file] Файл не создан!');
+        console.error(`[yt-dlp/file] Stderr: ${stderrOutput}`);
+        return reject(new Error('yt-dlp не создал файл'));
       }
       
-      const buffer = Buffer.concat(chunks);
-      console.log(`[yt-dlp/stream] Получено ${buffer.length} bytes`);
+      const filePath = path.join(TEMP_DIR, files[0]);
+      const stats = fs.statSync(filePath);
       
-      // Создаём readable stream из буфера
-      const stream = Readable.from(buffer);
+      console.log(`[yt-dlp/file] ✅ Скачан: ${filePath}`);
+      console.log(`[yt-dlp/file] Размер: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+      
+      // Проверяем размер (Telegram лимит ~50 MB)
+      if (stats.size > 48 * 1024 * 1024) {
+        console.warn(`[yt-dlp/file] ⚠️ Файл больше 48 MB, Telegram может отклонить`);
+      }
+      
+      // Возвращаем поток из файла
+      const stream = fs.createReadStream(filePath);
+      stream._filePath = filePath; // Сохраняем путь для очистки
+      
       resolve(stream);
     });
     
@@ -263,48 +286,70 @@ async function downloadWithYtdlpStream(url) {
 }
 
 /**
- * Скачивает трек через yt-dlp в файл (fallback)
+ * Скачивает трек через yt-dlp в файл (надёжный fallback)
  */
 async function downloadWithYtdlp(url, quality = 'high') {
-  const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.high;
-  const baseName = `dl_${Date.now()}`;
-  const outputPath = path.join(TEMP_DIR, `${baseName}.mp3`);
+  const { spawn } = await import('child_process');
   
-  const options = {
-    output: outputPath,
-    format: 'bestaudio/best',
-    'extract-audio': true,
-    'audio-format': 'mp3',
-    'audio-quality': preset.bitrate.replace('K', ''), // yt-dlp хочет просто число
-    'no-playlist': true,
-    'no-warnings': true,
-    'ffmpeg-location': ffmpegPath,
-    'no-check-certificates': true,
-    'max-filesize': '49M',
-    'add-header': [
-      'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    ]
-  };
-  
-  console.log(`[yt-dlp] Скачиваю в файл: ${url}`);
-  
-  try {
-    await ytdl(url, options);
+  return new Promise((resolve, reject) => {
+    const searchUrl = url.startsWith('http') ? url : url;
     
-    // Проверяем основной путь
-    if (fs.existsSync(outputPath)) return outputPath;
-
-    // Если yt-dlp добавил расширение сам (например .mp3.mp3 или .m4a)
-    const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
-    if (files.length > 0) {
-      return path.join(TEMP_DIR, files[0]);
+    const baseName = `dl_${Date.now()}`;
+    const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
+    
+    const bitrate = quality === 'high' ? '320K' : quality === 'medium' ? '192K' : '128K';
+    
+    const args = [
+      '-m', 'yt_dlp',
+      searchUrl,
+      '-f', 'bestaudio',
+      '-x',
+      '--audio-format', 'mp3',
+      '--audio-quality', bitrate,
+      '-o', outputTemplate,
+      '--no-playlist',
+      '--no-warnings',
+      '--ffmpeg-location', ffmpegPath,
+      '--retries', '3',
+    ];
+    
+    if (fs.existsSync(COOKIES_PATH)) {
+      args.push('--cookies', COOKIES_PATH);
     }
     
-    throw new Error('Файл не найден после скачивания');
-  } catch (e) {
-    console.error(`[yt-dlp] Ошибка скачивания в файл:`, e.message);
-    throw e;
-  }
+    console.log(`[yt-dlp/fallback] Скачиваю: ${searchUrl.slice(0, 60)}...`);
+    
+    const proc = spawn('python3', args);
+    
+    let stderrOutput = '';
+    proc.stderr.on('data', (data) => {
+      stderrOutput += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        console.error(`[yt-dlp/fallback] Ошибка ${code}: ${stderrOutput.slice(-300)}`);
+        return reject(new Error(`yt-dlp exited with code ${code}`));
+      }
+      
+      // Ищем файл
+      const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
+      
+      if (files.length === 0) {
+        console.error(`[yt-dlp/fallback] Файлы не найдены. Stderr: ${stderrOutput}`);
+        return reject(new Error('Файл не найден после скачивания'));
+      }
+      
+      const filePath = path.join(TEMP_DIR, files[0]);
+      console.log(`[yt-dlp/fallback] ✅ Готово: ${filePath} (${(fs.statSync(filePath).size / 1024 / 1024).toFixed(2)} MB)`);
+      
+      resolve(filePath);
+    });
+    
+    proc.on('error', (err) => {
+      reject(new Error(`spawn error: ${err.message}`));
+    });
+  });
 }
 
 // --- Вспомогательные функции ---
@@ -636,9 +681,30 @@ export async function trackDownloadProcessor(task) {
       thumbPath = await downloadThumbnail(metadata.thumbnail);
     }
 
+    // Запоминаем путь к файлу из стрима (если есть)
+    if (stream?._filePath && !tempFilePath) {
+      tempFilePath = stream._filePath;
+    }
+
     // А) В канал-хранилище (если настроен)
     if (STORAGE_CHANNEL_ID) {
       try {
+        // Проверяем размер файла
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+          const fileSize = fs.statSync(tempFilePath).size;
+          const fileSizeMB = fileSize / 1024 / 1024;
+          
+          console.log(`[Worker] Размер файла: ${fileSizeMB.toFixed(2)} MB`);
+          
+          if (fileSizeMB > 48) {
+            console.warn(`[Worker] ⚠️ Файл слишком большой (${fileSizeMB.toFixed(1)} MB), пропускаем хранилище`);
+            throw new Error('FILE_TOO_LARGE');
+          }
+          
+          // Пересоздаём стрим
+          stream = fs.createReadStream(tempFilePath);
+        }
+
         console.log(`[Worker] Отправка в хранилище...`);
         
         const sourceName = source === 'soundcloud' ? 'SoundCloud' : 
@@ -668,7 +734,7 @@ export async function trackDownloadProcessor(task) {
       } catch (e) {
         console.error(`❌ Ошибка отправки в хранилище:`, e.message);
         
-        // Если использовали файл, пересоздаём стрим
+        // Если использовали файл, пересоздаём стрим для отправки юзеру
         if (tempFilePath && fs.existsSync(tempFilePath)) {
           stream = fs.createReadStream(tempFilePath);
         }
