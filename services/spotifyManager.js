@@ -307,8 +307,8 @@ export async function handleQualitySelection(ctx, sessionId, quality) {
     const task = {
       userId,
       source: 'spotify',
-      // Поиск на YouTube по названию
-      url: `ytsearch1:${cleanQuery}`,
+      // Просто передаем запрос, downloadManager сам добавит нужный префикс (ytmsearch1)
+      url: cleanQuery,
       originalUrl: track.originalUrl,
       quality: quality,
       metadata: {

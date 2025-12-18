@@ -75,6 +75,61 @@ export const QUALITY_PRESETS = {
 };
 
 /**
+ * Скачивает трек через spotdl (для Spotify)
+ */
+async function downloadWithSpotdl(url, quality = 'high') {
+  const { spawn } = await import('child_process');
+  const baseName = `spot_${Date.now()}`;
+  const outputDir = path.join(TEMP_DIR, baseName);
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    // spotdl скачивает в текущую папку, поэтому меняем cwd
+    // Используем --format mp3 и --bitrate из пресета
+    const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.high;
+    const args = [
+        'download',
+        url,
+        '--format', 'mp3',
+        '--bitrate', preset.bitrate.toLowerCase(),
+        '--output', '{title} - {artist}.{output-ext}',
+        '--threads', '1', // Важно для Render! Не более 1 потока
+        '--no-cache'
+    ];
+
+    console.log(`[spotdl] Запуск: spotdl ${args.join(' ')}`);
+    
+    const proc = spawn('spotdl', args, { cwd: outputDir });
+
+    proc.stderr.on('data', (data) => {
+      const msg = data.toString();
+      if (msg.includes('ERROR') || msg.includes('Exception')) {
+          console.error(`[spotdl] stderr: ${msg.trim()}`);
+      }
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        return reject(new Error(`spotdl exited with code ${code}`));
+      }
+      
+      const files = fs.readdirSync(outputDir);
+      if (files.length === 0) {
+        return reject(new Error('spotdl не создал файл'));
+      }
+      
+      const filePath = path.join(outputDir, files[0]);
+      console.log(`[spotdl] Скачан: ${filePath}`);
+      resolve(filePath);
+    });
+
+    proc.on('error', (err) => {
+      reject(new Error(`spotdl spawn error: ${err.message}`));
+    });
+  });
+}
+
+/**
  * Скачивает трек через yt-dlp и возвращает поток (без записи на диск)
  */
 async function downloadWithYtdlpStream(url) {
@@ -410,7 +465,7 @@ export async function trackDownloadProcessor(task) {
 
     // 4. СКАЧИВАНИЕ - ПРИОРИТЕТ ПОТОКОВОЙ ОТПРАВКЕ
     if (source === 'soundcloud' && fullUrl.includes('soundcloud.com')) {
-      // SoundCloud - потоковая через scdl (БЫСТРО!)
+      // SoundCloud - потоковая через scdl
       try {
         console.log(`[Worker/Stream] (SCDL) Потоковое скачивание: ${fullUrl}`);
         stream = await scdl.default.download(fullUrl);
@@ -419,18 +474,29 @@ export async function trackDownloadProcessor(task) {
         stream = await downloadWithYtdlpStream(fullUrl);
         usedFallback = true;
       }
-    } else {
-      // Spotify/YouTube - потоковая через yt-dlp
-      console.log(`[Worker/${source}] Потоковое скачивание через yt-dlp: "${title}"`);
-      
-      // Используем ytmsearch1: для музыки (YouTube Music) - это обходит многие блокировки
-      let searchUrl = fullUrl;
-      if (source === 'spotify' || source === 'youtube') {
-        if (!fullUrl.startsWith('http')) {
-          searchUrl = `ytmsearch1:${fullUrl}`;
-        }
+    } else if (source === 'spotify' && task.originalUrl?.includes('spotify.com')) {
+      // Spotify - используем spotdl для лучшего качества и метаданных
+      console.log(`[Worker/spotify] Скачивание через spotdl: ${task.originalUrl}`);
+      try {
+        tempFilePath = await downloadWithSpotdl(task.originalUrl, quality);
+        stream = fs.createReadStream(tempFilePath);
+        usedFallback = true;
+      } catch (spotdlErr) {
+        console.warn(`[Worker] spotdl ошибка (${spotdlErr.message}). Fallback на YT-DLP stream...`);
+        // Если spotdl упал, пробуем поиск на YouTube через ytmsearch
+        const cleanQuery = title + ' ' + uploader;
+        stream = await downloadWithYtdlpStream(`ytmsearch1:${cleanQuery}`);
+        usedFallback = false; // Мы не знаем путь к файлу здесь
       }
-
+    } else {
+      // YouTube или поиск - потоковая через yt-dlp
+      let searchUrl = fullUrl;
+      if (!fullUrl.startsWith('http')) {
+        const cleanQuery = fullUrl.replace(/^(ytsearch1:|ytmsearch1:)/, '');
+        searchUrl = `ytmsearch1:${cleanQuery}`;
+      }
+      
+      console.log(`[Worker/${source}] Потоковое скачивание через yt-dlp: ${searchUrl}`);
       try {
         stream = await downloadWithYtdlpStream(searchUrl);
       } catch (streamErr) {
@@ -545,8 +611,20 @@ export async function trackDownloadProcessor(task) {
       try { await bot.telegram.deleteMessage(userId, statusMessage.message_id); } catch (e) {}
     }
     
+    // Удаляем файл или целую папку (для spotdl)
     if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try { fs.unlinkSync(tempFilePath); } catch (e) {}
+      try {
+        const stats = fs.statSync(tempFilePath);
+        const parentDir = path.dirname(tempFilePath);
+        
+        // Удаляем файл
+        fs.unlinkSync(tempFilePath);
+        
+        // Если это была временная папка spotdl (имя начинается на spot_), удаляем её целиком
+        if (path.basename(parentDir).startsWith('spot_')) {
+          fs.rmSync(parentDir, { recursive: true, force: true });
+        }
+      } catch (e) {}
     }
     
     if (thumbPath && fs.existsSync(thumbPath)) {
