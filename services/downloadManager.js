@@ -89,6 +89,7 @@ async function downloadWithSpotdl(url, quality = 'high') {
     // Вызываем через python3 -m spotdl для надежности
     const args = [
         '-m', 'spotdl',
+        'download', // Возвращаем команду download
         url,
         '--format', 'mp3',
         '--bitrate', preset.bitrate.toLowerCase(),
@@ -156,8 +157,8 @@ async function downloadWithYtdlpStream(url) {
       '--no-check-certificates',
       '--geo-bypass',
       // Улучшенные аргументы для обхода блокировок
-      '--extractor-args', 'youtube:player_client=ios,web_music;skip=dash,hls',
-      '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+      '--extractor-args', 'youtube:player_client=web_embedded,web_music;skip=dash,hls',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
     
     if (PROXY_URL) {
