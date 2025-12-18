@@ -111,9 +111,12 @@ async function downloadWithSpotdl(url, quality = 'high') {
         args.push('--client-id', SPOTIPY_CLIENT_ID, '--client-secret', SPOTIPY_CLIENT_SECRET);
     }
 
+    // Прокси удаляем полностью, так как он вызывает Tunnel connection failed
+    /*
     if (PROXY_URL) {
         args.push('--proxy', PROXY_URL);
     }
+    */
 
     if (fs.existsSync(COOKIES_PATH)) {
         args.push('--cookie-file', COOKIES_PATH);
@@ -180,10 +183,11 @@ async function downloadWithYtdlpStream(url) {
       console.log('[yt-dlp/stream] Использую куки для авторизации');
     }
     
-    if (PROXY_URL) {
-      args.push('--proxy', PROXY_URL);
-      console.log(`[yt-dlp/stream] Использую прокси: ${PROXY_URL.split('@').pop()}`); // Скрываем логин/пароль
-    }
+    // Прокси для yt-dlp на Render с куками обычно вредит, поэтому убираем его
+    // if (PROXY_URL) {
+    //   args.push('--proxy', PROXY_URL);
+    //   console.log(`[yt-dlp/stream] Использую прокси: ${PROXY_URL.split('@').pop()}`);
+    // }
     
     console.log(`[yt-dlp/stream] Запуск: python3 ${args.slice(0, 4).join(' ')}...`);
     
