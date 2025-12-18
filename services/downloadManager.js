@@ -16,9 +16,7 @@ if (fs.existsSync(COOKIES_PATH)) {
     console.log('🍪 [Cookies] Файл НЕ найден. Ожидался по пути:', COOKIES_PATH);
 }
 import { Markup } from 'telegraf';
-import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
-import fs from 'fs';
 import scdl from 'soundcloud-downloader';
 import os from 'os';
 import { fileURLToPath } from 'url';
