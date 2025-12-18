@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     ffmpeg \
-    && pip3 install --no-cache-dir --break-system-packages yt-dlp shazamio \
+    curl \
+    && pip3 install --no-cache-dir --upgrade --break-system-packages yt-dlp shazamio \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js зависимости

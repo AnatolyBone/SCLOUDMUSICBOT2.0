@@ -88,7 +88,13 @@ async function downloadWithYtdlpStream(url) {
       '-o', '-',  // Вывод в stdout
       '--no-playlist',
       '--no-warnings',
-      '--quiet'
+      '--quiet',
+      '--no-check-certificates',
+      '--prefer-free-formats',
+      '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      '--add-header', 'Accept-Language:en-US,en;q=0.5',
+      '--geo-bypass'
     ];
     
     if (PROXY_URL) {
@@ -153,7 +159,12 @@ async function downloadWithYtdlp(url, quality = 'high') {
     'no-playlist': true,
     'no-warnings': true,
     'ffmpeg-location': ffmpegPath,
-    proxy: PROXY_URL || undefined
+    proxy: PROXY_URL || undefined,
+    'no-check-certificates': true,
+    'add-header': [
+      'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+      'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+    ]
   };
   
   console.log(`[yt-dlp] Скачиваю в файл: ${url}`);
@@ -411,11 +422,20 @@ export async function trackDownloadProcessor(task) {
     } else {
       // Spotify/YouTube - потоковая через yt-dlp
       console.log(`[Worker/${source}] Потоковое скачивание через yt-dlp: "${title}"`);
+      
+      // Используем ytmsearch1: для музыки (YouTube Music) - это обходит многие блокировки
+      let searchUrl = fullUrl;
+      if (source === 'spotify' || source === 'youtube') {
+        if (!fullUrl.startsWith('http')) {
+          searchUrl = `ytmsearch1:${fullUrl}`;
+        }
+      }
+
       try {
-        stream = await downloadWithYtdlpStream(fullUrl);
+        stream = await downloadWithYtdlpStream(searchUrl);
       } catch (streamErr) {
         console.warn(`[Worker] Stream ошибка (${streamErr.message}). Fallback на файл...`);
-        tempFilePath = await downloadWithYtdlp(fullUrl, quality);
+        tempFilePath = await downloadWithYtdlp(searchUrl, quality);
         stream = fs.createReadStream(tempFilePath);
         usedFallback = true;
       }
