@@ -5,6 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { Readable } from 'stream';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
 
 const COOKIES_PATH = path.join(process.cwd(), 'youtube_cookies.txt');
@@ -240,7 +241,6 @@ async function downloadWithYtdlpStream(url) {
       console.log(`[yt-dlp/stream] Получено ${buffer.length} bytes`);
       
       // Создаём readable stream из буфера
-      const { Readable } = require('stream');
       const stream = Readable.from(buffer);
       resolve(stream);
     });
