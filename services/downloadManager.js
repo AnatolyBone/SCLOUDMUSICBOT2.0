@@ -24,6 +24,16 @@ import { fileURLToPath } from 'url';
 import ytdl from 'youtube-dl-exec';
 import axios from 'axios';
 
+/**
+ * Форматирует секунды в mm:ss
+ */
+function formatDuration(seconds) {
+  if (!seconds) return '—';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 import { bot } from '../bot.js';
 import { T } from '../config/texts.js';
 import { TaskQueue } from '../lib/TaskQueue.js';
@@ -573,13 +583,22 @@ export async function trackDownloadProcessor(task) {
     if (STORAGE_CHANNEL_ID) {
       try {
         console.log(`[Worker/Stream] Отправка в хранилище...`);
-        const audioOpts = { title, performer: uploader, duration: roundedDuration };
-        if (thumbPath) audioOpts.thumb = { source: thumbPath };
         
+        const sourceName = source === 'soundcloud' ? 'SoundCloud' : (source === 'spotify' ? 'Spotify' : 'YouTube Music');
+        const caption = `🎵 <b>${title}</b>\n👤 <b>Артист:</b> ${uploader}\n⏳ <b>Длительность:</b> ${formatDuration(roundedDuration)}\n🔗 <b>Источник:</b> ${sourceName}`;
+
         const sentToStorage = await bot.telegram.sendAudio(
           STORAGE_CHANNEL_ID,
           { source: stream, filename: `${sanitizeFilename(title)}.mp3` },
-          audioOpts
+          {
+            title,
+            performer: uploader,
+            duration: roundedDuration,
+            thumb: thumbPath ? { source: fs.createReadStream(thumbPath) } : undefined,
+            caption,
+            parse_mode: 'HTML',
+            disable_notification: true
+          }
         );
         finalFileId = sentToStorage?.audio?.file_id;
       } catch (e) {
