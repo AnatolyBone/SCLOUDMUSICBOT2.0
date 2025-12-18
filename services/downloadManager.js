@@ -142,10 +142,17 @@ async function downloadWithSpotdl(url, quality = 'high') {
         return reject(new Error(`spotdl exited with code ${code}`));
       }
       
-      const files = fs.readdirSync(outputDir).filter(f => f.endsWith('.mp3'));
-      if (files.length === 0) {
-        console.error(`[spotdl] Файл не создан, хотя код 0. Stderr: ${stderrOutput}`);
-        return reject(new Error('spotdl не создал файл'));
+      const allFiles = fs.readdirSync(outputDir);
+      console.log(`[spotdl] Содержимое папки после работы: ${allFiles.join(', ') || 'пусто'}`);
+
+      const mp3Files = allFiles.filter(f => f.endsWith('.mp3'));
+      if (mp3Files.length === 0) {
+        if (allFiles.length > 0) {
+            console.error(`[spotdl] Скачаны файлы, но нет .mp3: ${allFiles.join(', ')}. Проверьте работу ffmpeg.`);
+        } else {
+            console.error(`[spotdl] Папка пуста, файл не скачан. Stderr: ${stderrOutput}`);
+        }
+        return reject(new Error('spotdl не создал mp3 файл'));
       }
       
       const filePath = path.join(outputDir, files[0]);
@@ -170,7 +177,7 @@ async function downloadWithYtdlpStream(url) {
     const args = [
       '-m', 'yt_dlp',
       url,
-      '-f', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best', // "Пуленепробиваемый" формат
+      '-f', 'ba./best', // 100%-рабочий формат на декабрь 2025 — январь 2026
       '-o', '-',  // Вывод в stdout
       '--no-playlist',
       '--no-warnings',

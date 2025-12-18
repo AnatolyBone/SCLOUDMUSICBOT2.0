@@ -14,9 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Устанавливаем зависимости Python глобально
 # --break-system-packages нужен для новых версий Debian/Ubuntu в Docker
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --upgrade --break-system-packages pip && \
-    pip3 install --no-cache-dir --upgrade --break-system-packages -r requirements.txt && \
-    pip3 install --no-cache-dir --upgrade --break-system-packages yt-dlp spotdl
+RUN pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore pip && \
+    pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore -r requirements.txt && \
+    pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore yt-dlp spotdl
 
 # Node.js зависимости
 COPY package*.json ./
