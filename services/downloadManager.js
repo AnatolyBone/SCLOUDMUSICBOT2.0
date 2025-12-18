@@ -362,10 +362,18 @@ async function ensureTaskMetadata(task) {
   
   if (!metadata) {
     if (!url) throw new Error('TASK_MISSING_URL');
-    console.warn('[Worker] metadata отсутствует, получаю через ytdl для URL:', url);
-    // Добавляем ignore-errors, чтобы не падать на playlist entries
-    const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
-    metadata = extractMetadataFromInfo(info);
+    
+    // Если это не ссылка на SoundCloud, не мучаем их API
+    if (!url.includes('soundcloud.com')) {
+        console.warn('[Worker] Не SoundCloud URL, используем ytdl для метаданных:', url);
+        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        metadata = extractMetadataFromInfo(info);
+    } else {
+        console.warn('[Worker] Metadata отсутствует, получаем через ytdl для SoundCloud:', url);
+        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        metadata = extractMetadataFromInfo(info);
+    }
+    
     if (!metadata) throw new Error('META_MISSING');
   }
   
@@ -402,19 +410,26 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
     let audioSource;
     let method = 'unknown';
     
-    // Пробуем SCDL Stream
-    try {
-      const result = await downloadWithScdlStream(fullUrl || url, title, uploader, roundedDuration);
-      audioSource = { source: result.stream, filename: `${sanitizeFilename(title)}.mp3` };
-      method = 'SCDL';
-    } catch (scdlErr) {
-      console.log(`[DownloadForUser] SCDL failed: ${scdlErr.message}, trying YT-DLP...`);
-      
-      // Fallback на YT-DLP
-      const result = await downloadWithYtdlpFile(fullUrl || url, roundedDuration);
-      tempFilePath = result.filePath;
-      audioSource = { source: fs.createReadStream(tempFilePath), filename: `${sanitizeFilename(title)}.mp3` };
-      method = 'YT-DLP';
+    // Пробуем SCDL Stream ТОЛЬКО если это ссылка SoundCloud
+    if (url.includes('soundcloud.com')) {
+        try {
+          const result = await downloadWithScdlStream(fullUrl || url, title, uploader, roundedDuration);
+          audioSource = { source: result.stream, filename: `${sanitizeFilename(title)}.mp3` };
+          method = 'SCDL';
+        } catch (scdlErr) {
+          console.log(`[DownloadForUser] SCDL failed: ${scdlErr.message}, trying YT-DLP...`);
+          const result = await downloadWithYtdlpFile(fullUrl || url, roundedDuration);
+          tempFilePath = result.filePath;
+          audioSource = { source: fs.createReadStream(tempFilePath), filename: `${sanitizeFilename(title)}.mp3` };
+          method = 'YT-DLP';
+        }
+    } else {
+        // Для всего остального (YouTube, Spotify поиск) используем YT-DLP
+        console.log(`[DownloadForUser] Использую YT-DLP для: ${url}`);
+        const result = await downloadWithYtdlpFile(fullUrl || url, roundedDuration);
+        tempFilePath = result.filePath;
+        audioSource = { source: fs.createReadStream(tempFilePath), filename: `${sanitizeFilename(title)}.mp3` };
+        method = 'YT-DLP';
     }
     
     // Отправляем в хранилище
@@ -469,7 +484,7 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
 }
 
 // =====================================================================================
-//                             ГЛАВНЫЙ ПРОЦЕССОР ЗАГРУЗКИ
+//                             ГЛАВНЫЙ ПРОЦЕССОР ЗАГРУЗКИ (ИСПРАВЛЕННЫЙ)
 // =====================================================================================
 
 export async function trackDownloadProcessor(task) {
@@ -492,13 +507,13 @@ export async function trackDownloadProcessor(task) {
     let metadata, cacheKey, fullUrl, title, uploader, roundedDuration;
     
     if (source === 'spotify' || source === 'youtube') {
-      // Spotify/YouTube - метаданные уже есть в task, URL = поисковый запрос
+      // Spotify/YouTube - метаданные уже есть в task
       metadata = task.metadata || {};
       title = metadata.title || 'Unknown';
       uploader = metadata.uploader || 'Unknown';
       roundedDuration = metadata.duration ? Math.round(metadata.duration) : undefined;
-      fullUrl = task.url; // ytsearch1:... или youtube url
-      cacheKey = `${source}:${title}:${uploader}`;
+      fullUrl = task.url; // поисковый запрос или youtube url
+      cacheKey = `${source}:${title}:${uploader}`.toLowerCase().replace(/\s+/g, '_');
     } else {
       // SoundCloud - старая логика
       const ensured = await ensureTaskMetadata(task);
@@ -514,9 +529,17 @@ export async function trackDownloadProcessor(task) {
 
     // 3. Проверка КЭША
     let cached = await db.findCachedTrack(cacheKey);
+    if (!cached && task.originalUrl) {
+      cached = await db.findCachedTrack(task.originalUrl);
+    }
+    
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.title}" из кэша.`);
-      await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist || uploader, duration: roundedDuration });
+      await bot.telegram.sendAudio(userId, cached.fileId, { 
+        title: cached.title, 
+        performer: cached.artist || uploader, 
+        duration: roundedDuration 
+      });
       await incrementDownload(userId, cached.title, cached.fileId, cacheKey);
       return;
     }
@@ -527,40 +550,71 @@ export async function trackDownloadProcessor(task) {
     let stream;
     let usedFallback = false;
 
-    // 4. СКАЧИВАНИЕ - ПРИОРИТЕТ ПОТОКОВОЙ ОТПРАВКЕ
+    // 4. СКАЧИВАНИЕ - РАЗНАЯ ЛОГИКА ДЛЯ РАЗНЫХ ИСТОЧНИКОВ
+    
     if (source === 'soundcloud' && fullUrl.includes('soundcloud.com')) {
-      // SoundCloud - потоковая через scdl
+      // ===== SOUNDCLOUD =====
       try {
-        console.log(`[Worker/Stream] (SCDL) Потоковое скачивание: ${fullUrl}`);
+        console.log(`[Worker/SoundCloud] Потоковое скачивание: ${fullUrl}`);
         stream = await scdl.default.download(fullUrl);
       } catch (scdlError) {
-        console.warn(`[Worker] SCDL ошибка (${scdlError.message}). Fallback на YT-DLP stream...`);
+        console.warn(`[Worker] SCDL ошибка (${scdlError.message}). Fallback на YT-DLP...`);
         stream = await downloadWithYtdlpStream(fullUrl);
         usedFallback = true;
       }
-    } else if (source === 'spotify' && task.originalUrl?.includes('spotify.com')) {
-      // Spotify - используем spotdl для лучшего качества и метаданных
-      console.log(`[Worker/spotify] Скачивание через spotdl: ${task.originalUrl}`);
-      try {
-        tempFilePath = await downloadWithSpotdl(task.originalUrl, quality);
-        stream = fs.createReadStream(tempFilePath);
-        usedFallback = true;
-      } catch (spotdlErr) {
-        console.warn(`[Worker] spotdl ошибка (${spotdlErr.message}). Fallback на YT-DLP stream...`);
-        // Если spotdl упал, пробуем поиск на YouTube Music через ytmsearch1
-        const cleanQuery = `${title} ${uploader}`;
-        stream = await downloadWithYtdlpStream(`ytmsearch1:${cleanQuery}`);
-        usedFallback = false;
-      }
-    } else {
-      // YouTube или поиск - потоковая через yt-dlp
-      let searchUrl = fullUrl;
-      if (!fullUrl.startsWith('http')) {
-        const cleanQuery = fullUrl.replace(/^(ytsearch1:|ytmsearch1:)/, '');
-        searchUrl = `ytmsearch1:${cleanQuery}`; // Возвращаем YouTube Music
+      
+    } else if (source === 'spotify') {
+      // ===== SPOTIFY =====
+      console.log(`[Worker/Spotify] Обработка: "${title}" by ${uploader}`);
+      
+      // Вариант 1: spotdl (если есть оригинальный spotify URL)
+      if (task.originalUrl?.includes('spotify.com')) {
+        try {
+          console.log(`[Worker/Spotify] Пробуем spotdl: ${task.originalUrl}`);
+          tempFilePath = await downloadWithSpotdl(task.originalUrl, quality);
+          stream = fs.createReadStream(tempFilePath);
+          usedFallback = true;
+        } catch (spotdlErr) {
+          console.warn(`[Worker/Spotify] spotdl ошибка: ${spotdlErr.message}`);
+          // Fallback на YouTube Music
+          tempFilePath = null;
+        }
       }
       
-      console.log(`[Worker/${source}] Потоковое скачивание через yt-dlp: ${searchUrl}`);
+      // Вариант 2: YouTube Music поиск (fallback или основной)
+      if (!stream) {
+        const searchQuery = `${uploader} - ${title}`.replace(/[^\w\sа-яёА-ЯЁ-]/g, ' ').trim();
+        console.log(`[Worker/Spotify] Поиск на YouTube Music: "${searchQuery}"`);
+        
+        try {
+          stream = await downloadWithYtdlpStream(`ytmsearch1:${searchQuery}`);
+        } catch (ytErr) {
+          console.warn(`[Worker/Spotify] ytmsearch1 ошибка: ${ytErr.message}, пробуем ytsearch1...`);
+          // Последний fallback - обычный YouTube
+          try {
+            stream = await downloadWithYtdlpStream(`ytsearch1:${searchQuery}`);
+          } catch (ytErr2) {
+            // Совсем fallback - скачиваем в файл
+            console.warn(`[Worker/Spotify] Stream не работает, качаем в файл...`);
+            tempFilePath = await downloadWithYtdlp(`ytsearch1:${searchQuery}`, quality);
+            stream = fs.createReadStream(tempFilePath);
+            usedFallback = true;
+          }
+        }
+      }
+      
+    } else {
+      // ===== YOUTUBE или другой источник =====
+      let searchUrl = fullUrl;
+      
+      // Если это не URL, а поисковый запрос
+      if (!fullUrl.startsWith('http')) {
+        const cleanQuery = fullUrl.replace(/^(ytsearch1:|ytmsearch1:)/, '').trim();
+        searchUrl = `ytmsearch1:${cleanQuery}`;
+      }
+      
+      console.log(`[Worker/${source}] Потоковое скачивание: ${searchUrl}`);
+      
       try {
         stream = await downloadWithYtdlpStream(searchUrl);
       } catch (streamErr) {
@@ -569,6 +623,11 @@ export async function trackDownloadProcessor(task) {
         stream = fs.createReadStream(tempFilePath);
         usedFallback = true;
       }
+    }
+
+    // Проверяем, что stream существует
+    if (!stream) {
+      throw new Error('Не удалось получить аудио поток');
     }
 
     // 5. ОТПРАВКА В TELEGRAM
@@ -582,10 +641,14 @@ export async function trackDownloadProcessor(task) {
     // А) В канал-хранилище (если настроен)
     if (STORAGE_CHANNEL_ID) {
       try {
-        console.log(`[Worker/Stream] Отправка в хранилище...`);
+        console.log(`[Worker] Отправка в хранилище...`);
         
-        const sourceName = source === 'soundcloud' ? 'SoundCloud' : (source === 'spotify' ? 'Spotify' : 'YouTube Music');
-        const caption = `🎵 <b>${title}</b>\n👤 <b>Артист:</b> ${uploader}\n⏳ <b>Длительность:</b> ${formatDuration(roundedDuration)}\n🔗 <b>Источник:</b> ${sourceName}`;
+        const sourceName = source === 'soundcloud' ? 'SoundCloud' : 
+                          (source === 'spotify' ? 'Spotify' : 'YouTube Music');
+        const caption = `🎵 <b>${title}</b>\n` +
+                       `👤 <b>Артист:</b> ${uploader}\n` +
+                       `⏱ <b>Длительность:</b> ${formatDuration(roundedDuration)}\n` +
+                       `🔗 <b>Источник:</b> ${sourceName}`;
 
         const sentToStorage = await bot.telegram.sendAudio(
           STORAGE_CHANNEL_ID,
@@ -601,46 +664,70 @@ export async function trackDownloadProcessor(task) {
           }
         );
         finalFileId = sentToStorage?.audio?.file_id;
+        
+        console.log(`[Worker] ✅ Загружено в хранилище, file_id: ${finalFileId?.slice(0, 20)}...`);
+        
       } catch (e) {
         console.error(`❌ Ошибка отправки в хранилище:`, e.message);
-        // Если использовали fallback (файл), можно пересоздать стрим
-        if (usedFallback && fs.existsSync(tempFilePath)) {
-            stream = fs.createReadStream(tempFilePath); 
+        
+        // Если использовали файл, пересоздаём стрим
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+          stream = fs.createReadStream(tempFilePath);
         }
-        // Если scdl, стрим умер, но код пойдет ниже в блок "else" и попробует отправить что есть или упадет
       }
     }
 
     // Б) Если получили file_id -> Сохраняем в БД и отправляем юзеру
     if (finalFileId) {
-        const urlAliases = [];
-        if (task.originalUrl && task.originalUrl !== fullUrl) urlAliases.push(task.originalUrl);
-        if (cacheKey && !cacheKey.startsWith('http')) urlAliases.push(cacheKey);
-        
-        await db.cacheTrack({ 
-            url: fullUrl, 
-            fileId: finalFileId, 
-            title, 
-            artist: uploader, 
-            duration: roundedDuration, 
-            thumbnail: metadata.thumbnail, 
-            aliases: urlAliases 
-        });
-        
-        console.log(`✅ [Cache] Трек "${title}" сохранён.`);
-        await bot.telegram.sendAudio(userId, finalFileId, { title, performer: uploader, duration: roundedDuration });
-        await incrementDownload(userId, title, finalFileId, task.originalUrl || fullUrl);
+      const urlAliases = [];
+      if (task.originalUrl && task.originalUrl !== cacheKey) urlAliases.push(task.originalUrl);
+      if (fullUrl && fullUrl !== cacheKey) urlAliases.push(fullUrl);
+      
+      await db.cacheTrack({ 
+        url: cacheKey, 
+        fileId: finalFileId, 
+        title, 
+        artist: uploader, 
+        duration: roundedDuration, 
+        thumbnail: metadata.thumbnail, 
+        aliases: urlAliases 
+      });
+      
+      console.log(`✅ [Cache] Трек "${title}" сохранён (key: ${cacheKey}).`);
+      
+      await bot.telegram.sendAudio(userId, finalFileId, { 
+        title, 
+        performer: uploader, 
+        duration: roundedDuration 
+      });
+      
+      await incrementDownload(userId, title, finalFileId, task.originalUrl || cacheKey);
 
     } else {
-      // В) Если хранилище недоступно -> Отправляем файл напрямую юзеру
+      // В) Если хранилище недоступно -> Отправляем напрямую юзеру
       console.warn('[Worker] Отправляю напрямую пользователю (без кэша)...');
       
-      // Перестраховка для стрима
-      if (usedFallback && fs.existsSync(tempFilePath)) {
+      // Пересоздаём стрим если нужно
+      if (tempFilePath && fs.existsSync(tempFilePath)) {
+        stream = fs.createReadStream(tempFilePath);
+      } else if (!stream || stream.destroyed || stream.readableEnded) {
+        // ✅ ИСПРАВЛЕНО: НЕ используем scdl для Spotify/YouTube!
+        if (source === 'soundcloud' && fullUrl.includes('soundcloud.com')) {
+          try { 
+            stream = await scdl.default.download(fullUrl); 
+          } catch(e) { 
+            throw new Error('Повторное скачивание SoundCloud failed'); 
+          }
+        } else {
+          // Для Spotify/YouTube - качаем заново через yt-dlp
+          const searchQuery = source === 'spotify' 
+            ? `ytmsearch1:${uploader} - ${title}`
+            : fullUrl;
+          
+          console.log(`[Worker] Повторное скачивание через yt-dlp: ${searchQuery}`);
+          tempFilePath = await downloadWithYtdlp(searchQuery, quality);
           stream = fs.createReadStream(tempFilePath);
-      } else if (!usedFallback && (!stream || stream.destroyed)) {
-           // Если scdl стрим сдох, пробуем еще раз scdl (шанс мал, но все же)
-           try { stream = await scdl.default.download(fullUrl); } catch(e) { throw new Error('Повторное скачивание failed'); }
+        }
       }
 
       await bot.telegram.sendAudio(
@@ -648,32 +735,33 @@ export async function trackDownloadProcessor(task) {
         { source: stream, filename: `${sanitizeFilename(title)}.mp3` },
         { title, performer: uploader, duration: roundedDuration }
       );
+      
+      console.log(`✅ [Direct] Отправлено пользователю (без кэша)`);
     }
 
   } catch (err) {
     const errorDetails = err?.stderr || err?.message || 'Unknown error';
     console.error(`❌ Ошибка воркера (User ${userId}):`, errorDetails);
     
-    let userMsg = `❌ Не удалось обработать трек`;
+    let userMsg = `❌ Не удалось скачать трек`;
     const trackTitle = task.metadata?.title || 'Unknown';
-    const trackUrl = task.url || task.originalUrl || '';
+    const trackUrl = task.originalUrl || task.url || '';
     
     if (trackTitle !== 'Unknown') userMsg += `: "${trackTitle}"`;
     
-    // Определяем причину ошибки для логирования
+    // Определяем причину ошибки
     let reason = 'UNKNOWN_ERROR';
     if (errorDetails.includes('404') || errorDetails.includes('Video unavailable')) {
-         userMsg += "\n(Трек удален или приватный)";
-         reason = '404_NOT_FOUND';
+      userMsg += "\n\n💡 Трек не найден на YouTube Music. Попробуйте отправить название трека текстом.";
+      reason = '404_NOT_FOUND';
     } else if (errorDetails.includes('403')) {
-         reason = '403_FORBIDDEN';
-    } else if (errorDetails.includes('PREVIEW') || errorDetails.includes('preview')) {
-         reason = 'PREVIEW_ONLY';
-    } else if (errorDetails.includes('timeout') || errorDetails.includes('TIMEOUT')) {
-         reason = 'TIMEOUT';
+      reason = '403_FORBIDDEN';
+    } else if (errorDetails.includes('Sign in') || errorDetails.includes('bot')) {
+      userMsg += "\n\n⚠️ YouTube требует авторизацию. Попробуйте позже.";
+      reason = 'AUTH_REQUIRED';
     }
     
-    // Логируем битый трек в БД
+    // Логируем битый трек
     await db.logBrokenTrack(trackUrl, trackTitle, userId, reason).catch(() => {});
 
     await safeSendMessage(userId, userMsg);
@@ -684,16 +772,13 @@ export async function trackDownloadProcessor(task) {
       try { await bot.telegram.deleteMessage(userId, statusMessage.message_id); } catch (e) {}
     }
     
-    // Удаляем файл или целую папку (для spotdl)
+    // Удаляем временные файлы
     if (tempFilePath && fs.existsSync(tempFilePath)) {
       try {
-        const stats = fs.statSync(tempFilePath);
-        const parentDir = path.dirname(tempFilePath);
-        
-        // Удаляем файл
         fs.unlinkSync(tempFilePath);
         
-        // Если это была временная папка spotdl (имя начинается на spot_), удаляем её целиком
+        // Если это была папка spotdl
+        const parentDir = path.dirname(tempFilePath);
         if (path.basename(parentDir).startsWith('spot_')) {
           fs.rmSync(parentDir, { recursive: true, force: true });
         }
