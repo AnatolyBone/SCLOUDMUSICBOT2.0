@@ -20,7 +20,7 @@ RUN pip3 install --no-cache-dir --upgrade --break-system-packages pip && \
 
 # Node.js зависимости
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Копируем исходники
 COPY . .
