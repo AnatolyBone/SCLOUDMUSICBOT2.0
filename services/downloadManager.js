@@ -142,8 +142,9 @@ async function downloadWithSpotdl(url, quality = 'high') {
         return reject(new Error(`spotdl exited with code ${code}`));
       }
       
-      const files = fs.readdirSync(outputDir);
+      const files = fs.readdirSync(outputDir).filter(f => f.endsWith('.mp3'));
       if (files.length === 0) {
+        console.error(`[spotdl] Файл не создан, хотя код 0. Stderr: ${stderrOutput}`);
         return reject(new Error('spotdl не создал файл'));
       }
       
@@ -169,16 +170,14 @@ async function downloadWithYtdlpStream(url) {
     const args = [
       '-m', 'yt_dlp',
       url,
-      '-f', 'ba/b', // "Пуленепробиваемый" формат: лучшее аудио или лучший поток вообще
+      '-f', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best', // "Пуленепробиваемый" формат
       '-o', '-',  // Вывод в stdout
       '--no-playlist',
       '--no-warnings',
       '--quiet',
       '--no-check-certificates',
       '--geo-bypass',
-      '--concurrent-fragments', '16', // Ускоряем скачивание фрагментов
-      // Улучшенные аргументы для обхода блокировок
-      '--extractor-args', 'youtube:player_client=web_embedded,web_music;skip=dash,hls',
+      '--concurrent-fragments', '16',
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
     
@@ -198,6 +197,7 @@ async function downloadWithYtdlpStream(url) {
     const proc = spawn('python3', args);
     
     const chunks = [];
+    let stderrOutput = '';
     
     proc.stdout.on('data', (chunk) => {
       chunks.push(chunk);
@@ -205,6 +205,7 @@ async function downloadWithYtdlpStream(url) {
     
     proc.stderr.on('data', (data) => {
       const msg = data.toString();
+      stderrOutput += msg;
       if (!msg.includes('WARNING')) {
         console.log(`[yt-dlp/stream] stderr: ${msg.slice(0, 100)}`);
       }
@@ -212,6 +213,7 @@ async function downloadWithYtdlpStream(url) {
     
     proc.on('close', (code) => {
       if (code !== 0) {
+        console.error(`[yt-dlp/stream] Ошибка ${code}. Stderr: ${stderrOutput}`);
         return reject(new Error(`yt-dlp exited with code ${code}`));
       }
       
@@ -520,9 +522,9 @@ export async function trackDownloadProcessor(task) {
         usedFallback = true;
       } catch (spotdlErr) {
         console.warn(`[Worker] spotdl ошибка (${spotdlErr.message}). Fallback на YT-DLP stream...`);
-        // Если spotdl упал, пробуем поиск на YouTube через ytsearch
+        // Если spotdl упал, пробуем поиск на YouTube Music через ytmsearch1
         const cleanQuery = `${title} ${uploader}`;
-        stream = await downloadWithYtdlpStream(`ytsearch1:${cleanQuery}`);
+        stream = await downloadWithYtdlpStream(`ytmsearch1:${cleanQuery}`);
         usedFallback = false;
       }
     } else {
