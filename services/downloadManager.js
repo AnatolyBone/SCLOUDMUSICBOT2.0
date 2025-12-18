@@ -3,7 +3,7 @@
 //      Приоритет: потоковая отправка (быстро, без записи на диск)
 // =====================================================================================
 
-import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL } from '../config.js';
+import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
 import { Markup } from 'telegraf';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
@@ -97,6 +97,10 @@ async function downloadWithSpotdl(url, quality = 'high') {
         '--no-cache'
     ];
 
+    if (SPOTIPY_CLIENT_ID && SPOTIPY_CLIENT_SECRET) {
+        args.push('--client-id', SPOTIPY_CLIENT_ID, '--client-secret', SPOTIPY_CLIENT_SECRET);
+    }
+
     console.log(`[spotdl] Запуск: python3 ${args.join(' ')}`);
     
     const proc = spawn('python3', args, { cwd: outputDir });
@@ -147,7 +151,8 @@ async function downloadWithYtdlpStream(url) {
       '--quiet',
       '--no-check-certificates',
       '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '--geo-bypass'
+      '--geo-bypass',
+      '--extractor-args', 'youtube:player_client=android,web_music;skip=dash,hls'
     ];
     
     if (PROXY_URL) {
@@ -491,7 +496,7 @@ export async function trackDownloadProcessor(task) {
       let searchUrl = fullUrl;
       if (!fullUrl.startsWith('http')) {
         const cleanQuery = fullUrl.replace(/^(ytsearch1:|ytmsearch1:)/, '');
-        searchUrl = `ytsearch1:${cleanQuery}`; // Используем ytsearch1 как более стабильный
+        searchUrl = `ytmsearch1:${cleanQuery}`; // Возвращаем YouTube Music
       }
       
       console.log(`[Worker/${source}] Потоковое скачивание через yt-dlp: ${searchUrl}`);
