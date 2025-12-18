@@ -180,7 +180,6 @@ async function downloadWithSpotdl(url, quality = 'high') {
 
 /**
  * Скачивает трек через yt-dlp + ffmpeg и возвращает путь к mp3 файлу
- * (Потоковая отправка не работает для больших файлов, поэтому качаем в файл)
  */
 async function downloadWithYtdlpStream(url, quality = 'high') {
   const { spawn } = await import('child_process');
@@ -199,10 +198,12 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
     const args = [
       '-m', 'yt_dlp',
       searchUrl,
-      '-f', 'bestaudio',
+      // ✅ ИСПРАВЛЕНО: Гибкий селектор формата
+      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[height<=480]/best',
       '-x',                              // Extract audio
-      '--audio-format', 'mp3',           // Конвертируем в mp3!
-      '--audio-quality', bitrate,        // Битрейт
+      '--audio-format', 'mp3',           // Конвертируем в mp3
+      '--audio-quality', '0',            // Лучшее качество конвертации
+      '--postprocessor-args', `ffmpeg:-b:a ${bitrate}`,  // Битрейт через ffmpeg
       '-o', outputTemplate,
       '--no-playlist',
       '--no-warnings',
@@ -210,8 +211,11 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
       '--geo-bypass',
       '--ffmpeg-location', ffmpegPath,
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      '--retries', '3',
-      '--fragment-retries', '5',
+      '--retries', '5',
+      '--fragment-retries', '10',
+      '--extractor-retries', '3',
+      // ✅ Важно: разрешаем скачивать даже если нет "чистого" аудио
+      '--format-sort', 'acodec:m4a,acodec:aac,acodec:opus,acodec:mp3',
     ];
     
     if (fs.existsSync(COOKIES_PATH)) {
@@ -227,25 +231,20 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
     let stderrOutput = '';
     
     proc.stdout.on('data', (data) => {
-      // yt-dlp пишет прогресс в stdout иногда
-      console.log(`[yt-dlp] ${data.toString().slice(0, 100)}`);
+      const msg = data.toString().trim();
+      if (msg) console.log(`[yt-dlp] ${msg.slice(0, 150)}`);
     });
     
     proc.stderr.on('data', (data) => {
       const msg = data.toString();
       stderrOutput += msg;
-      // Показываем прогресс скачивания
-      if (msg.includes('%')) {
-        const match = msg.match(/(\d+\.?\d*)%/);
-        if (match) {
-          process.stdout.write(`\r[yt-dlp] Прогресс: ${match[1]}%`);
-        }
+      // Показываем прогресс
+      if (msg.includes('%') || msg.includes('Downloading') || msg.includes('Extracting')) {
+        console.log(`[yt-dlp] ${msg.trim().slice(0, 100)}`);
       }
     });
     
     proc.on('close', (code) => {
-      console.log(''); // Новая строка после прогресса
-      
       if (code !== 0) {
         console.error(`[yt-dlp/file] Код выхода: ${code}`);
         console.error(`[yt-dlp/file] Stderr: ${stderrOutput.slice(-500)}`);
@@ -257,7 +256,7 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
       
       if (files.length === 0) {
         console.error('[yt-dlp/file] Файл не создан!');
-        console.error(`[yt-dlp/file] Stderr: ${stderrOutput}`);
+        console.error(`[yt-dlp/file] Содержимое TEMP_DIR: ${fs.readdirSync(TEMP_DIR).join(', ')}`);
         return reject(new Error('yt-dlp не создал файл'));
       }
       
@@ -266,11 +265,6 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
       
       console.log(`[yt-dlp/file] ✅ Скачан: ${filePath}`);
       console.log(`[yt-dlp/file] Размер: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-      
-      // Проверяем размер (Telegram лимит ~50 MB)
-      if (stats.size > 48 * 1024 * 1024) {
-        console.warn(`[yt-dlp/file] ⚠️ Файл больше 48 MB, Telegram может отклонить`);
-      }
       
       // Возвращаем поток из файла
       const stream = fs.createReadStream(filePath);
@@ -292,8 +286,6 @@ async function downloadWithYtdlp(url, quality = 'high') {
   const { spawn } = await import('child_process');
   
   return new Promise((resolve, reject) => {
-    const searchUrl = url.startsWith('http') ? url : url;
-    
     const baseName = `dl_${Date.now()}`;
     const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
     
@@ -301,47 +293,60 @@ async function downloadWithYtdlp(url, quality = 'high') {
     
     const args = [
       '-m', 'yt_dlp',
-      searchUrl,
-      '-f', 'bestaudio',
+      url,
+      // ✅ Гибкий формат: пробуем аудио, если нет - берём видео и извлекаем аудио
+      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[height<=480]/best',
       '-x',
       '--audio-format', 'mp3',
-      '--audio-quality', bitrate,
+      '--audio-quality', '0',
+      '--postprocessor-args', `ffmpeg:-b:a ${bitrate}`,
       '-o', outputTemplate,
       '--no-playlist',
       '--no-warnings',
       '--ffmpeg-location', ffmpegPath,
-      '--retries', '3',
+      '--retries', '5',
+      '--geo-bypass',
+      '--no-check-certificates',
+      '--format-sort', 'acodec:m4a,acodec:aac,acodec:opus',
     ];
     
     if (fs.existsSync(COOKIES_PATH)) {
       args.push('--cookies', COOKIES_PATH);
     }
     
-    console.log(`[yt-dlp/fallback] Скачиваю: ${searchUrl.slice(0, 60)}...`);
+    console.log(`[yt-dlp/fallback] Скачиваю: ${url.slice(0, 60)}...`);
     
     const proc = spawn('python3', args);
     
     let stderrOutput = '';
+    
+    proc.stdout.on('data', (data) => {
+      console.log(`[yt-dlp] ${data.toString().slice(0, 100)}`);
+    });
+    
     proc.stderr.on('data', (data) => {
       stderrOutput += data.toString();
     });
     
     proc.on('close', (code) => {
       if (code !== 0) {
-        console.error(`[yt-dlp/fallback] Ошибка ${code}: ${stderrOutput.slice(-300)}`);
+        console.error(`[yt-dlp/fallback] Ошибка ${code}: ${stderrOutput.slice(-500)}`);
         return reject(new Error(`yt-dlp exited with code ${code}`));
       }
       
-      // Ищем файл
+      // Ищем файл (может быть .mp3 или другое расширение до конвертации)
       const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
       
       if (files.length === 0) {
-        console.error(`[yt-dlp/fallback] Файлы не найдены. Stderr: ${stderrOutput}`);
+        console.error(`[yt-dlp/fallback] Файлы не найдены.`);
+        console.error(`[yt-dlp/fallback] Stderr: ${stderrOutput}`);
+        console.error(`[yt-dlp/fallback] TEMP_DIR содержит: ${fs.readdirSync(TEMP_DIR).slice(0, 10).join(', ')}`);
         return reject(new Error('Файл не найден после скачивания'));
       }
       
       const filePath = path.join(TEMP_DIR, files[0]);
-      console.log(`[yt-dlp/fallback] ✅ Готово: ${filePath} (${(fs.statSync(filePath).size / 1024 / 1024).toFixed(2)} MB)`);
+      const sizeMB = (fs.statSync(filePath).size / 1024 / 1024).toFixed(2);
+      console.log(`[yt-dlp/fallback] ✅ Готово: ${filePath} (${sizeMB} MB)`);
       
       resolve(filePath);
     });
@@ -607,43 +612,29 @@ export async function trackDownloadProcessor(task) {
       }
       
     } else if (source === 'spotify') {
-      // ===== SPOTIFY =====
+      // ===== SPOTIFY - НОВЫЙ НАДЁЖНЫЙ МЕТОД =====
       console.log(`[Worker/Spotify] Обработка: "${title}" by ${uploader}`);
       
-      // Вариант 1: spotdl (если есть оригинальный spotify URL)
-      if (task.originalUrl?.includes('spotify.com')) {
-        try {
-          console.log(`[Worker/Spotify] Пробуем spotdl: ${task.originalUrl}`);
-          tempFilePath = await downloadWithSpotdl(task.originalUrl, quality);
-          stream = fs.createReadStream(tempFilePath);
-          usedFallback = true;
-        } catch (spotdlErr) {
-          console.warn(`[Worker/Spotify] spotdl ошибка: ${spotdlErr.message}`);
-          // Fallback на YouTube Music
-          tempFilePath = null;
-        }
-      }
+      // Импортируем загрузчик
+      const { downloadSpotifyTrack } = await import('./spotifyDownloader.js');
       
-      // Вариант 2: YouTube Music поиск (fallback или основной)
-      if (!stream) {
-        const searchQuery = `${uploader} - ${title}`.replace(/[^\w\sа-яёА-ЯЁ-]/g, ' ').trim();
-        console.log(`[Worker/Spotify] Поиск на YouTube Music: "${searchQuery}"`);
+      const trackInfo = {
+        title,
+        artist: uploader,
+        duration: roundedDuration
+      };
+      
+      try {
+        const result = await downloadSpotifyTrack(trackInfo, { quality });
+        tempFilePath = result.filePath;
+        stream = fs.createReadStream(tempFilePath);
+        usedFallback = true;
         
-        try {
-          stream = await downloadWithYtdlpStream(`ytmsearch1:${searchQuery}`);
-        } catch (ytErr) {
-          console.warn(`[Worker/Spotify] ytmsearch1 ошибка: ${ytErr.message}, пробуем ytsearch1...`);
-          // Последний fallback - обычный YouTube
-          try {
-            stream = await downloadWithYtdlpStream(`ytsearch1:${searchQuery}`);
-          } catch (ytErr2) {
-            // Совсем fallback - скачиваем в файл
-            console.warn(`[Worker/Spotify] Stream не работает, качаем в файл...`);
-            tempFilePath = await downloadWithYtdlp(`ytsearch1:${searchQuery}`, quality);
-            stream = fs.createReadStream(tempFilePath);
-            usedFallback = true;
-          }
-        }
+        console.log(`[Worker/Spotify] ✅ Файл готов: ${(result.size / 1024 / 1024).toFixed(2)} MB`);
+        
+      } catch (dlError) {
+        console.error(`[Worker/Spotify] ❌ Все методы провалились:`, dlError.message);
+        throw new Error(`Не удалось скачать трек из Spotify: ${dlError.message}`);
       }
       
     } else {

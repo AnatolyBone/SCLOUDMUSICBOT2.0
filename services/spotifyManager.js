@@ -304,24 +304,24 @@ export async function handleQualitySelection(ctx, sessionId, quality) {
       .replace(/\s+/g, ' ')                // Убираем лишние пробелы
       .trim();
     
-    const task = {
-      userId,
-      source: 'spotify',
-      // Просто передаем запрос, downloadManager сам добавит нужный префикс (ytmsearch1)
-      url: cleanQuery,
-      originalUrl: track.originalUrl,
-      quality: quality,
-      metadata: {
-        title: track.title,
-        uploader: track.artist,
-        duration: track.duration,
-        thumbnail: track.thumbnail
-      },
-      priority: user.premium_limit || 5
-    };
-    
-    console.log(`[Spotify] Добавляю в очередь: "${cleanQuery}"`);
-    downloadQueue.add(task);
+      const task = {
+        userId,
+        source: 'spotify',
+        // URL для yt-dlp поиска (НЕ для SoundCloud!)
+        url: `${track.artist} - ${track.title}`,  // Просто текст, downloadManager сам добавит ytmsearch1:
+        originalUrl: track.originalUrl,  // spotify.com/track/xxx - для spotdl
+        quality: quality,
+        metadata: {
+          title: track.title,
+          uploader: track.artist,
+          duration: track.duration,
+          thumbnail: track.thumbnail
+        },
+        priority: user.premium_limit || 5
+      };
+      
+      console.log(`[Spotify] Добавляю в очередь: "${track.artist} - ${track.title}"`);
+      downloadQueue.add(task);
   }
   
   await ctx.editMessageText(
