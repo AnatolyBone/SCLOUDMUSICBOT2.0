@@ -541,40 +541,48 @@ export async function trackDownloadProcessor(task) {
   const source = task.source || 'soundcloud';
   const quality = task.quality || 'high';
   
-  // Проверяем, есть ли активный воркер для тяжёлых задач
-  const hasWorker = await taskBroker.hasActiveWorker();
-  
-  if (hasWorker && (source === 'spotify' || source === 'youtube')) {
-    // Делегируем тяжёлую работу воркеру
-    console.log(`[Master] 📤 Делегирую задачу воркеру: ${task.metadata?.title}`);
+  // ===== ГИБРИДНАЯ АРХИТЕКТУРА: делегируем воркеру =====
+  if (source === 'spotify' || source === 'youtube') {
+    const hasWorker = await taskBroker.hasActiveWorker();
     
-    // Формируем cacheKey с учётом качества
-    const metadata = task.metadata || {};
-    const title = metadata.title || 'Unknown';
-    const uploader = metadata.uploader || 'Unknown';
-    const qualitySuffix = quality || 'medium';
-    const cacheKey = `${source}:${title}:${uploader}:${qualitySuffix}`
-      .toLowerCase()
-      .replace(/\s+/g, '_')
-      .replace(/[^\w:_-]/g, '');
-    
-    const taskId = await taskBroker.addTask({
-      ...task,
-      cacheKey
-    });
-    
-    if (taskId) {
-      // Уведомляем пользователя
-      const qualityLabel = QUALITY_PRESETS[quality]?.label || quality;
-      await safeSendMessage(
-        userId,
-        `⏳ Скачиваю "${title}" (${qualityLabel})...\nОжидайте, трек будет отправлен автоматически.`
-      );
-      return; // Воркер обработает и вернёт результат через Redis
+    if (hasWorker) {
+      console.log(`[Master] 📤 Delegating to worker: ${task.metadata?.title}`);
+      
+      // Формируем cacheKey с качеством
+      const title = task.metadata?.title || 'Unknown';
+      const artist = task.metadata?.uploader || 'Unknown';
+      const cacheKey = `${source}:${title}:${artist}:${quality}`
+        .toLowerCase()
+        .replace(/\s+/g, '_')
+        .replace(/[^\w:_-]/g, '');
+      
+      try {
+        const taskId = await taskBroker.addTask({
+          ...task,
+          cacheKey
+        });
+        
+        if (taskId) {
+          // Уведомляем пользователя
+          await bot.telegram.sendMessage(
+            userId,
+            `⏳ Скачиваю "${title}"...\n` +
+            `🎵 Качество: ${QUALITY_PRESETS[quality]?.label || quality}\n\n` +
+            `Трек будет отправлен автоматически.`
+          );
+          
+          return; // Воркер обработает
+        }
+      } catch (e) {
+        console.warn(`[Master] Worker delegation failed: ${e.message}`);
+        // Продолжаем обработку локально
+      }
+    } else {
+      console.log(`[Master] No active worker, processing locally`);
     }
   }
   
-  // Если воркера нет или делегирование не удалось — обрабатываем локально
+  // ===== Остальной код (локальная обработка) =====
   let statusMessage = null;
   let tempFilePath = null;
   let thumbPath = null;
@@ -1060,10 +1068,10 @@ export async function initializeDownloadManager() {
     if (connected) {
       // Слушаем результаты от воркера
       taskBroker.on('result', async (result) => {
-        console.log(`[Master] 📥 Результат от воркера: ${result.taskId}`);
+        console.log(`[Master] 📥 Result from worker: ${result.taskId}`);
         
-        if (result.success && result.fileId) {
-          try {
+        try {
+          if (result.success && result.fileId) {
             // Сохраняем в кэш
             await db.cacheTrack({
               url: result.cacheKey,
@@ -1073,38 +1081,32 @@ export async function initializeDownloadManager() {
               duration: result.duration
             });
             
-            console.log(`✅ [Master/Cache] Трек "${result.title}" (${result.quality}) сохранён.`);
+            console.log(`[Master] ✅ Cached: ${result.title}`);
             
             // Отправляем пользователю
             await bot.telegram.sendAudio(result.userId, result.fileId, {
               title: result.title,
               performer: result.artist,
-              duration: result.duration ? Math.round(result.duration) : undefined
+              duration: result.duration
             });
             
-            await incrementDownload(
-              result.userId, 
-              result.title, 
-              result.fileId, 
+            // Обновляем статистику
+            await db.incrementDownloadsAndSaveTrack(
+              result.userId,
+              result.title,
+              result.fileId,
               result.cacheKey
             );
             
-            console.log(`✅ [Master] Трек отправлен пользователю ${result.userId}`);
-          } catch (err) {
-            console.error(`[Master] Ошибка обработки результата:`, err.message);
-            
-            // Уведомляем пользователя об ошибке
-            await safeSendMessage(
+          } else {
+            // Ошибка
+            await bot.telegram.sendMessage(
               result.userId,
-              `❌ Ошибка при обработке трека: ${err.message}`
+              `❌ Не удалось скачать "${result.title}"\n\n${result.error || 'Неизвестная ошибка'}`
             );
           }
-        } else {
-          // Ошибка — уведомляем пользователя
-          await safeSendMessage(
-            result.userId,
-            `❌ Не удалось скачать трек: ${result.error || 'Unknown error'}`
-          );
+        } catch (e) {
+          console.error('[Master] Error handling result:', e);
         }
       });
       
