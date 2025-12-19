@@ -16,7 +16,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore pip && \
     pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore -r requirements.txt && \
-    pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore yt-dlp spotdl shazamio
+    pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore spotdl shazamio
+
+# 🔥 ВАЖНО: Удаляем старый yt-dlp и ставим ночную сборку с GitHub
+# Это лечит ошибку "Did not get any data blocks" и другие проблемы с YouTube
+RUN pip3 uninstall -y yt-dlp || true && \
+    pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore \
+    https://github.com/yt-dlp/yt-dlp/archive/master.zip
 
 # Node.js зависимости
 COPY package*.json ./

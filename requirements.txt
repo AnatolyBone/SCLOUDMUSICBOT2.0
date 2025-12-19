@@ -8,4 +8,4 @@ spotdl>=4.2.0
 shazamio>=0.4.0
 
 # YouTube Downloader
-yt-dlp
+# yt-dlp устанавливается отдельно в Dockerfile с GitHub (ночная сборка)
