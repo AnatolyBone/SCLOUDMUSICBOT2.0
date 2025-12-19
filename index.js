@@ -751,12 +751,52 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       topReferrers: referralStats.topReferrers
     };
 
+    // Формируем данные для графика с разделением по сервисам
+    const sourceColors = {
+      spotify: '#1DB954',    // Зелёный Spotify
+      youtube: '#FF0000',    // Красный YouTube
+      soundcloud: '#FF5500', // Оранжевый SoundCloud
+      other: '#6c757d'       // Серый для других
+    };
+    
+    const sourceLabels = {
+      spotify: '🎵 Spotify',
+      youtube: '▶️ YouTube',
+      soundcloud: '☁️ SoundCloud',
+      other: '📦 Другие'
+    };
+    
+    // Собираем данные по сервисам
+    const sourceData = {};
+    (dailyStats || []).forEach(d => {
+      const downloadsBySource = typeof d.downloads_by_source === 'string' 
+        ? JSON.parse(d.downloads_by_source || '{}') 
+        : (d.downloads_by_source || {});
+      
+      Object.keys(downloadsBySource).forEach(source => {
+        if (!sourceData[source]) {
+          sourceData[source] = [];
+        }
+        sourceData[source].push(parseInt(downloadsBySource[source] || 0, 10));
+      });
+    });
+    
+    // Создаём датасеты для каждого сервиса
+    const sourceDatasets = Object.keys(sourceData).map(source => ({
+      label: sourceLabels[source] || source,
+      data: sourceData[source],
+      borderColor: sourceColors[source] || sourceColors.other,
+      backgroundColor: sourceColors[source] || sourceColors.other,
+      tension: 0.1,
+      fill: false
+    }));
+    
     const chartDataCombined = {
       labels: (dailyStats || []).map(d => new Date(d.day).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })),
       datasets: [
-        { label: 'Регистрации', data: (dailyStats || []).map(d => d.registrations), borderColor: '#198754', tension: 0.1, fill: false },
-        { label: 'Активные юзеры', data: (dailyStats || []).map(d => d.active_users), borderColor: '#0d6efd', tension: 0.1, fill: false },
-        { label: 'Загрузки', data: (dailyStats || []).map(d => d.downloads), borderColor: '#fd7e14', tension: 0.1, fill: false }
+        { label: '👥 Регистрации', data: (dailyStats || []).map(d => d.registrations), borderColor: '#198754', tension: 0.1, fill: false, borderDash: [5, 5] },
+        { label: '👤 Активные юзеры', data: (dailyStats || []).map(d => d.active_users), borderColor: '#0d6efd', tension: 0.1, fill: false, borderDash: [5, 5] },
+        ...sourceDatasets // Добавляем линии для каждого сервиса
       ]
     };
 

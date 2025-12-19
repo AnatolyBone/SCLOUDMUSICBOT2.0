@@ -383,8 +383,8 @@ async function safeSendMessage(userId, text, extra = {}) {
   }
 }
 
-async function incrementDownload(userId, trackTitle, fileId, cacheKey) {
-  return await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey);
+async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null) {
+  return await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
 }
 
 async function getUserUsage(userId) {
@@ -644,7 +644,7 @@ export async function trackDownloadProcessor(task) {
         performer: cached.artist || uploader, 
         duration: roundedDuration 
       });
-      await incrementDownload(userId, cached.title, cached.fileId, cacheKey);
+      await incrementDownload(userId, cached.title, cached.fileId, cacheKey, source);
       return;
     }
 
@@ -865,7 +865,7 @@ export async function trackDownloadProcessor(task) {
         }
       }
       
-      await incrementDownload(userId, title, finalFileId, task.originalUrl || cacheKey);
+      await incrementDownload(userId, title, finalFileId, task.originalUrl || cacheKey, source);
 
     } else {
       // В) Если хранилище недоступно -> Отправляем напрямую юзеру
@@ -1018,7 +1018,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
         if (cached?.fileId) {
           console.log(`[Enqueue/Fast] ХИТ КЭША!`);
           await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist });
-          await incrementDownload(userId, cached.title, cached.fileId, url);
+          await incrementDownload(userId, cached.title, cached.fileId, url, 'soundcloud');
           return;
         }
 
@@ -1127,7 +1127,8 @@ export async function initializeDownloadManager() {
             result.userId,
             result.title,
             result.fileId,
-            result.cacheKey
+            result.cacheKey,
+            result.source || 'spotify'
           );
           
           // Удаляем статусное сообщение (если есть и еще не удалено)

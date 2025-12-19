@@ -821,7 +821,7 @@ export async function getCacheStats() {
 
 /* ========================= Логирование ========================= */
 
-export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, url) {
+export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, url, source = null) {
   const newTrack = { title: trackName, fileId, url };
   const res = await query(
     `UPDATE users
@@ -833,14 +833,37 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
     [newTrack, userId]
   );
   if (res.rowCount > 0) {
-    await logDownload(userId, trackName, url);
+    await logDownload(userId, trackName, url, source);
   }
   return res.rowCount > 0 ? res.rows[0] : null;
 }
 
-export async function logDownload(userId, trackTitle, url) {
+export async function logDownload(userId, trackTitle, url, source = null) {
   try {
-    await supabase.from('downloads_log').insert([{ user_id: userId, track_title: trackTitle, url }]);
+    const downloadedAt = new Date().toISOString();
+    // ✅ Определяем source из URL, если не передан
+    let detectedSource = source;
+    if (!detectedSource) {
+      if (url?.includes('soundcloud.com')) detectedSource = 'soundcloud';
+      else if (url?.includes('spotify.com') || url?.includes('spotify:')) detectedSource = 'spotify';
+      else if (url?.includes('youtube.com') || url?.includes('youtu.be') || url?.startsWith('ytsearch')) detectedSource = 'youtube';
+      else detectedSource = 'other';
+    }
+    
+    // ✅ Явно указываем downloaded_at и source для корректной работы графиков
+    const { data, error } = await supabase.from('downloads_log').insert([{ 
+      user_id: userId, 
+      track_title: trackTitle, 
+      url,
+      downloaded_at: downloadedAt, // Текущая дата и время
+      source: detectedSource // Источник скачивания
+    }]).select();
+    
+    if (error) {
+      console.error('❌ Ошибка Supabase при logDownload:', error.message);
+    } else {
+      console.log(`[DownloadLog] ✅ Запись добавлена: user=${userId}, source=${detectedSource}, date=${downloadedAt.slice(0, 10)}`);
+    }
   } catch (e) {
     console.error('❌ Ошибка Supabase при logDownload:', e.message);
   }
@@ -998,16 +1021,37 @@ export async function getDailyStats(options = {}) {
     daily_activity AS (
       SELECT downloaded_at::date AS day, COUNT(id) AS downloads, COUNT(DISTINCT user_id) AS active_users
       FROM downloads_log
-      WHERE downloaded_at::date BETWEEN $1 AND $2
+      WHERE downloaded_at IS NOT NULL 
+        AND downloaded_at::date BETWEEN $1 AND $2
       GROUP BY downloaded_at::date
+    ),
+    daily_by_source AS (
+      SELECT 
+        downloaded_at::date AS day,
+        COALESCE(source, 'other') AS source,
+        COUNT(id) AS downloads
+      FROM downloads_log
+      WHERE downloaded_at IS NOT NULL 
+        AND downloaded_at::date BETWEEN $1 AND $2
+      GROUP BY downloaded_at::date, COALESCE(source, 'other')
     )
-    SELECT to_char(ds.day, 'YYYY-MM-DD') as day,
-           COALESCE(dr.registrations, 0)::int AS registrations,
-           COALESCE(da.active_users, 0)::int AS active_users,
-           COALESCE(da.downloads, 0)::int AS downloads
+    SELECT 
+      to_char(ds.day, 'YYYY-MM-DD') as day,
+      COALESCE(dr.registrations, 0)::int AS registrations,
+      COALESCE(da.active_users, 0)::int AS active_users,
+      COALESCE(da.downloads, 0)::int AS downloads,
+      COALESCE(
+        json_object_agg(
+          COALESCE(dbs.source, 'other'),
+          COALESCE(dbs.downloads, 0)
+        ) FILTER (WHERE dbs.source IS NOT NULL),
+        '{}'::json
+      ) AS downloads_by_source
     FROM date_series ds
     LEFT JOIN daily_registrations dr ON ds.day = dr.day
     LEFT JOIN daily_activity da ON ds.day = da.day
+    LEFT JOIN daily_by_source dbs ON ds.day = dbs.day
+    GROUP BY ds.day, dr.registrations, da.active_users, da.downloads
     ORDER BY ds.day
   `, [startDateSql, endDateSql]);
   return rows;
@@ -1551,8 +1595,8 @@ export async function incrementDownloadsAndLogPg(userId, trackTitle, fileId, url
     }
 
     await client.query(
-      `INSERT INTO downloads_log (user_id, track_title, url)
-       VALUES ($1, $2, $3)`,
+      `INSERT INTO downloads_log (user_id, track_title, url, downloaded_at)
+       VALUES ($1, $2, $3, NOW())`,
       [userId, trackTitle, url]
     );
 
