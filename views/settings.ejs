@@ -105,6 +105,84 @@
     </div>
   </div>
 
+  <!-- Управление сервисами -->
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-header fw-semibold bg-light">
+        <i class="bi bi-toggle-on me-2"></i>Управление сервисами
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Временно отключите сервисы для технического обслуживания или снижения нагрузки на бот.
+        </p>
+        <form action="/settings/update" method="POST" id="servicesForm" 
+              onsubmit="
+                document.getElementById('useSpotifyValue').value = document.getElementById('useSpotify').checked ? 'true' : 'false';
+                document.getElementById('useYoutubeValue').value = document.getElementById('useYoutube').checked ? 'true' : 'false';
+                document.getElementById('useSoundcloudValue').value = document.getElementById('useSoundcloud').checked ? 'true' : 'false';
+              ">
+          <input type="hidden" id="useSpotifyValue" name="use_spotify" value="<%= settings.use_spotify || 'true' %>">
+          <input type="hidden" id="useYoutubeValue" name="use_youtube" value="<%= settings.use_youtube || 'true' %>">
+          <input type="hidden" id="useSoundcloudValue" name="use_soundcloud" value="<%= settings.use_soundcloud || 'true' %>">
+          
+          <div class="d-flex flex-column gap-3">
+            <!-- Spotify -->
+            <div class="d-flex justify-content-between align-items-center p-2 rounded" style="background-color: rgba(0,0,0,0.05);">
+              <div class="d-flex align-items-center gap-2">
+                <span class="fw-semibold">🎵 Spotify</span>
+                <span class="badge <%= settings.use_spotify !== 'false' ? 'bg-success' : 'bg-danger' %>">
+                  <%= settings.use_spotify !== 'false' ? 'Включен' : 'Отключен' %>
+                </span>
+              </div>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="useSpotify"
+                       <%= settings.use_spotify !== 'false' ? 'checked' : '' %>
+                       onchange="document.getElementById('servicesForm').submit()"
+                       style="width: 2.5rem; height: 1.25rem;">
+              </div>
+            </div>
+            
+            <!-- YouTube -->
+            <div class="d-flex justify-content-between align-items-center p-2 rounded" style="background-color: rgba(0,0,0,0.05);">
+              <div class="d-flex align-items-center gap-2">
+                <span class="fw-semibold">▶️ YouTube</span>
+                <span class="badge <%= settings.use_youtube !== 'false' ? 'bg-success' : 'bg-danger' %>">
+                  <%= settings.use_youtube !== 'false' ? 'Включен' : 'Отключен' %>
+                </span>
+              </div>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="useYoutube"
+                       <%= settings.use_youtube !== 'false' ? 'checked' : '' %>
+                       onchange="document.getElementById('servicesForm').submit()"
+                       style="width: 2.5rem; height: 1.25rem;">
+              </div>
+            </div>
+            
+            <!-- SoundCloud -->
+            <div class="d-flex justify-content-between align-items-center p-2 rounded" style="background-color: rgba(0,0,0,0.05);">
+              <div class="d-flex align-items-center gap-2">
+                <span class="fw-semibold">☁️ SoundCloud</span>
+                <span class="badge <%= settings.use_soundcloud !== 'false' ? 'bg-success' : 'bg-danger' %>">
+                  <%= settings.use_soundcloud !== 'false' ? 'Включен' : 'Отключен' %>
+                </span>
+              </div>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="useSoundcloud"
+                       <%= settings.use_soundcloud !== 'false' ? 'checked' : '' %>
+                       onchange="document.getElementById('servicesForm').submit()"
+                       style="width: 2.5rem; height: 1.25rem;">
+              </div>
+            </div>
+          </div>
+        </form>
+        <div class="alert alert-info mt-3 mb-0 small">
+          <i class="bi bi-info-circle me-1"></i>
+          <strong>Совет:</strong> Отключите проблемный сервис, если бот начинает тормозить или возникают ошибки.
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Лимиты для плейлистов -->
   <div class="col-lg-6">
     <div class="card shadow-sm">

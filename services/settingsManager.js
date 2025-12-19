@@ -11,6 +11,9 @@ const DEFAULTS = {
   playlist_limit_pro: '100',
   playlist_limit_unlim: '200',
   use_hybrid_worker: 'false', // Гибридная архитектура (воркер для Spotify/YouTube)
+  use_spotify: 'true',        // Включен ли сервис Spotify
+  use_youtube: 'true',        // Включен ли сервис YouTube
+  use_soundcloud: 'true',     // Включен ли сервис SoundCloud
 };
 
 /**

@@ -1370,14 +1370,29 @@ bot.on('text', async (ctx) => {
     }
 
     // Определяем источник и обрабатываем
+    // Импортируем getSetting для проверки включенных сервисов
+    const { getSetting } = await import('./services/settingsManager.js');
+    
     if (url.includes('soundcloud.com')) {
         // SoundCloud
+        if (getSetting('use_soundcloud') !== 'true') {
+            await ctx.reply('⚠️ Сервис SoundCloud временно отключен администратором. Попробуйте позже или используйте другой сервис.');
+            return;
+        }
         handleSoundCloudUrl(ctx, url);
     } else if (url.includes('open.spotify.com') || url.includes('spotify.com')) {
         // Spotify - показываем меню выбора качества
+        if (getSetting('use_spotify') !== 'true') {
+            await ctx.reply('⚠️ Сервис Spotify временно отключен администратором. Попробуйте позже или используйте другой сервис.');
+            return;
+        }
         handleSpotifyUrl(ctx, url);
     } else if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')) {
         // YouTube / YouTube Music - показываем меню выбора качества
+        if (getSetting('use_youtube') !== 'true') {
+            await ctx.reply('⚠️ Сервис YouTube временно отключен администратором. Попробуйте позже или используйте другой сервис.');
+            return;
+        }
         handleYouTubeUrl(ctx, url);
     } else {
         await ctx.reply(
