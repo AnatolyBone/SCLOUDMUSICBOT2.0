@@ -514,6 +514,48 @@ app.post('/admin/queue/clear-user', requireAuth, (req, res) => {
   }
   res.redirect('back');
 });
+
+// API: Получение статистики очередей по источникам
+app.get('/admin/api/queue/stats', requireAuth, (req, res) => {
+  try {
+    const stats = downloadQueue.getStatsBySource();
+    res.json({
+      success: true,
+      stats: {
+        spotify: stats.spotify,
+        youtube: stats.youtube,
+        soundcloud: stats.soundcloud,
+        other: stats.other,
+        total: {
+          waiting: stats.spotify.waiting + stats.youtube.waiting + stats.soundcloud.waiting + stats.other.waiting,
+          active: stats.spotify.active + stats.youtube.active + stats.soundcloud.active + stats.other.active
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[Admin API] Ошибка получения статистики очередей:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Очистка очереди по источнику
+app.post('/admin/queue/clear/:source', requireAuth, (req, res) => {
+  const { source } = req.params;
+  const validSources = ['spotify', 'youtube', 'soundcloud', 'other'];
+  
+  if (!validSources.includes(source)) {
+    return res.status(400).json({ success: false, error: 'Неверный источник' });
+  }
+  
+  try {
+    const count = downloadQueue.clearBySource(source);
+    console.log(`[Admin] Очищена очередь для источника ${source}, удалено ${count} задач.`);
+    res.redirect('back');
+  } catch (error) {
+    console.error(`[Admin] Ошибка очистки очереди для ${source}:`, error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 app.get('/settings', requireAuth, (req, res) => {
   res.render('settings', {
     title: 'Настройки',
@@ -686,6 +728,9 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       Other: othersCount
     };
 
+    // Получаем статистику очередей по источникам
+    const queueStatsBySource = downloadQueue.getStatsBySource();
+
     const stats = {
       total_users: totals.total_users,
       active_users: totals.active_users,
@@ -693,6 +738,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       active_today: totals.active_today,
       queueWaiting: downloadQueue.size,
       queueActive: downloadQueue.pending,
+      queueStatsBySource, // Добавляем детализированную статистику по источникам
       cachedTracksCount: cachedTracksCount,
       usersByTariff,
       topSources: topSources || [],

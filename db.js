@@ -621,132 +621,127 @@ export async function searchTracksInCache(searchQuery, limit = 7) {
 // СОХРАНЕНИЕ ТРЕКА В КЭШ
 // ========================================
 /**
- * Сохраняет трек в кэш с поддержкой множественных URL
+ * Сохраняет трек в кэш
  */
-export async function cacheTrack(trackData) {
-  const { url, fileId, title, artist, duration, thumbnail, aliases = [] } = trackData;
-  
+export async function cacheTrack({ 
+  url, 
+  fileId, 
+  title, 
+  artist, 
+  duration, 
+  thumbnail,
+  source = 'soundcloud',
+  quality = 'high',
+  spotifyId = null,
+  isrc = null,
+  aliases = []
+}) {
   try {
-    // 1. Сохраняем основную запись
-    await query(
-      `INSERT INTO track_cache (url, file_id, title, artist, duration, thumbnail)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (url) DO UPDATE SET
-         file_id = EXCLUDED.file_id,
-         title = EXCLUDED.title,
-         artist = EXCLUDED.artist,
-         duration = EXCLUDED.duration,
-         thumbnail = EXCLUDED.thumbnail,
-         created_at = NOW()`,
-      [url, fileId, title, artist, duration, thumbnail]
-    );
-    
-    // 2. Сохраняем алиасы (с проверкой существования таблицы)
+    // Основная запись
+    const { error } = await supabase
+      .from('track_cache')
+      .upsert({
+        url,
+        file_id: fileId,
+        title,
+        artist,
+        duration,
+        thumbnail,
+        source,
+        quality,
+        spotify_id: spotifyId,
+        isrc,
+        cached_at: new Date().toISOString()
+      }, { 
+        onConflict: 'url' 
+      });
+
+    if (error) throw error;
+
+    // Алиасы (дополнительные ключи для поиска)
     if (aliases.length > 0) {
-      try {
-        for (const alias of aliases) {
-          if (alias && alias !== url) {
-            await query(
-              `INSERT INTO track_url_aliases (canonical_url, alias_url)
-               VALUES ($1, $2)
-               ON CONFLICT (alias_url) DO UPDATE SET canonical_url = EXCLUDED.canonical_url`,
-              [url, alias]
-            );
-          }
-        }
-        console.log(`[Cache] Сохранено ${aliases.length} алиасов для: ${title}`);
-      } catch (aliasErr) {
-        // Если таблица не существует - просто логируем предупреждение
-        if (aliasErr.message.includes('does not exist')) {
-          console.warn('[Cache] Таблица track_url_aliases не существует. Создайте её через SQL Editor.');
-        } else {
-          console.error('[Cache] Ошибка сохранения алиасов:', aliasErr.message);
-        }
-      }
+      const aliasRecords = aliases.map(aliasUrl => ({
+        url: aliasUrl,
+        file_id: fileId,
+        title,
+        artist,
+        duration,
+        thumbnail,
+        source,
+        quality,
+        spotify_id: spotifyId,
+        isrc,
+        cached_at: new Date().toISOString()
+      }));
+
+      await supabase
+        .from('track_cache')
+        .upsert(aliasRecords, { onConflict: 'url', ignoreDuplicates: true });
+      
+      console.log(`[Cache] Сохранено ${aliases.length} алиасов для: ${title}`);
     }
-    
-    console.log(`[✓ Cache Saved] ${title} - ${artist}`);
-    
+
+    console.log(`[✓ Cache Saved] ${title} - ${artist} (${source}/${quality})`);
+    return true;
+
   } catch (e) {
-    console.error('[✗ Cache Save Error]', e.message, { url, title });
+    console.error('[Cache] Ошибка сохранения:', e.message);
+    return false;
   }
 }
 
 /**
- * Ищет трек в кэше по URL (с поддержкой алиасов)
+ * Ищет трек в кэше (с учётом качества для Spotify)
  */
-export async function findCachedTrack(trackUrl) {
+export async function findCachedTrack(key, options = {}) {
+  const { source, quality } = options;
+  
   try {
-    // ========================================
-    // 1. ПРЯМОЙ ПОИСК ПО URL
-    // ========================================
-    const { rows: direct } = await query(
-      `SELECT file_id, title, artist, duration 
-       FROM track_cache 
-       WHERE url = $1 
-       LIMIT 1`,
-      [trackUrl]
-    );
-    
-    if (direct.length > 0) {
-      console.log(`[✓ Cache HIT] ${direct[0].title} (прямое совпадение)`);
-      return {
-        fileId: direct[0].file_id,
-        title: direct[0].title,
-        artist: direct[0].artist,
-        duration: direct[0].duration
-      };
+    // 1. Прямой поиск по ключу
+    let { data, error } = await supabase
+      .from('track_cache')
+      .select('*')
+      .eq('url', key)
+      .single();
+
+    if (data) {
+      console.log(`[✓ Cache HIT] ${data.title} (прямое совпадение)`);
+      return { fileId: data.file_id, ...data };
     }
-    
-    // ========================================
-    // 2. ПОИСК ПО АЛИАСАМ
-    // ========================================
-    const { rows: aliased } = await query(
-      `SELECT tc.file_id, tc.title, tc.artist, tc.duration
-       FROM track_url_aliases tua
-       JOIN track_cache tc ON tua.canonical_url = tc.url
-       WHERE tua.alias_url = $1
-       LIMIT 1`,
-      [trackUrl]
-    );
-    
-    if (aliased.length > 0) {
-      console.log(`[✓ Cache HIT] ${aliased[0].title} (через алиас)`);
-      return {
-        fileId: aliased[0].file_id,
-        title: aliased[0].title,
-        artist: aliased[0].artist,
-        duration: aliased[0].duration
-      };
-    }
-    
-    // ========================================
-    // 3. ДИАГНОСТИКА (если не нашли)
-    // ========================================
-    const urlParts = trackUrl.split('/').filter(p => p && p.length > 3);
-    const lastPart = urlParts[urlParts.length - 1];
-    
-    if (lastPart) {
-      const { rows: debugRows } = await query(
-        `SELECT url, title, artist, duration
-         FROM track_cache
-         WHERE url ILIKE $1 OR title ILIKE $2
-         LIMIT 5`,
-        [`%${lastPart}%`, `%${lastPart.replace(/-/g, ' ')}%`]
-      );
-      
-      if (debugRows.length > 0) {
-        console.log(`[DB/Debug] 🔍 Найдено ${debugRows.length} похожих записей для "${lastPart}"`);
-      } else {
-        console.log(`[DB/Debug] ❌ Похожих записей не найдено`);
+
+    // 2. Поиск по Spotify ID (если передан)
+    if (key.includes('spotify.com/track/')) {
+      const spotifyId = key.match(/track\/([a-zA-Z0-9]+)/)?.[1];
+      if (spotifyId && quality) {
+        const { data: spotifyData } = await supabase
+          .from('track_cache')
+          .select('*')
+          .eq('spotify_id', spotifyId)
+          .eq('quality', quality)
+          .single();
+
+        if (spotifyData) {
+          console.log(`[✓ Cache HIT] ${spotifyData.title} (spotify_id + quality)`);
+          return { fileId: spotifyData.file_id, ...spotifyData };
+        }
       }
     }
-    
-    console.log(`[✗ Cache MISS] ${trackUrl.substring(0, 80)}...`);
+
+    // 3. Нечёткий поиск
+    const { data: similarData } = await supabase
+      .rpc('find_similar_track', { search_key: key });
+
+    if (similarData && similarData.length > 0) {
+      const match = similarData[0];
+      console.log(`[✓ Cache HIT] ${match.title} (похожее совпадение)`);
+      return { fileId: match.file_id, ...match };
+    }
+
+    console.log(`[✗ Cache MISS] ${key.slice(0, 50)}...`);
     return null;
-    
+
   } catch (e) {
-    console.error('[DB Error] findCachedTrack:', e.message);
+    console.error('[Cache] Ошибка поиска:', e.message);
     return null;
   }
 }
@@ -805,6 +800,22 @@ export async function getCachedTracksCount() {
   } catch (e) {
     console.error('Ошибка при подсчете кэшированных треков:', e.message);
     return 0;
+  }
+}
+
+/**
+ * Статистика кэша по источникам
+ */
+export async function getCacheStats() {
+  try {
+    const { data, error } = await supabase
+      .rpc('get_cache_stats');
+
+    if (error) throw error;
+    return data;
+  } catch (e) {
+    console.error('[Cache] Ошибка получения статистики:', e.message);
+    return null;
   }
 }
 

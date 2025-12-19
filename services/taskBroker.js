@@ -1,5 +1,5 @@
 // services/taskBroker.js
-// Использует ОТДЕЛЬНЫЙ Redis для связи с воркером
+// Брокер задач: Render ↔ HuggingFace Worker через Upstash Redis
 
 import Redis from 'ioredis';
 import { EventEmitter } from 'events';
@@ -14,19 +14,18 @@ class TaskBroker extends EventEmitter {
     this.redis = null;
     this.subscriber = null;
     this.isConnected = false;
-    this.pendingTasks = new Map(); // taskId → { resolve, reject, timeout }
   }
 
   async connect() {
-    // ✅ Используем ОТДЕЛЬНУЮ переменную для TaskBroker
+    // Используем ОТДЕЛЬНУЮ переменную для внешнего Redis (Upstash)
     const redisUrl = process.env.TASK_BROKER_REDIS_URL;
     
     if (!redisUrl) {
-      console.log('[TaskBroker] TASK_BROKER_REDIS_URL не задан — гибридная архитектура отключена');
+      console.log('[TaskBroker] ⚠️ TASK_BROKER_REDIS_URL не задан — гибридная архитектура отключена');
       return false;
     }
 
-    console.log('[TaskBroker] Подключение к Upstash Redis...');
+    console.log('[TaskBroker] 🔗 Подключение к Upstash Redis...');
 
     try {
       const options = {
@@ -39,14 +38,19 @@ class TaskBroker extends EventEmitter {
       this.redis = new Redis(redisUrl, options);
       this.subscriber = new Redis(redisUrl, options);
 
+      // Обработчики ошибок
+      this.redis.on('error', (err) => {
+        console.error('[TaskBroker] Redis error:', err.message);
+      });
+
       await this.redis.connect();
       await this.subscriber.connect();
 
       // Проверка подключения
       const pong = await this.redis.ping();
-      console.log(`[TaskBroker] Redis PING: ${pong}`);
+      console.log(`[TaskBroker] 📡 Redis PING: ${pong}`);
 
-      // Подписываемся на результаты
+      // Подписываемся на результаты от воркера
       await this.subscriber.subscribe(RESULTS_KEY);
       
       this.subscriber.on('message', (channel, message) => {
@@ -54,15 +58,15 @@ class TaskBroker extends EventEmitter {
           try {
             const result = JSON.parse(message);
             console.log(`[TaskBroker] 📥 Результат от воркера: ${result.taskId}`);
-            this.handleResult(result);
+            this.emit('result', result);
           } catch (e) {
-            console.error('[TaskBroker] Parse error:', e);
+            console.error('[TaskBroker] Parse error:', e.message);
           }
         }
       });
 
       this.isConnected = true;
-      console.log('[TaskBroker] ✅ Подключён к Upstash Redis');
+      console.log('[TaskBroker] ✅ Подключён к Upstash Redis!');
       return true;
       
     } catch (err) {
@@ -72,24 +76,12 @@ class TaskBroker extends EventEmitter {
     }
   }
 
-  handleResult(result) {
-    console.log(`[TaskBroker] 📥 Result received: ${result.taskId}`);
-    this.emit('result', result);
-    
-    // Резолвим промис если кто-то ждёт
-    const pending = this.pendingTasks.get(result.taskId);
-    if (pending) {
-      clearTimeout(pending.timeout);
-      pending.resolve(result);
-      this.pendingTasks.delete(result.taskId);
-    }
-  }
-
   /**
    * Добавляет задачу в очередь
    */
   async addTask(task) {
     if (!this.isConnected) {
+      console.log('[TaskBroker] Не подключён, задача не добавлена');
       return null;
     }
 
@@ -107,51 +99,6 @@ class TaskBroker extends EventEmitter {
   }
 
   /**
-   * Добавляет задачу и ждёт результат
-   */
-  async addTaskAndWait(task, timeoutMs = 180000) {
-    const taskId = await this.addTask(task);
-    if (!taskId) return null;
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingTasks.delete(taskId);
-        reject(new Error('TASK_TIMEOUT'));
-      }, timeoutMs);
-
-      this.pendingTasks.set(taskId, { resolve, reject, timeout });
-    });
-  }
-
-  /**
-   * Получает задачу из очереди (вызывается на Worker)
-   */
-  async getTask(timeout = 30) {
-    if (!this.isConnected) return null;
-
-    const result = await this.redis.brpop(QUEUE_KEY, timeout);
-    if (!result) return null;
-
-    try {
-      return JSON.parse(result[1]);
-    } catch (err) {
-      console.error('[TaskBroker] Ошибка парсинга задачи:', err.message);
-      return null;
-    }
-  }
-
-  /**
-   * Отправляет результат (вызывается на Worker)
-   */
-  async sendResult(taskId, result) {
-    if (!this.isConnected) return;
-
-    const data = { taskId, ...result, completedAt: Date.now() };
-    await this.redis.publish(RESULTS_KEY, JSON.stringify(data));
-    console.log(`[TaskBroker] 📥 Результат отправлен: ${taskId}`);
-  }
-
-  /**
    * Проверяет, есть ли активный воркер
    */
   async hasActiveWorker() {
@@ -160,15 +107,17 @@ class TaskBroker extends EventEmitter {
     try {
       const lastHeartbeat = await this.redis.get(HEARTBEAT_KEY);
       if (!lastHeartbeat) {
-        console.log('[TaskBroker] Воркер не найден (нет heartbeat)');
+        console.log('[TaskBroker] ⚠️ Воркер не найден (нет heartbeat)');
         return false;
       }
 
       const age = Date.now() - parseInt(lastHeartbeat);
       const isActive = age < 120000; // 2 минуты
       
-      if (!isActive) {
-        console.log(`[TaskBroker] Воркер неактивен (последний heartbeat ${Math.round(age/1000)}с назад)`);
+      if (isActive) {
+        console.log(`[TaskBroker] ✅ Воркер активен (heartbeat ${Math.round(age/1000)}с назад)`);
+      } else {
+        console.log(`[TaskBroker] ⚠️ Воркер неактивен (${Math.round(age/1000)}с)`);
       }
       
       return isActive;
@@ -179,7 +128,7 @@ class TaskBroker extends EventEmitter {
   }
 
   /**
-   * Получает статистику очереди
+   * Статистика очереди
    */
   async getQueueStats() {
     if (!this.isConnected) return { pending: 0, hasWorker: false };
@@ -192,29 +141,6 @@ class TaskBroker extends EventEmitter {
       return { pending: 0, hasWorker: false };
     }
   }
-
-  /**
-   * Отправляет heartbeat (вызывается на Worker)
-   */
-  async sendHeartbeat() {
-    if (!this.isConnected) return;
-    await this.redis.set(HEARTBEAT_KEY, Date.now().toString(), 'EX', 120);
-  }
-
-  /**
-   * Закрывает соединения
-   */
-  async disconnect() {
-    if (this.redis) {
-      await this.redis.quit();
-    }
-    if (this.subscriber) {
-      await this.subscriber.quit();
-    }
-    this.isConnected = false;
-    console.log('[TaskBroker] Отключён от Redis');
-  }
 }
 
 export const taskBroker = new TaskBroker();
-

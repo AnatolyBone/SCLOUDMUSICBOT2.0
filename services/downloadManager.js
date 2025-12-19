@@ -505,7 +505,9 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
         title,
         artist: uploader,
         duration: realDuration,
-        thumbnail: metadata.thumbnail
+        thumbnail: metadata.thumbnail,
+        source: 'soundcloud',
+        quality: 'high'
       });
       
       // Отправляем пользователю
@@ -540,21 +542,23 @@ export async function trackDownloadProcessor(task) {
   const userId = parseInt(task.userId, 10);
   const source = task.source || 'soundcloud';
   const quality = task.quality || 'high';
-  
-  // ===== ГИБРИДНАЯ АРХИТЕКТУРА: делегируем воркеру =====
+
+  // ============ ГИБРИДНАЯ АРХИТЕКТУРА ============
+  // Spotify/YouTube → делегируем внешнему воркеру (HuggingFace)
   if (source === 'spotify' || source === 'youtube') {
     const hasWorker = await taskBroker.hasActiveWorker();
     
     if (hasWorker) {
-      console.log(`[Master] 📤 Delegating to worker: ${task.metadata?.title}`);
-      
-      // Формируем cacheKey с качеством
       const title = task.metadata?.title || 'Unknown';
       const artist = task.metadata?.uploader || 'Unknown';
+      
+      // Формируем cacheKey с качеством
       const cacheKey = `${source}:${title}:${artist}:${quality}`
         .toLowerCase()
         .replace(/\s+/g, '_')
         .replace(/[^\w:_-]/g, '');
+      
+      console.log(`[Master] 📤 Делегирую воркеру: "${title}" (${quality})`);
       
       try {
         const taskId = await taskBroker.addTask({
@@ -564,25 +568,25 @@ export async function trackDownloadProcessor(task) {
         
         if (taskId) {
           // Уведомляем пользователя
-          await bot.telegram.sendMessage(
+          await safeSendMessage(
             userId,
             `⏳ Скачиваю "${title}"...\n` +
             `🎵 Качество: ${QUALITY_PRESETS[quality]?.label || quality}\n\n` +
             `Трек будет отправлен автоматически.`
           );
           
-          return; // Воркер обработает
+          return; // Воркер обработает и вернёт результат через Redis
         }
       } catch (e) {
-        console.warn(`[Master] Worker delegation failed: ${e.message}`);
+        console.warn(`[Master] ⚠️ Делегирование не удалось: ${e.message}`);
         // Продолжаем обработку локально
       }
     } else {
-      console.log(`[Master] No active worker, processing locally`);
+      console.log(`[Master] ⚠️ Воркер неактивен, обрабатываю локально`);
     }
   }
   
-  // ===== Остальной код (локальная обработка) =====
+  // ============ ЛОКАЛЬНАЯ ОБРАБОТКА ============
   let statusMessage = null;
   let tempFilePath = null;
   let thumbPath = null;
@@ -628,9 +632,9 @@ export async function trackDownloadProcessor(task) {
     console.log(`[Worker] CacheKey: ${cacheKey}`);
 
     // 3. Проверка КЭША
-    let cached = await db.findCachedTrack(cacheKey);
+    let cached = await db.findCachedTrack(cacheKey, { source, quality });
     if (!cached && task.originalUrl) {
-      cached = await db.findCachedTrack(task.originalUrl);
+      cached = await db.findCachedTrack(task.originalUrl, { source, quality });
     }
     
     if (cached?.fileId) {
@@ -834,7 +838,10 @@ export async function trackDownloadProcessor(task) {
         title, 
         artist: uploader, 
         duration: roundedDuration, 
-        thumbnail: metadata.thumbnail, 
+        thumbnail: metadata.thumbnail,
+        source,
+        quality,
+        spotifyId: source === 'spotify' && task.originalUrl?.match(/track\/([a-zA-Z0-9]+)/)?.[1] || null,
         aliases: source === 'spotify' 
           ? (task.originalUrl ? [`${task.originalUrl}:${quality}`] : [])
           : urlAliases
@@ -1005,7 +1012,9 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
         const cacheKey = id ? `sc:${id}` : null;
 
         // Проверка кэша
-        const cached = await db.findCachedTrack(url) || await db.findCachedTrack(fullUrl) || (cacheKey && await db.findCachedTrack(cacheKey));
+        const cached = await db.findCachedTrack(url, { source: 'soundcloud' }) 
+          || await db.findCachedTrack(fullUrl, { source: 'soundcloud' }) 
+          || (cacheKey && await db.findCachedTrack(cacheKey, { source: 'soundcloud' }));
         if (cached?.fileId) {
           console.log(`[Enqueue/Fast] ХИТ КЭША!`);
           await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist });
@@ -1022,7 +1031,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
 
       // 2. SLOW PATH (Если просто кинули ссылку)
       // Сначала проверим кэш по URL, чтобы не делать лишних запросов
-      const quickCache = await db.findCachedTrack(url);
+      const quickCache = await db.findCachedTrack(url, { source: 'soundcloud' });
       if (quickCache?.fileId) {
           console.log(`[Enqueue/Slow] ХИТ КЭША по URL!`);
           await bot.telegram.sendAudio(userId, quickCache.fileId, { title: quickCache.title, performer: quickCache.artist });
@@ -1084,12 +1093,12 @@ export async function initializeDownloadManager() {
   const connected = await taskBroker.connect();
   
   if (connected) {
-    console.log('[DownloadManager] ✅ TaskBroker подключён');
+    console.log('[DownloadManager] ✅ TaskBroker подключён к Upstash');
     
     // Слушаем результаты от воркера
-    const deletedStatusMessages = new Set(); // Для отслеживания уже удаленных сообщений
-    
     taskBroker.on('result', async (result) => {
+      console.log(`[Master] 📥 Получен результат: ${result.title}`);
+      
       try {
         if (result.success && result.fileId) {
           // Сохраняем в кэш
@@ -1098,7 +1107,10 @@ export async function initializeDownloadManager() {
             fileId: result.fileId,
             title: result.title,
             artist: result.artist,
-            duration: result.duration
+            duration: result.duration,
+            source: result.source || 'spotify',
+            quality: result.quality || 'high',
+            spotifyId: result.spotifyId || null
           });
           
           console.log(`[Master] ✅ Кэш сохранён: ${result.title}`);
@@ -1110,17 +1122,6 @@ export async function initializeDownloadManager() {
             duration: result.duration
           });
           
-          // Удаляем статусное сообщение (если есть и еще не удалено)
-          if (result.statusMessageId && !deletedStatusMessages.has(result.statusMessageId)) {
-            try {
-              await bot.telegram.deleteMessage(result.userId, result.statusMessageId);
-              deletedStatusMessages.add(result.statusMessageId);
-              console.log(`[Master] 🗑️ Deleted status message: ${result.statusMessageId}`);
-            } catch (e) {
-              // Игнорируем ошибки удаления
-            }
-          }
-          
           // Обновляем статистику
           await db.incrementDownloadsAndSaveTrack(
             result.userId,
@@ -1129,27 +1130,23 @@ export async function initializeDownloadManager() {
             result.cacheKey
           );
           
+          console.log(`[Master] ✅ Отправлено пользователю ${result.userId}`);
+          
         } else {
-          // Ошибка
+          // Ошибка — уведомляем пользователя
+          console.log(`[Master] ❌ Ошибка от воркера: ${result.error}`);
           await bot.telegram.sendMessage(
             result.userId,
             `❌ Не удалось скачать "${result.title}"\n\n${result.error || 'Попробуйте позже'}`
           ).catch(() => {});
-          
-          // Удаляем статусное сообщение при ошибке тоже
-          if (result.statusMessageId && !deletedStatusMessages.has(result.statusMessageId)) {
-            try {
-              await bot.telegram.deleteMessage(result.userId, result.statusMessageId);
-              deletedStatusMessages.add(result.statusMessageId);
-            } catch (e) {}
-          }
         }
       } catch (e) {
-        console.error('[Master] Ошибка обработки результата:', e);
+        console.error('[Master] Ошибка обработки результата:', e.message);
       }
     });
+    
   } else {
-    console.log('[DownloadManager] ⚠️ TaskBroker не подключён — все задачи локально');
+    console.log('[DownloadManager] ⚠️ TaskBroker не подключён — Spotify задачи будут обрабатываться локально');
   }
   
   console.log('[DownloadManager] Готов к работе.');
