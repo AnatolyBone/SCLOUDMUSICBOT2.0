@@ -32,6 +32,10 @@ ENV TEMP_DIR=/tmp/music-worker
 # Порт для health check (HuggingFace требует)
 EXPOSE 7860
 
+# Используем Google DNS
+RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf && \
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+
 # Запуск
 CMD ["node", "worker.js"]
 

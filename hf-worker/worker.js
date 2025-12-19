@@ -1,9 +1,9 @@
-// worker.js - Hugging Face Music Worker
-// Получает задачи из Redis, скачивает через yt-dlp, загружает в Telegram
+// hf-worker/worker.js - ИСПРАВЛЕННАЯ ВЕРСИЯ
+// Добавлены DNS workarounds и улучшенная обработка ошибок
 
 import Redis from 'ioredis';
 import { Telegraf } from 'telegraf';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -15,126 +15,75 @@ const REDIS_URL = process.env.REDIS_URL;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
 const PORT = process.env.PORT || 7860;
+const PROXY_URL = process.env.PROXY_URL; // Опциональный прокси для yt-dlp
 
 const QUEUE_KEY = 'music:download:queue';
 const RESULTS_KEY = 'music:download:results';
 const HEARTBEAT_KEY = 'music:worker:heartbeat';
 const TEMP_DIR = process.env.TEMP_DIR || '/tmp/music-worker';
 
-// ========================= STARTUP CHECKS =========================
+// ========================= STARTUP =========================
 
 console.log('╔════════════════════════════════════════════╗');
 console.log('║      🎵 Music Worker for HuggingFace       ║');
 console.log('╚════════════════════════════════════════════╝\n');
 
-console.log('📋 Environment check:');
-console.log(`   REDIS_URL: ${REDIS_URL ? '✅ Set (' + REDIS_URL.slice(0, 30) + '...)' : '❌ Missing!'}`);
-console.log(`   BOT_TOKEN: ${BOT_TOKEN ? '✅ Set' : '❌ Missing!'}`);
-console.log(`   STORAGE_CHANNEL_ID: ${STORAGE_CHANNEL_ID ? '✅ Set (' + STORAGE_CHANNEL_ID + ')' : '❌ Missing!'}`);
-console.log(`   TEMP_DIR: ${TEMP_DIR}`);
+console.log('📋 Environment:');
+console.log(`   REDIS_URL: ${REDIS_URL ? '✅' : '❌'}`);
+console.log(`   BOT_TOKEN: ${BOT_TOKEN ? '✅' : '❌'}`);
+console.log(`   STORAGE_CHANNEL_ID: ${STORAGE_CHANNEL_ID || '❌'}`);
+console.log(`   PROXY_URL: ${PROXY_URL ? '✅ Set' : '❌ Not set'}`);
 console.log(`   RAM: ${Math.round(os.totalmem() / 1024 / 1024)} MB`);
-console.log(`   CPUs: ${os.cpus().length}`);
 console.log('');
 
 if (!REDIS_URL || !BOT_TOKEN || !STORAGE_CHANNEL_ID) {
-  console.error('❌ Missing required environment variables!');
-  console.error('');
-  console.error('Required in HuggingFace Secrets:');
-  console.error('  - REDIS_URL (format: rediss://default:xxx@xxx.upstash.io:6379)');
-  console.error('  - BOT_TOKEN (your Telegram bot token)');
-  console.error('  - STORAGE_CHANNEL_ID (e.g., -1001234567890)');
+  console.error('❌ Missing environment variables!');
+  process.exit(1);
+}
+
+// Создаём папку
+if (!fs.existsSync(TEMP_DIR)) {
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+}
+
+// ========================= CHECK YT-DLP =========================
+
+try {
+  const version = execSync('python3 -m yt_dlp --version', { encoding: 'utf-8' }).trim();
+  console.log(`✅ yt-dlp version: ${version}`);
+} catch (e) {
+  console.error('❌ yt-dlp not found!');
   process.exit(1);
 }
 
 // ========================= INIT =========================
 
-// Создаём папку для временных файлов
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
-  console.log(`📁 Created temp directory: ${TEMP_DIR}`);
-}
-
-// Redis с правильными настройками для Upstash
 const redis = new Redis(REDIS_URL, {
   maxRetriesPerRequest: 3,
   retryDelayOnFailover: 1000,
   connectTimeout: 10000,
-  lazyConnect: true,
-  // TLS включается автоматически для rediss://
+  lazyConnect: true
 });
 
-redis.on('error', (err) => {
-  console.error('❌ Redis error:', err.message);
-});
-
-redis.on('connect', () => {
-  console.log('✅ Redis connected!');
-});
+redis.on('error', (err) => console.error('Redis error:', err.message));
 
 const bot = new Telegraf(BOT_TOKEN);
 
 // Express для health check
 const app = express();
-
-app.get('/', (req, res) => {
-  res.json({
-    status: 'running',
-    uptime: Math.round(process.uptime()),
-    memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB',
-    redis: redis.status
-  });
-});
-
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-// ========================= HELPERS =========================
-
-function formatBytes(bytes) {
-  return (bytes / 1024 / 1024).toFixed(2) + ' MB';
-}
-
-function sanitizeFilename(name) {
-  return name.replace(/[<>:"/\\|?*]/g, '').slice(0, 100);
-}
-
-function cleanupTempFiles() {
-  try {
-    const files = fs.readdirSync(TEMP_DIR);
-    const now = Date.now();
-    let cleaned = 0;
-    
-    files.forEach(file => {
-      const filePath = path.join(TEMP_DIR, file);
-      try {
-        const stats = fs.statSync(filePath);
-        if (now - stats.mtimeMs > 10 * 60 * 1000) {
-          fs.unlinkSync(filePath);
-          cleaned++;
-        }
-      } catch (e) {}
-    });
-    
-    if (cleaned > 0) {
-      console.log(`🧹 Cleaned ${cleaned} old files`);
-    }
-  } catch (e) {}
-}
+app.get('/', (req, res) => res.json({ status: 'running', uptime: Math.round(process.uptime()), redis: redis.status }));
+app.get('/health', (req, res) => res.status(200).send('OK'));
 
 // ========================= DOWNLOAD =========================
 
 async function downloadTrack(searchQuery, quality = 'medium') {
-  const bitrate = { 
-    high: '320k', 
-    medium: '192k', 
-    low: '128k' 
-  }[quality] || '192k';
+  const bitrate = { high: '320k', medium: '192k', low: '128k' }[quality] || '192k';
   
   const baseName = `track_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
 
   return new Promise((resolve, reject) => {
+    // ✅ ИСПРАВЛЕНО: Добавлены флаги для обхода проблем с сетью
     const args = [
       '-m', 'yt_dlp',
       `ytsearch1:${searchQuery}`,
@@ -145,38 +94,63 @@ async function downloadTrack(searchQuery, quality = 'medium') {
       '-o', outputTemplate,
       '--no-playlist',
       '--no-warnings',
-      '--quiet',
-      '--no-check-certificates',
-      '--geo-bypass',
-      '--retries', '3'
+      '--no-check-certificates',  // ✅ Игнорируем SSL
+      '--geo-bypass',             // ✅ Обходим гео-блокировки
+      '--force-ipv4',             // ✅ Используем IPv4 (часто помогает с DNS)
+      '--extractor-retries', '5', // ✅ Больше попыток
+      '--retries', '5',
+      '--fragment-retries', '5',
+      '--socket-timeout', '30',
+      // ✅ User-Agent как обычный браузер
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
+    
+    // ✅ Добавляем прокси, если указан
+    if (PROXY_URL) {
+      args.push('--proxy', PROXY_URL);
+      console.log(`🌐 Using proxy: ${PROXY_URL.replace(/\/\/.*@/, '//***@')}`); // Скрываем credentials в логах
+    }
 
     console.log(`⬇️  Downloading: "${searchQuery.slice(0, 50)}..." (${bitrate})`);
     
-    const proc = spawn('python3', args, { cwd: TEMP_DIR });
-    let stderr = '';
+    const proc = spawn('python3', args, { 
+      cwd: TEMP_DIR,
+      env: { 
+        ...process.env, 
+        PYTHONUNBUFFERED: '1',
+        // ✅ Используем Google DNS
+        // Некоторые контейнеры не имеют resolv.conf
+      }
+    });
     
+    let stderr = '';
+    let stdout = '';
+    
+    proc.stdout.on('data', (data) => { stdout += data.toString(); });
     proc.stderr.on('data', (data) => { stderr += data.toString(); });
     
     proc.on('close', (code) => {
       if (code !== 0) {
-        console.error(`❌ yt-dlp error: ${stderr.slice(-200)}`);
+        console.error(`❌ yt-dlp error (code ${code})`);
+        console.error(`   stderr: ${stderr.slice(-300)}`);
         return reject(new Error(stderr.slice(-200) || `Exit code ${code}`));
       }
       
       const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
       if (files.length === 0) {
+        console.error('❌ No output file');
         return reject(new Error('File not created'));
       }
       
       const filePath = path.join(TEMP_DIR, files[0]);
-      console.log(`✅ Downloaded: ${formatBytes(fs.statSync(filePath).size)}`);
+      const size = fs.statSync(filePath).size;
+      console.log(`✅ Downloaded: ${(size / 1024 / 1024).toFixed(2)} MB`);
       resolve(filePath);
     });
     
     proc.on('error', reject);
     
-    // Таймаут
+    // Таймаут 3 минуты
     setTimeout(() => {
       proc.kill('SIGTERM');
       reject(new Error('TIMEOUT'));
@@ -187,19 +161,19 @@ async function downloadTrack(searchQuery, quality = 'medium') {
 // ========================= PROCESS TASK =========================
 
 async function processTask(task) {
-  const { metadata, quality, userId, cacheKey, taskId } = task;
+  const { metadata, quality, userId, cacheKey } = task;
   const searchQuery = `${metadata.uploader} ${metadata.title}`;
   
   console.log(`\n🎵 Processing: "${metadata.title}"`);
-  console.log(`   Artist: ${metadata.uploader}, Quality: ${quality}`);
 
   let filePath = null;
   
   try {
     filePath = await downloadTrack(searchQuery, quality);
-    const stats = fs.statSync(filePath);
     
-    if (stats.size > 48 * 1024 * 1024) {
+    // Проверка размера
+    const size = fs.statSync(filePath).size;
+    if (size > 48 * 1024 * 1024) {
       throw new Error('FILE_TOO_LARGE');
     }
     
@@ -217,7 +191,7 @@ async function processTask(task) {
     );
 
     const fileId = sentMsg.audio?.file_id;
-    console.log(`✅ Uploaded! file_id: ${fileId?.slice(0, 25)}...`);
+    console.log(`✅ Uploaded: ${fileId?.slice(0, 20)}...`);
 
     return {
       success: true,
@@ -228,7 +202,9 @@ async function processTask(task) {
       quality,
       cacheKey,
       userId,
-      statusMessageId: task.statusMessageId // Передаём для удаления
+      statusMessageId: task.statusMessageId, // Передаём для удаления
+      source: task.source || 'spotify',
+      spotifyId: task.metadata?.spotifyId || null
     };
 
   } catch (err) {
@@ -237,7 +213,12 @@ async function processTask(task) {
       success: false,
       error: err.message,
       title: metadata?.title || 'Unknown',
-      userId
+      userId,
+      statusMessageId: task.statusMessageId, // Передаём для удаления
+      task: task, // Передаём задачу для fallback на локальную обработку
+      source: task.source || 'spotify',
+      quality: task.quality || 'high',
+      cacheKey: task.cacheKey
     };
     
   } finally {
@@ -255,11 +236,10 @@ async function workerLoop() {
   while (true) {
     try {
       const result = await redis.brpop(QUEUE_KEY, 30);
-      
       if (!result) continue;
 
       const task = JSON.parse(result[1]);
-      console.log(`📥 Task received: ${task.taskId}`);
+      console.log(`📥 Task: ${task.taskId}`);
 
       const taskResult = await processTask(task);
 
@@ -271,7 +251,7 @@ async function workerLoop() {
       console.log(`📤 Result sent\n`);
 
     } catch (err) {
-      console.error('❌ Loop error:', err.message);
+      console.error('Loop error:', err.message);
       await new Promise(r => setTimeout(r, 5000));
     }
   }
@@ -280,52 +260,38 @@ async function workerLoop() {
 // ========================= STARTUP =========================
 
 async function main() {
-  // HTTP сервер для health check
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🌐 Health server on port ${PORT}`);
-  });
+  app.listen(PORT, '0.0.0.0', () => console.log(`🌐 HTTP on port ${PORT}`));
 
-  // Подключение к Redis
   console.log('🔗 Connecting to Redis...');
-  try {
-    await redis.connect();
-    console.log('✅ Redis connected!');
-    
-    // Проверка подключения
-    const pong = await redis.ping();
-    console.log(`📡 Redis PING: ${pong}`);
-    
-  } catch (err) {
-    console.error('❌ Redis connection failed:', err.message);
-    console.error('');
-    console.error('Check your REDIS_URL format:');
-    console.error('  Expected: rediss://default:xxx@xxx.upstash.io:6379');
-    console.error(`  Got: ${REDIS_URL?.slice(0, 50)}...`);
-    process.exit(1);
-  }
+  await redis.connect();
+  console.log('✅ Redis connected');
+  
+  const pong = await redis.ping();
+  console.log(`📡 PING: ${pong}`);
 
   // Heartbeat
-  const heartbeat = async () => {
-    try {
-      await redis.set(HEARTBEAT_KEY, Date.now().toString(), 'EX', 120);
-    } catch (e) {
-      console.error('Heartbeat error:', e.message);
-    }
-  };
-  
+  const heartbeat = () => redis.set(HEARTBEAT_KEY, Date.now().toString(), 'EX', 120).catch(() => {});
   setInterval(heartbeat, 30000);
   await heartbeat();
-  console.log('💓 Heartbeat started');
+  console.log('💓 Heartbeat started\n');
 
   // Cleanup
-  setInterval(cleanupTempFiles, 5 * 60 * 1000);
+  setInterval(() => {
+    try {
+      const files = fs.readdirSync(TEMP_DIR);
+      const now = Date.now();
+      files.forEach(f => {
+        const fp = path.join(TEMP_DIR, f);
+        if (now - fs.statSync(fp).mtimeMs > 600000) {
+          fs.unlinkSync(fp);
+        }
+      });
+    } catch (e) {}
+  }, 300000);
 
-  // Main loop
-  console.log('');
   await workerLoop();
 }
 
-// Shutdown
 process.on('SIGTERM', async () => {
   console.log('\n👋 Shutting down...');
   await redis.quit();
@@ -336,4 +302,3 @@ main().catch(err => {
   console.error('Fatal:', err);
   process.exit(1);
 });
-

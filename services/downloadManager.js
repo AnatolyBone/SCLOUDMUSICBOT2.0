@@ -545,7 +545,8 @@ export async function trackDownloadProcessor(task) {
 
   // ============ ГИБРИДНАЯ АРХИТЕКТУРА ============
   // Spotify/YouTube → делегируем внешнему воркеру (HuggingFace)
-  if (source === 'spotify' || source === 'youtube') {
+  // Пропускаем делегирование, если это fallback после ошибки воркера
+  if ((source === 'spotify' || source === 'youtube') && !task.skipWorker) {
     const hasWorker = await taskBroker.hasActiveWorker();
     
     if (hasWorker) {
@@ -567,14 +568,8 @@ export async function trackDownloadProcessor(task) {
         });
         
         if (taskId) {
-          // Уведомляем пользователя
-          await safeSendMessage(
-            userId,
-            `⏳ Скачиваю "${title}"...\n` +
-            `🎵 Качество: ${QUALITY_PRESETS[quality]?.label || quality}\n\n` +
-            `Трек будет отправлен автоматически.`
-          );
-          
+          // ✅ УБРАЛИ отправку сообщения здесь!
+          // Сообщение уже отправлено в spotifyManager.js при добавлении в очередь
           return; // Воркер обработает и вернёт результат через Redis
         }
       } catch (e) {
@@ -1130,14 +1125,61 @@ export async function initializeDownloadManager() {
             result.cacheKey
           );
           
+          // Удаляем статусное сообщение (если есть и еще не удалено)
+          if (result.statusMessageId) {
+            try {
+              await bot.telegram.deleteMessage(result.userId, result.statusMessageId);
+              console.log(`[Master] 🗑️ Удалено статусное сообщение ${result.statusMessageId}`);
+            } catch (e) {
+              // Игнорируем ошибки удаления (сообщение уже удалено или не существует)
+            }
+          }
+          
           console.log(`[Master] ✅ Отправлено пользователю ${result.userId}`);
           
         } else {
-          // Ошибка — уведомляем пользователя
-          console.log(`[Master] ❌ Ошибка от воркера: ${result.error}`);
+          // Ошибка воркера — пробуем обработать локально (fallback)
+          const errorMsg = result.error || '';
+          const isNetworkError = errorMsg.includes('No address associated with hostname') || 
+                                 errorMsg.includes('network') || 
+                                 errorMsg.includes('timeout');
+          
+          console.log(`[Master] ❌ Ошибка от воркера: ${errorMsg}`);
+          
+          // Удаляем статусное сообщение (если есть)
+          if (result.statusMessageId) {
+            try {
+              await bot.telegram.deleteMessage(result.userId, result.statusMessageId);
+              console.log(`[Master] 🗑️ Удалено статусное сообщение ${result.statusMessageId}`);
+            } catch (e) {
+              // Игнорируем ошибки удаления
+            }
+          }
+          
+          // Если это сетевая ошибка — пробуем обработать локально
+          if (isNetworkError && result.task) {
+            console.log(`[Master] 🔄 Fallback: обрабатываю локально из-за сетевой ошибки`);
+            try {
+              // Добавляем задачу обратно в очередь для локальной обработки
+              // Флаг skipWorker предотвратит повторное делегирование воркеру
+              const fallbackTask = {
+                ...result.task,
+                isPlaylistItem: result.task.isPlaylistItem || false,
+                statusMessageId: undefined, // Не передаем, чтобы не удалять сообщение дважды
+                skipWorker: true // Флаг для пропуска делегирования воркеру
+              };
+              downloadQueue.add(fallbackTask);
+              console.log(`[Master] ✅ Задача добавлена для локальной обработки (fallback)`);
+              return; // Не отправляем сообщение об ошибке, т.к. обрабатываем локально
+            } catch (e) {
+              console.error(`[Master] ❌ Не удалось добавить задачу для fallback: ${e.message}`);
+            }
+          }
+          
+          // Если не удалось обработать локально — уведомляем пользователя
           await bot.telegram.sendMessage(
             result.userId,
-            `❌ Не удалось скачать "${result.title}"\n\n${result.error || 'Попробуйте позже'}`
+            `❌ Не удалось скачать "${result.title}"\n\n${errorMsg || 'Попробуйте позже'}`
           ).catch(() => {});
         }
       } catch (e) {
