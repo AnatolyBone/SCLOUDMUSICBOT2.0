@@ -838,10 +838,14 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
   return res.rowCount > 0 ? res.rows[0] : null;
 }
 
+// db.js
+
+/**
+ * Логирует загрузку трека в историю (Использует SQL для обхода RLS)
+ */
 export async function logDownload(userId, trackTitle, url, source = null) {
   try {
-    const downloadedAt = new Date().toISOString();
-    // ✅ Определяем source из URL, если не передан
+    // 1. Авто-определение источника, если не передан
     let detectedSource = source;
     if (!detectedSource) {
       if (url?.includes('soundcloud.com')) detectedSource = 'soundcloud';
@@ -850,22 +854,18 @@ export async function logDownload(userId, trackTitle, url, source = null) {
       else detectedSource = 'other';
     }
     
-    // ✅ Явно указываем downloaded_at и source для корректной работы графиков
-    const { data, error } = await supabase.from('downloads_log').insert([{ 
-      user_id: userId, 
-      track_title: trackTitle, 
-      url,
-      downloaded_at: downloadedAt, // Текущая дата и время
-      source: detectedSource // Источник скачивания
-    }]).select();
+    // 2. ЗАПИСЬ ЧЕРЕЗ SQL (POOL) ВМЕСТО SUPABASE CLIENT
+    // Это решает проблему с правами доступа и RLS
+    await query(
+      `INSERT INTO downloads_log (user_id, track_title, url, source, downloaded_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [userId, trackTitle, url, detectedSource]
+    );
     
-    if (error) {
-      console.error('❌ Ошибка Supabase при logDownload:', error.message);
-    } else {
-      console.log(`[DownloadLog] ✅ Запись добавлена: user=${userId}, source=${detectedSource}, date=${downloadedAt.slice(0, 10)}`);
-    }
+    console.log(`[DownloadLog] ✅ Запись добавлена: user=${userId}, source=${detectedSource}`);
   } catch (e) {
-    console.error('❌ Ошибка Supabase при logDownload:', e.message);
+    // Логируем ошибку, но не роняем бота
+    console.error('❌ Ошибка записи в downloads_log (SQL):', e.message);
   }
 }
 
