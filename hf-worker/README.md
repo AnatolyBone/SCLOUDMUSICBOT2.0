@@ -29,7 +29,8 @@ Connects to Redis queue and uploads to Telegram.
 5. Publishes result back to Redis (`music:download:results`)
 6. Sends heartbeat every 30 seconds
 
-## Health Check
+
+## Health Check!
 
 - `GET /` - Stats endpoint
 - `GET /health` - Health check endpoint
