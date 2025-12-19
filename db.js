@@ -637,55 +637,39 @@ export async function cacheTrack({
   aliases = []
 }) {
   try {
-    // Основная запись
-    const { error } = await supabase
-      .from('track_cache')
-      .upsert({
-        url,
-        file_id: fileId,
-        title,
-        artist,
-        duration,
-        thumbnail,
-        source,
-        quality,
-        spotify_id: spotifyId,
-        isrc,
-        cached_at: new Date().toISOString()
-      }, { 
-        onConflict: 'url' 
-      });
+    // SQL Upsert
+    const sql = `
+      INSERT INTO track_cache (
+        url, file_id, title, artist, duration, thumbnail, 
+        source, quality, spotify_id, isrc, cached_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+      ON CONFLICT (url) DO UPDATE SET
+        file_id = EXCLUDED.file_id,
+        title = EXCLUDED.title,
+        cached_at = NOW()
+    `;
+    
+    await query(sql, [url, fileId, title, artist, duration, thumbnail, source, quality, spotifyId, isrc]);
 
-    if (error) throw error;
-
-    // Алиасы (дополнительные ключи для поиска)
-    if (aliases.length > 0) {
-      const aliasRecords = aliases.map(aliasUrl => ({
-        url: aliasUrl,
-        file_id: fileId,
-        title,
-        artist,
-        duration,
-        thumbnail,
-        source,
-        quality,
-        spotify_id: spotifyId,
-        isrc,
-        cached_at: new Date().toISOString()
-      }));
-
-      await supabase
-        .from('track_cache')
-        .upsert(aliasRecords, { onConflict: 'url', ignoreDuplicates: true });
-      
+    // Алиасы (если есть)
+    if (aliases && aliases.length > 0) {
+      for (const aliasUrl of aliases) {
+        await query(
+           `INSERT INTO track_cache (url, file_id, title, artist, duration, source, quality, cached_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            ON CONFLICT (url) DO NOTHING`,
+           [aliasUrl, fileId, title, artist, duration, source, quality]
+        );
+      }
       console.log(`[Cache] Сохранено ${aliases.length} алиасов для: ${title}`);
     }
 
-    console.log(`[✓ Cache Saved] ${title} - ${artist} (${source}/${quality})`);
+    console.log(`[✓ Cache Saved (SQL)] ${title} - ${artist} (${source}/${quality})`);
     return true;
 
   } catch (e) {
-    console.error('[Cache] Ошибка сохранения:', e.message);
+    console.error('[Cache] Ошибка сохранения (SQL):', e.message);
     return false;
   }
 }
@@ -843,9 +827,14 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
 /**
  * Логирует загрузку трека в историю (Использует SQL для обхода RLS)
  */
+// =========================================================
+// ИСПРАВЛЕННАЯ ФУНКЦИЯ (SQL вместо Supabase Client)
+// =========================================================
 export async function logDownload(userId, trackTitle, url, source = null) {
   try {
-    // 1. Авто-определение источника, если не передан
+    const downloadedAt = new Date().toISOString();
+    
+    // Определяем источник, если он не передан
     let detectedSource = source;
     if (!detectedSource) {
       if (url?.includes('soundcloud.com')) detectedSource = 'soundcloud';
@@ -853,19 +842,18 @@ export async function logDownload(userId, trackTitle, url, source = null) {
       else if (url?.includes('youtube.com') || url?.includes('youtu.be') || url?.startsWith('ytsearch')) detectedSource = 'youtube';
       else detectedSource = 'other';
     }
-    
-    // 2. ЗАПИСЬ ЧЕРЕЗ SQL (POOL) ВМЕСТО SUPABASE CLIENT
-    // Это решает проблему с правами доступа и RLS
+
+    // 🔥 ИСПОЛЬЗУЕМ SQL ВМЕСТО SUPABASE CLIENT
+    // Это гарантирует запись, даже если RLS настроен криво или отключен
     await query(
       `INSERT INTO downloads_log (user_id, track_title, url, source, downloaded_at)
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [userId, trackTitle, url, detectedSource]
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, trackTitle, url, detectedSource, downloadedAt]
     );
-    
-    console.log(`[DownloadLog] ✅ Запись добавлена: user=${userId}, source=${detectedSource}`);
+
+    console.log(`[DownloadLog] ✅ Запись (SQL): user=${userId}, source=${detectedSource}`);
   } catch (e) {
-    // Логируем ошибку, но не роняем бота
-    console.error('❌ Ошибка записи в downloads_log (SQL):', e.message);
+    console.error('❌ Ошибка записи logDownload (SQL):', e.message);
   }
 }
 
