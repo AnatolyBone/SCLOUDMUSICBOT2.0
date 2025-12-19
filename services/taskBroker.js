@@ -1,5 +1,5 @@
 // services/taskBroker.js
-// Брокер задач: Render ↔ HuggingFace Worker через Redis
+// Использует ОТДЕЛЬНЫЙ Redis для связи с воркером
 
 import Redis from 'ioredis';
 import { EventEmitter } from 'events';
@@ -17,17 +17,22 @@ class TaskBroker extends EventEmitter {
     this.pendingTasks = new Map(); // taskId → { resolve, reject, timeout }
   }
 
-  async connect(redisUrl) {
+  async connect() {
+    // ✅ Используем ОТДЕЛЬНУЮ переменную для TaskBroker
+    const redisUrl = process.env.TASK_BROKER_REDIS_URL;
+    
     if (!redisUrl) {
-      console.log('[TaskBroker] Redis URL не задан');
+      console.log('[TaskBroker] TASK_BROKER_REDIS_URL не задан — гибридная архитектура отключена');
       return false;
     }
 
+    console.log('[TaskBroker] Подключение к Upstash Redis...');
+
     try {
-      // ✅ Автоматическая поддержка TLS для rediss://
       const options = {
         maxRetriesPerRequest: 3,
-        retryDelayOnFailover: 100,
+        retryDelayOnFailover: 1000,
+        connectTimeout: 10000,
         lazyConnect: true
       };
 
@@ -37,6 +42,10 @@ class TaskBroker extends EventEmitter {
       await this.redis.connect();
       await this.subscriber.connect();
 
+      // Проверка подключения
+      const pong = await this.redis.ping();
+      console.log(`[TaskBroker] Redis PING: ${pong}`);
+
       // Подписываемся на результаты
       await this.subscriber.subscribe(RESULTS_KEY);
       
@@ -44,6 +53,7 @@ class TaskBroker extends EventEmitter {
         if (channel === RESULTS_KEY) {
           try {
             const result = JSON.parse(message);
+            console.log(`[TaskBroker] 📥 Результат от воркера: ${result.taskId}`);
             this.handleResult(result);
           } catch (e) {
             console.error('[TaskBroker] Parse error:', e);
@@ -52,11 +62,11 @@ class TaskBroker extends EventEmitter {
       });
 
       this.isConnected = true;
-      console.log('[TaskBroker] ✅ Connected to Upstash Redis');
+      console.log('[TaskBroker] ✅ Подключён к Upstash Redis');
       return true;
       
     } catch (err) {
-      console.error('[TaskBroker] ❌ Connection failed:', err.message);
+      console.error('[TaskBroker] ❌ Ошибка подключения:', err.message);
       this.isConnected = false;
       return false;
     }
@@ -91,7 +101,7 @@ class TaskBroker extends EventEmitter {
     };
     
     await this.redis.lpush(QUEUE_KEY, JSON.stringify(taskData));
-    console.log(`[TaskBroker] 📤 Task added: ${taskId}`);
+    console.log(`[TaskBroker] 📤 Задача добавлена: ${taskId}`);
     
     return taskId;
   }
@@ -149,11 +159,21 @@ class TaskBroker extends EventEmitter {
 
     try {
       const lastHeartbeat = await this.redis.get(HEARTBEAT_KEY);
-      if (!lastHeartbeat) return false;
+      if (!lastHeartbeat) {
+        console.log('[TaskBroker] Воркер не найден (нет heartbeat)');
+        return false;
+      }
 
       const age = Date.now() - parseInt(lastHeartbeat);
-      return age < 120000; // 2 минуты
+      const isActive = age < 120000; // 2 минуты
+      
+      if (!isActive) {
+        console.log(`[TaskBroker] Воркер неактивен (последний heartbeat ${Math.round(age/1000)}с назад)`);
+      }
+      
+      return isActive;
     } catch (e) {
+      console.error('[TaskBroker] Ошибка проверки воркера:', e.message);
       return false;
     }
   }

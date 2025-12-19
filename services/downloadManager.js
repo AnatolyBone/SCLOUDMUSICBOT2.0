@@ -848,6 +848,16 @@ export async function trackDownloadProcessor(task) {
         duration: roundedDuration 
       });
       
+      // Удаляем статусное сообщение (если есть)
+      if (task.statusMessageId) {
+        try {
+          await bot.telegram.deleteMessage(userId, task.statusMessageId);
+          console.log(`[Worker] 🗑️ Deleted status message: ${task.statusMessageId}`);
+        } catch (e) {
+          // Игнорируем ошибки удаления
+        }
+      }
+      
       await incrementDownload(userId, title, finalFileId, task.originalUrl || cacheKey);
 
     } else {
@@ -885,6 +895,16 @@ export async function trackDownloadProcessor(task) {
         { source: stream, filename: `${sanitizeFilename(title)}.mp3` },
         { title, performer: uploader, duration: roundedDuration }
       );
+      
+      // Удаляем статусное сообщение (если есть)
+      if (task.statusMessageId) {
+        try {
+          await bot.telegram.deleteMessage(userId, task.statusMessageId);
+          console.log(`[Worker] 🗑️ Deleted status message: ${task.statusMessageId}`);
+        } catch (e) {
+          // Игнорируем ошибки удаления
+        }
+      }
       
       console.log(`✅ [Direct] Отправлено пользователю (без кэша)`);
     }
@@ -1060,62 +1080,76 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
  * Инициализирует Download Manager и подключается к Redis для гибридной архитектуры
  */
 export async function initializeDownloadManager() {
-  // Пробуем подключиться к Redis для гибридной архитектуры
-  const redisUrl = process.env.REDIS_URL;
-  if (redisUrl) {
-    const connected = await taskBroker.connect(redisUrl);
+  // Подключаемся к Upstash Redis для гибридной архитектуры
+  const connected = await taskBroker.connect();
+  
+  if (connected) {
+    console.log('[DownloadManager] ✅ TaskBroker подключён');
     
-    if (connected) {
-      // Слушаем результаты от воркера
-      taskBroker.on('result', async (result) => {
-        console.log(`[Master] 📥 Result from worker: ${result.taskId}`);
-        
-        try {
-          if (result.success && result.fileId) {
-            // Сохраняем в кэш
-            await db.cacheTrack({
-              url: result.cacheKey,
-              fileId: result.fileId,
-              title: result.title,
-              artist: result.artist,
-              duration: result.duration
-            });
-            
-            console.log(`[Master] ✅ Cached: ${result.title}`);
-            
-            // Отправляем пользователю
-            await bot.telegram.sendAudio(result.userId, result.fileId, {
-              title: result.title,
-              performer: result.artist,
-              duration: result.duration
-            });
-            
-            // Обновляем статистику
-            await db.incrementDownloadsAndSaveTrack(
-              result.userId,
-              result.title,
-              result.fileId,
-              result.cacheKey
-            );
-            
-          } else {
-            // Ошибка
-            await bot.telegram.sendMessage(
-              result.userId,
-              `❌ Не удалось скачать "${result.title}"\n\n${result.error || 'Неизвестная ошибка'}`
-            );
+    // Слушаем результаты от воркера
+    const deletedStatusMessages = new Set(); // Для отслеживания уже удаленных сообщений
+    
+    taskBroker.on('result', async (result) => {
+      try {
+        if (result.success && result.fileId) {
+          // Сохраняем в кэш
+          await db.cacheTrack({
+            url: result.cacheKey,
+            fileId: result.fileId,
+            title: result.title,
+            artist: result.artist,
+            duration: result.duration
+          });
+          
+          console.log(`[Master] ✅ Кэш сохранён: ${result.title}`);
+          
+          // Отправляем пользователю
+          await bot.telegram.sendAudio(result.userId, result.fileId, {
+            title: result.title,
+            performer: result.artist,
+            duration: result.duration
+          });
+          
+          // Удаляем статусное сообщение (если есть и еще не удалено)
+          if (result.statusMessageId && !deletedStatusMessages.has(result.statusMessageId)) {
+            try {
+              await bot.telegram.deleteMessage(result.userId, result.statusMessageId);
+              deletedStatusMessages.add(result.statusMessageId);
+              console.log(`[Master] 🗑️ Deleted status message: ${result.statusMessageId}`);
+            } catch (e) {
+              // Игнорируем ошибки удаления
+            }
           }
-        } catch (e) {
-          console.error('[Master] Error handling result:', e);
+          
+          // Обновляем статистику
+          await db.incrementDownloadsAndSaveTrack(
+            result.userId,
+            result.title,
+            result.fileId,
+            result.cacheKey
+          );
+          
+        } else {
+          // Ошибка
+          await bot.telegram.sendMessage(
+            result.userId,
+            `❌ Не удалось скачать "${result.title}"\n\n${result.error || 'Попробуйте позже'}`
+          ).catch(() => {});
+          
+          // Удаляем статусное сообщение при ошибке тоже
+          if (result.statusMessageId && !deletedStatusMessages.has(result.statusMessageId)) {
+            try {
+              await bot.telegram.deleteMessage(result.userId, result.statusMessageId);
+              deletedStatusMessages.add(result.statusMessageId);
+            } catch (e) {}
+          }
         }
-      });
-      
-      console.log('[DownloadManager] ✅ Гибридная архитектура активирована (Master + Worker)');
-    } else {
-      console.log('[DownloadManager] ⚠️ Redis недоступен, работаем локально');
-    }
+      } catch (e) {
+        console.error('[Master] Ошибка обработки результата:', e);
+      }
+    });
   } else {
-    console.log('[DownloadManager] ℹ️ REDIS_URL не задан, работаем локально');
+    console.log('[DownloadManager] ⚠️ TaskBroker не подключён — все задачи локально');
   }
   
   console.log('[DownloadManager] Готов к работе.');

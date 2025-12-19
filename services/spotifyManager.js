@@ -619,6 +619,10 @@ export function registerSpotifyCallbacks(bot) {
     
     // Добавляем в очередь
     let addedCount = 0;
+    
+    // Получаем message_id для последующего удаления
+    const statusMessageId = ctx.callbackQuery?.message?.message_id;
+    
     for (const track of tracksToProcess) {
       const task = {
         userId: session.userId,
@@ -632,7 +636,9 @@ export function registerSpotifyCallbacks(bot) {
           duration: track.duration,
           thumbnail: track.thumbnail
         },
-        priority: user.premium_limit || 5
+        priority: user.premium_limit || 5,
+        // Сохраняем message_id только для первого трека (чтобы удалить сообщение один раз)
+        statusMessageId: addedCount === 0 ? statusMessageId : undefined
       };
       
       console.log(`[Spotify] Добавляю в очередь: "${track.artist} - ${track.title}" (${quality})`);
