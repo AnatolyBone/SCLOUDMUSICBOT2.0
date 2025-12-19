@@ -768,15 +768,28 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     
     // Собираем данные по сервисам
     const sourceData = {};
+    const allSources = ['spotify', 'youtube', 'soundcloud', 'other'];
+    
+    // Инициализируем массивы для всех источников
+    allSources.forEach(source => {
+      sourceData[source] = [];
+    });
+    
     (dailyStats || []).forEach(d => {
-      const downloadsBySource = typeof d.downloads_by_source === 'string' 
-        ? JSON.parse(d.downloads_by_source || '{}') 
-        : (d.downloads_by_source || {});
-      
-      Object.keys(downloadsBySource).forEach(source => {
-        if (!sourceData[source]) {
-          sourceData[source] = [];
+      let downloadsBySource = {};
+      try {
+        if (d.downloads_by_source) {
+          downloadsBySource = typeof d.downloads_by_source === 'string' 
+            ? JSON.parse(d.downloads_by_source || '{}') 
+            : (d.downloads_by_source || {});
         }
+      } catch (e) {
+        console.error('[Chart] Ошибка парсинга downloads_by_source:', e.message);
+        downloadsBySource = {};
+      }
+      
+      // Заполняем данные для каждого источника (0 если нет данных)
+      allSources.forEach(source => {
         sourceData[source].push(parseInt(downloadsBySource[source] || 0, 10));
       });
     });

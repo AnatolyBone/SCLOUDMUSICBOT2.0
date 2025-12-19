@@ -1008,7 +1008,9 @@ export async function getDailyStats(options = {}) {
   const startDate = options.startDate ? new Date(options.startDate) : new Date(new Date().setDate(endDate.getDate() - 29));
   const startDateSql = startDate.toISOString().slice(0, 10);
   const endDateSql = endDate.toISOString().slice(0, 10);
-  const { rows } = await query(`
+  
+  try {
+    const { rows } = await query(`
     WITH date_series AS (
       SELECT generate_series($1::date, $2::date, '1 day')::date AS day
     ),
@@ -1028,12 +1030,12 @@ export async function getDailyStats(options = {}) {
     daily_by_source AS (
       SELECT 
         downloaded_at::date AS day,
-        COALESCE(source, 'other') AS source,
+        COALESCE(NULLIF(source, ''), 'other') AS source,
         COUNT(id) AS downloads
       FROM downloads_log
       WHERE downloaded_at IS NOT NULL 
         AND downloaded_at::date BETWEEN $1 AND $2
-      GROUP BY downloaded_at::date, COALESCE(source, 'other')
+      GROUP BY downloaded_at::date, COALESCE(NULLIF(source, ''), 'other')
     )
     SELECT 
       to_char(ds.day, 'YYYY-MM-DD') as day,
@@ -1041,20 +1043,58 @@ export async function getDailyStats(options = {}) {
       COALESCE(da.active_users, 0)::int AS active_users,
       COALESCE(da.downloads, 0)::int AS downloads,
       COALESCE(
-        json_object_agg(
-          COALESCE(dbs.source, 'other'),
-          COALESCE(dbs.downloads, 0)
-        ) FILTER (WHERE dbs.source IS NOT NULL),
+        (
+          SELECT json_object_agg(source, downloads)
+          FROM daily_by_source dbs2
+          WHERE dbs2.day = ds.day
+        ),
         '{}'::json
       ) AS downloads_by_source
     FROM date_series ds
     LEFT JOIN daily_registrations dr ON ds.day = dr.day
     LEFT JOIN daily_activity da ON ds.day = da.day
-    LEFT JOIN daily_by_source dbs ON ds.day = dbs.day
     GROUP BY ds.day, dr.registrations, da.active_users, da.downloads
     ORDER BY ds.day
   `, [startDateSql, endDateSql]);
-  return rows;
+    return rows;
+  } catch (e) {
+    console.error('[DB] Ошибка getDailyStats (возможно поле source не существует):', e.message);
+    // Fallback: возвращаем данные без разбивки по источникам
+    try {
+      const { rows } = await query(`
+        WITH date_series AS (
+          SELECT generate_series($1::date, $2::date, '1 day')::date AS day
+        ),
+        daily_registrations AS (
+          SELECT created_at::date AS day, COUNT(id) AS registrations
+          FROM users
+          WHERE created_at::date BETWEEN $1 AND $2
+          GROUP BY created_at::date
+        ),
+        daily_activity AS (
+          SELECT downloaded_at::date AS day, COUNT(id) AS downloads, COUNT(DISTINCT user_id) AS active_users
+          FROM downloads_log
+          WHERE downloaded_at IS NOT NULL 
+            AND downloaded_at::date BETWEEN $1 AND $2
+          GROUP BY downloaded_at::date
+        )
+        SELECT 
+          to_char(ds.day, 'YYYY-MM-DD') as day,
+          COALESCE(dr.registrations, 0)::int AS registrations,
+          COALESCE(da.active_users, 0)::int AS active_users,
+          COALESCE(da.downloads, 0)::int AS downloads,
+          '{}'::json AS downloads_by_source
+        FROM date_series ds
+        LEFT JOIN daily_registrations dr ON ds.day = dr.day
+        LEFT JOIN daily_activity da ON ds.day = da.day
+        ORDER BY ds.day
+      `, [startDateSql, endDateSql]);
+      return rows;
+    } catch (e2) {
+      console.error('[DB] Критическая ошибка getDailyStats:', e2.message);
+      return [];
+    }
+  }
 }
 
 // В db.js
