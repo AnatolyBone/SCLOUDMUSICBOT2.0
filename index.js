@@ -110,7 +110,7 @@ async function startApp() {
     await redisService.connect();
 await loadSettings();
     
-    initializeDownloadManager(bot);
+    await initializeDownloadManager();
     
     let lastUpdateTs = Date.now();
     bot.use((ctx, next) => { lastUpdateTs = Date.now(); return next(); });

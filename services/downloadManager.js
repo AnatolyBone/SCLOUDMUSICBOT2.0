@@ -38,6 +38,7 @@ import { bot } from '../bot.js';
 import { T } from '../config/texts.js';
 import { TaskQueue } from '../lib/TaskQueue.js';
 import * as db from '../db.js';
+import { taskBroker } from './taskBroker.js';
 
 // Папка для обложек
 const THUMB_DIR = path.join(os.tmpdir(), 'sc-thumbs');
@@ -536,12 +537,47 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
 // =====================================================================================
 
 export async function trackDownloadProcessor(task) {
-  let statusMessage = null;
-  let tempFilePath = null;
-  let thumbPath = null;
   const userId = parseInt(task.userId, 10);
   const source = task.source || 'soundcloud';
   const quality = task.quality || 'high';
+  
+  // Проверяем, есть ли активный воркер для тяжёлых задач
+  const hasWorker = await taskBroker.hasActiveWorker();
+  
+  if (hasWorker && (source === 'spotify' || source === 'youtube')) {
+    // Делегируем тяжёлую работу воркеру
+    console.log(`[Master] 📤 Делегирую задачу воркеру: ${task.metadata?.title}`);
+    
+    // Формируем cacheKey с учётом качества
+    const metadata = task.metadata || {};
+    const title = metadata.title || 'Unknown';
+    const uploader = metadata.uploader || 'Unknown';
+    const qualitySuffix = quality || 'medium';
+    const cacheKey = `${source}:${title}:${uploader}:${qualitySuffix}`
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^\w:_-]/g, '');
+    
+    const taskId = await taskBroker.addTask({
+      ...task,
+      cacheKey
+    });
+    
+    if (taskId) {
+      // Уведомляем пользователя
+      const qualityLabel = QUALITY_PRESETS[quality]?.label || quality;
+      await safeSendMessage(
+        userId,
+        `⏳ Скачиваю "${title}" (${qualityLabel})...\nОжидайте, трек будет отправлен автоматически.`
+      );
+      return; // Воркер обработает и вернёт результат через Redis
+    }
+  }
+  
+  // Если воркера нет или делегирование не удалось — обрабатываем локально
+  let statusMessage = null;
+  let tempFilePath = null;
+  let thumbPath = null;
   
   try {
     // 1. Проверка лимитов
@@ -561,7 +597,13 @@ export async function trackDownloadProcessor(task) {
       uploader = metadata.uploader || 'Unknown';
       roundedDuration = metadata.duration ? Math.round(metadata.duration) : undefined;
       fullUrl = task.url; // поисковый запрос или youtube url
-      cacheKey = `${source}:${title}:${uploader}`.toLowerCase().replace(/\s+/g, '_');
+      
+      // ✅ Кэш с учётом качества
+      const qualitySuffix = quality || 'medium';
+      cacheKey = `${source}:${title}:${uploader}:${qualitySuffix}`
+        .toLowerCase()
+        .replace(/\s+/g, '_')
+        .replace(/[^\w:_-]/g, '');
     } else {
       // SoundCloud - старая логика
       const ensured = await ensureTaskMetadata(task);
@@ -574,6 +616,8 @@ export async function trackDownloadProcessor(task) {
     }
     
     if (!fullUrl) throw new Error(`Нет ссылки на трек: ${title}`);
+
+    console.log(`[Worker] CacheKey: ${cacheKey}`);
 
     // 3. Проверка КЭША
     let cached = await db.findCachedTrack(cacheKey);
@@ -597,6 +641,7 @@ export async function trackDownloadProcessor(task) {
     
     let stream;
     let usedFallback = false;
+    let spotifyBuffer = null; // Для хранения buffer'а из pipe-стриминга
 
     // 4. СКАЧИВАНИЕ - РАЗНАЯ ЛОГИКА ДЛЯ РАЗНЫХ ИСТОЧНИКОВ
     
@@ -612,29 +657,51 @@ export async function trackDownloadProcessor(task) {
       }
       
     } else if (source === 'spotify') {
-      // ===== SPOTIFY - НОВЫЙ НАДЁЖНЫЙ МЕТОД =====
+      // ===== SPOTIFY - ОПТИМИЗИРОВАННЫЙ МЕТОД С PIPE-СТРИМИНГОМ =====
       console.log(`[Worker/Spotify] Обработка: "${title}" by ${uploader}`);
       
       // Импортируем загрузчик
-      const { downloadSpotifyTrack } = await import('./spotifyDownloader.js');
+      const { downloadSpotifyStream, downloadSpotifyTrack } = await import('./spotifyDownloader.js');
       
-      const trackInfo = {
-        title,
-        artist: uploader,
-        duration: roundedDuration
-      };
+      const searchQuery = `${uploader} ${title}`;
       
       try {
+        // Пробуем быстрый стриминг (без записи на диск)
+        const result = await downloadSpotifyStream(searchQuery, { quality });
+        
+        // Проверяем размер перед созданием стрима
+        const fileSizeMB = result.size / 1024 / 1024;
+        console.log(`[Worker/Spotify] ✅ Stream готов: ${fileSizeMB.toFixed(2)} MB`);
+        
+        if (fileSizeMB > 48) {
+          console.warn(`[Worker/Spotify] ⚠️ Buffer слишком большой (${fileSizeMB.toFixed(1)} MB), используем fallback`);
+          throw new Error('BUFFER_TOO_LARGE');
+        }
+        
+        // Сохраняем buffer для повторного использования
+        spotifyBuffer = result.buffer;
+        
+        // Отправляем buffer напрямую в Telegram
+        stream = Readable.from(spotifyBuffer);
+        stream._size = result.size; // Сохраняем размер для проверки
+        usedFallback = false;
+        
+      } catch (streamErr) {
+        console.warn(`[Worker/Spotify] Stream не сработал: ${streamErr.message}`);
+        
+        // Fallback на файловый метод
+        const trackInfo = {
+          title,
+          artist: uploader,
+          duration: roundedDuration
+        };
+        
         const result = await downloadSpotifyTrack(trackInfo, { quality });
         tempFilePath = result.filePath;
         stream = fs.createReadStream(tempFilePath);
         usedFallback = true;
         
-        console.log(`[Worker/Spotify] ✅ Файл готов: ${(result.size / 1024 / 1024).toFixed(2)} MB`);
-        
-      } catch (dlError) {
-        console.error(`[Worker/Spotify] ❌ Все методы провалились:`, dlError.message);
-        throw new Error(`Не удалось скачать трек из Spotify: ${dlError.message}`);
+        console.log(`[Worker/Spotify] ✅ Файл готов (fallback): ${(result.size / 1024 / 1024).toFixed(2)} MB`);
       }
       
     } else {
@@ -680,10 +747,12 @@ export async function trackDownloadProcessor(task) {
     // А) В канал-хранилище (если настроен)
     if (STORAGE_CHANNEL_ID) {
       try {
-        // Проверяем размер файла
+        // Проверяем размер файла или buffer
+        let fileSizeMB = 0;
+        
         if (tempFilePath && fs.existsSync(tempFilePath)) {
           const fileSize = fs.statSync(tempFilePath).size;
-          const fileSizeMB = fileSize / 1024 / 1024;
+          fileSizeMB = fileSize / 1024 / 1024;
           
           console.log(`[Worker] Размер файла: ${fileSizeMB.toFixed(2)} MB`);
           
@@ -694,6 +763,15 @@ export async function trackDownloadProcessor(task) {
           
           // Пересоздаём стрим
           stream = fs.createReadStream(tempFilePath);
+        } else if (stream?._size) {
+          // Проверяем размер buffer-стрима
+          fileSizeMB = stream._size / 1024 / 1024;
+          console.log(`[Worker] Размер buffer: ${fileSizeMB.toFixed(2)} MB`);
+          
+          if (fileSizeMB > 48) {
+            console.warn(`[Worker] ⚠️ Buffer слишком большой (${fileSizeMB.toFixed(1)} MB), пропускаем хранилище`);
+            throw new Error('BUFFER_TOO_LARGE');
+          }
         }
 
         console.log(`[Worker] Отправка в хранилище...`);
@@ -725,9 +803,12 @@ export async function trackDownloadProcessor(task) {
       } catch (e) {
         console.error(`❌ Ошибка отправки в хранилище:`, e.message);
         
-        // Если использовали файл, пересоздаём стрим для отправки юзеру
+        // Пересоздаём стрим для отправки юзеру
         if (tempFilePath && fs.existsSync(tempFilePath)) {
           stream = fs.createReadStream(tempFilePath);
+        } else if (spotifyBuffer) {
+          // Пересоздаём stream из buffer
+          stream = Readable.from(spotifyBuffer);
         }
       }
     }
@@ -736,19 +817,22 @@ export async function trackDownloadProcessor(task) {
     if (finalFileId) {
       const urlAliases = [];
       if (task.originalUrl && task.originalUrl !== cacheKey) urlAliases.push(task.originalUrl);
-      if (fullUrl && fullUrl !== cacheKey) urlAliases.push(fullUrl);
+      if (fullUrl && fullUrl !== cacheKey && source !== 'spotify') urlAliases.push(fullUrl);
       
+      // ✅ Для Spotify не добавляем алиасы без качества, чтобы не перезаписывать разные качества
       await db.cacheTrack({ 
-        url: cacheKey, 
+        url: cacheKey,  // spotify:title:artist:quality
         fileId: finalFileId, 
         title, 
         artist: uploader, 
         duration: roundedDuration, 
         thumbnail: metadata.thumbnail, 
-        aliases: urlAliases 
+        aliases: source === 'spotify' 
+          ? (task.originalUrl ? [`${task.originalUrl}:${quality}`] : [])
+          : urlAliases
       });
       
-      console.log(`✅ [Cache] Трек "${title}" сохранён (key: ${cacheKey}).`);
+      console.log(`✅ [Cache] Трек "${title}" (${quality}) сохранён (key: ${cacheKey}).`);
       
       await bot.telegram.sendAudio(userId, finalFileId, { 
         title, 
@@ -765,6 +849,9 @@ export async function trackDownloadProcessor(task) {
       // Пересоздаём стрим если нужно
       if (tempFilePath && fs.existsSync(tempFilePath)) {
         stream = fs.createReadStream(tempFilePath);
+      } else if (spotifyBuffer) {
+        // Пересоздаём stream из buffer
+        stream = Readable.from(spotifyBuffer);
       } else if (!stream || stream.destroyed || stream.readableEnded) {
         // ✅ ИСПРАВЛЕНО: НЕ используем scdl для Spotify/YouTube!
         if (source === 'soundcloud' && fullUrl.includes('soundcloud.com')) {
@@ -961,6 +1048,73 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
   })().catch(e => console.error('Async Enqueue Error:', e));
 }
 
-export function initializeDownloadManager() {
+/**
+ * Инициализирует Download Manager и подключается к Redis для гибридной архитектуры
+ */
+export async function initializeDownloadManager() {
+  // Пробуем подключиться к Redis для гибридной архитектуры
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    const connected = await taskBroker.connect(redisUrl);
+    
+    if (connected) {
+      // Слушаем результаты от воркера
+      taskBroker.on('result', async (result) => {
+        console.log(`[Master] 📥 Результат от воркера: ${result.taskId}`);
+        
+        if (result.success && result.fileId) {
+          try {
+            // Сохраняем в кэш
+            await db.cacheTrack({
+              url: result.cacheKey,
+              fileId: result.fileId,
+              title: result.title,
+              artist: result.artist,
+              duration: result.duration
+            });
+            
+            console.log(`✅ [Master/Cache] Трек "${result.title}" (${result.quality}) сохранён.`);
+            
+            // Отправляем пользователю
+            await bot.telegram.sendAudio(result.userId, result.fileId, {
+              title: result.title,
+              performer: result.artist,
+              duration: result.duration ? Math.round(result.duration) : undefined
+            });
+            
+            await incrementDownload(
+              result.userId, 
+              result.title, 
+              result.fileId, 
+              result.cacheKey
+            );
+            
+            console.log(`✅ [Master] Трек отправлен пользователю ${result.userId}`);
+          } catch (err) {
+            console.error(`[Master] Ошибка обработки результата:`, err.message);
+            
+            // Уведомляем пользователя об ошибке
+            await safeSendMessage(
+              result.userId,
+              `❌ Ошибка при обработке трека: ${err.message}`
+            );
+          }
+        } else {
+          // Ошибка — уведомляем пользователя
+          await safeSendMessage(
+            result.userId,
+            `❌ Не удалось скачать трек: ${result.error || 'Unknown error'}`
+          );
+        }
+      });
+      
+      console.log('[DownloadManager] ✅ Гибридная архитектура активирована (Master + Worker)');
+    } else {
+      console.log('[DownloadManager] ⚠️ Redis недоступен, работаем локально');
+    }
+  } else {
+    console.log('[DownloadManager] ℹ️ REDIS_URL не задан, работаем локально');
+  }
+  
   console.log('[DownloadManager] Готов к работе.');
 }
