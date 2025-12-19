@@ -577,11 +577,16 @@ app.post('/settings/maintenance', requireAuth, (req, res) => {
 
 app.post('/settings/update', requireAuth, async (req, res) => {
   try {
+    console.log('[Settings/Update] Получены данные:', JSON.stringify(req.body, null, 2));
+    
     // 1. Сохраняем настройки
     for (const [key, value] of Object.entries(req.body)) {
+      console.log(`[Settings/Update] Сохраняю: ${key} = ${value}`);
       await setAppSetting(key, value);
     }
+    
     await loadSettings(); // Обновляем кеш
+    console.log('[Settings/Update] ✅ Настройки сохранены и кеш обновлён');
 
     // 2. Запускаем фоновое обновление (без await, чтобы не ждать)
     applyLimitsToUsers(req.body).catch(err => {
