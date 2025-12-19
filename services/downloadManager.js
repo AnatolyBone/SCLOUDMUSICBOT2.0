@@ -39,6 +39,7 @@ import { T } from '../config/texts.js';
 import { TaskQueue } from '../lib/TaskQueue.js';
 import * as db from '../db.js';
 import { taskBroker } from './taskBroker.js';
+import { getSetting } from './settingsManager.js';
 
 // Папка для обложек
 const THUMB_DIR = path.join(os.tmpdir(), 'sc-thumbs');
@@ -543,10 +544,14 @@ export async function trackDownloadProcessor(task) {
   const source = task.source || 'soundcloud';
   const quality = task.quality || 'high';
 
+  // ⚠️ ГИБРИДНАЯ АРХИТЕКТУРА — управляется из админки
+  // Читаем настройку из БД (можно переключать без перезапуска)
+  const USE_HYBRID_WORKER = getSetting('use_hybrid_worker') === 'true';
+  
   // ============ ГИБРИДНАЯ АРХИТЕКТУРА ============
   // Spotify/YouTube → делегируем внешнему воркеру (HuggingFace)
   // Пропускаем делегирование, если это fallback после ошибки воркера
-  if ((source === 'spotify' || source === 'youtube') && !task.skipWorker) {
+  if (USE_HYBRID_WORKER && (source === 'spotify' || source === 'youtube') && !task.skipWorker) {
     const hasWorker = await taskBroker.hasActiveWorker();
     
     if (hasWorker) {

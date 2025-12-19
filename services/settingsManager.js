@@ -10,6 +10,7 @@ const DEFAULTS = {
   playlist_limit_plus: '30',
   playlist_limit_pro: '100',
   playlist_limit_unlim: '200',
+  use_hybrid_worker: 'false', // Гибридная архитектура (воркер для Spotify/YouTube)
 };
 
 /**
