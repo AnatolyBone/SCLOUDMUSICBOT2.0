@@ -8,7 +8,7 @@ import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDai
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
-import { handleSpotifyUrl, handleQualitySelection as handleSpotifyQuality } from './services/spotifyManager.js';
+import { handleSpotifyUrl, handleQualitySelection as handleSpotifyQuality, registerSpotifyCallbacks } from './services/spotifyManager.js';
 import { handleYouTubeUrl, handleYouTubeQualitySelection } from './services/youtubeManager.js';
 import { downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
@@ -166,6 +166,9 @@ const telegrafOptions = { handlerTimeout: 300_000 };
    //  console.log('[App] Использую прокси для подключения к Telegram API.');
 // }
 export const bot = new Telegraf(BOT_TOKEN, telegrafOptions);
+
+// Регистрируем Spotify callbacks
+registerSpotifyCallbacks(bot);
 
 // --- Middleware ---
 // ЗАМЕНИ СТАРЫЙ БЛОК bot.catch НА ЭТОТ В ФАЙЛЕ bot.js

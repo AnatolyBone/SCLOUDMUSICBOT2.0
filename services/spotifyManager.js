@@ -578,13 +578,17 @@ export function registerSpotifyCallbacks(bot) {
   
   // ===== Выбор качества → Запуск скачивания =====
   bot.action(/^sp_quality:(.+):(low|medium|high)$/, async (ctx) => {
+    console.log(`[Spotify/Callback] Выбор качества: ${ctx.callbackQuery.data}`);
     const sessionId = ctx.match[1];
     const quality = ctx.match[2];
     const session = spotifySessions.get(sessionId);
     
     if (!session) {
+      console.error(`[Spotify/Callback] Сессия не найдена: ${sessionId}`);
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    
+    console.log(`[Spotify/Callback] Сессия найдена, треков: ${session.tracks.length}, выбрано: ${session.selectedTracks?.size || 0}`);
     
     await ctx.answerCbQuery(`Качество: ${QUALITY_PRESETS[quality].label}`);
     
@@ -632,8 +636,13 @@ export function registerSpotifyCallbacks(bot) {
       };
       
       console.log(`[Spotify] Добавляю в очередь: "${track.artist} - ${track.title}" (${quality})`);
-      downloadQueue.add(task);
-      addedCount++;
+      try {
+        downloadQueue.add(task);
+        addedCount++;
+        console.log(`[Spotify] ✅ Задача добавлена (${addedCount}/${tracksToProcess.length})`);
+      } catch (err) {
+        console.error(`[Spotify] ❌ Ошибка добавления задачи:`, err.message);
+      }
     }
     
     await ctx.editMessageText(
