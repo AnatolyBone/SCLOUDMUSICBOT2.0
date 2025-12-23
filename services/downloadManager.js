@@ -84,7 +84,7 @@ const __dirname = path.dirname(__filename);
 const TEMP_DIR = path.join(os.tmpdir(), 'sc-cache');
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 2;
+const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 4;
 
 // Настройки для yt-dlp
 const YTDL_COMMON = {
@@ -216,8 +216,8 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
     const args = [
       '-m', 'yt_dlp',
       searchUrl,
-      // ✅ ИСПРАВЛЕНО: Гибкий селектор формата
-      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[height<=480]/best',
+      // ✅ ИСПРАВЛЕНО: Приоритет HTTP > HLS для быстрой загрузки
+      '-f', 'http_mp3/bestaudio[protocol^=http]/bestaudio[protocol^=https]/bestaudio',
       '-x',                              // Extract audio
       '--audio-format', 'mp3',           // Конвертируем в mp3
       '--audio-quality', '0',            // Лучшее качество конвертации
@@ -232,8 +232,10 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
       '--retries', '5',
       '--fragment-retries', '10',
       '--extractor-retries', '3',
-      // ✅ Важно: разрешаем скачивать даже если нет "чистого" аудио
-      '--format-sort', 'acodec:m4a,acodec:aac,acodec:opus,acodec:mp3',
+      // ✅ Для HLS (если HTTP недоступен) - многопоточность
+      '--concurrent-fragments', '8', // 8 параллельных соединений для HLS
+      '--buffer-size', '64K', // Увеличить буфер
+      '--http-chunk-size', '10M', // Размер чанков
     ];
     
     if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
@@ -314,8 +316,8 @@ async function downloadWithYtdlp(url, quality = 'high') {
     const args = [
       '-m', 'yt_dlp',
       url,
-      // ✅ Гибкий формат: пробуем аудио, если нет - берём видео и извлекаем аудио
-      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[height<=480]/best',
+      // ✅ ИСПРАВЛЕНО: Приоритет HTTP > HLS для быстрой загрузки
+      '-f', 'http_mp3/bestaudio[protocol^=http]/bestaudio[protocol^=https]/bestaudio',
       '-x',
       '--audio-format', 'mp3',
       '--audio-quality', '0',
@@ -327,7 +329,11 @@ async function downloadWithYtdlp(url, quality = 'high') {
       '--retries', '5',
       '--geo-bypass',
       '--no-check-certificates',
-      '--format-sort', 'acodec:m4a,acodec:aac,acodec:opus',
+      // ✅ Для HLS (если HTTP недоступен) - многопоточность
+      '--concurrent-fragments', '8', // 8 параллельных соединений для HLS
+      '--fragment-retries', '10',
+      '--buffer-size', '64K', // Увеличить буфер
+      '--http-chunk-size', '10M', // Размер чанков
     ];
     
     if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
@@ -611,6 +617,7 @@ export async function trackDownloadProcessor(task) {
   let statusMessage = null;
   let tempFilePath = null;
   let thumbPath = null;
+  let progressInterval = null; // Для индикатора прогресса
   
   try {
     // 1. Проверка лимитов
@@ -671,6 +678,26 @@ export async function trackDownloadProcessor(task) {
 
     const qualityLabel = QUALITY_PRESETS[quality]?.label || quality;
     statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}" (${qualityLabel})`);
+    
+    // Индикатор прогресса для пользователя
+    let dots = 1;
+    progressInterval = setInterval(async () => {
+      if (statusMessage) {
+        const dotString = '.'.repeat(dots);
+        dots = (dots % 3) + 1;
+        
+        try {
+          await bot.telegram.editMessageText(
+            userId,
+            statusMessage.message_id,
+            null,
+            `⏳ Скачиваю: "${title}" (${qualityLabel})${dotString}`
+          );
+        } catch (e) {
+          // Игнорируем ошибки (сообщение может быть удалено)
+        }
+      }
+    }, 5000); // Обновляем каждые 5 секунд
     
     let stream;
     let usedFallback = false;
@@ -1266,6 +1293,11 @@ export async function trackDownloadProcessor(task) {
 
   } finally {
     // 6. ОЧИСТКА
+    // Останавливаем индикатор прогресса
+    if (progressInterval) {
+      clearInterval(progressInterval);
+    }
+    
     if (statusMessage) {
       try { await bot.telegram.deleteMessage(userId, statusMessage.message_id); } catch (e) {}
     }
