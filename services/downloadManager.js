@@ -675,29 +675,79 @@ export async function trackDownloadProcessor(task) {
     // 4. СКАЧИВАНИЕ - РАЗНАЯ ЛОГИКА ДЛЯ РАЗНЫХ ИСТОЧНИКОВ
     
     if (source === 'soundcloud' && fullUrl.includes('soundcloud.com')) {
-      // ===== SOUNDCLOUD: БЫСТРЫЙ ПУТЬ (scdl) + ПРОВЕРКА НА ПРЕВЬЮ =====
+      // ===== SOUNDCLOUD: БЫСТРЫЙ ПУТЬ (scdl + FFmpeg) =====
       
       let sentToStorage = null;
       let usedSlowMethod = false;
       let scdlSucceeded = false;
       
-      // 1️⃣ БЫСТРЫЙ ПУТЬ: Пробуем scdl (потоковая отправка)
       try {
-        console.log(`[Worker/SoundCloud] 🚀 Быстрый метод (scdl): ${fullUrl}`);
-        stream = await scdl.default.download(fullUrl);
+        console.log(`[Worker/SoundCloud] 🚀 Быстрый метод (scdl + ffmpeg): ${fullUrl}`);
         
-        // Отправляем сразу в хранилище
+        // Скачиваем через scdl, но сохраняем во временный файл с конвертацией
+        const { spawn } = await import('child_process');
+        const rawStream = await scdl.default.download(fullUrl);
+        
+        // Генерируем имя временного файла
+        const outputPath = path.join(TEMP_DIR, `scdl_${Date.now()}.mp3`);
+        
+        // Конвертируем через FFmpeg (AAC/HLS → MP3)
+        await new Promise((resolve, reject) => {
+          const ffmpeg = spawn(ffmpegPath, [
+            '-i', 'pipe:0',           // Вход из stdin
+            '-acodec', 'libmp3lame',  // Кодек MP3
+            '-ab', '320k',            // Битрейт 320 kbps
+            '-ar', '44100',           // Sample rate
+            '-y',                     // Перезаписать если есть
+            outputPath
+          ]);
+          
+          // Подаём поток от scdl на вход ffmpeg
+          rawStream.pipe(ffmpeg.stdin);
+          
+          let stderrData = '';
+          ffmpeg.stderr.on('data', (data) => {
+            stderrData += data.toString();
+          });
+          
+          ffmpeg.on('close', (code) => {
+            if (code === 0) {
+              resolve();
+            } else {
+              reject(new Error(`FFmpeg exited with code ${code}: ${stderrData.slice(-200)}`));
+            }
+          });
+          
+          ffmpeg.on('error', reject);
+          
+          rawStream.on('error', (err) => {
+            ffmpeg.stdin.end();
+            reject(err);
+          });
+        });
+        
+        // Проверяем размер файла
+        const fileStats = fs.statSync(outputPath);
+        const fileSizeMB = fileStats.size / 1024 / 1024;
+        
+        console.log(`[Worker/SoundCloud] 📁 Файл конвертирован: ${fileSizeMB.toFixed(2)} MB`);
+        
+        if (fileSizeMB < 0.1) {
+          throw new Error('CONVERTED_FILE_TOO_SMALL');
+        }
+        
+        tempFilePath = outputPath;
+        stream = fs.createReadStream(outputPath);
+        
+        // Отправляем в хранилище
         if (STORAGE_CHANNEL_ID) {
-          // Пробуем отправить с retry при 429
           let retryCount = 0;
           const maxRetries = 3;
           
           while (retryCount < maxRetries) {
             try {
-              // Если это retry — нужно перекачать stream (он уже consumed)
               if (retryCount > 0) {
-                console.log(`[Worker/SoundCloud] 🔄 Retry ${retryCount}/${maxRetries}: перекачиваю stream...`);
-                stream = await scdl.default.download(fullUrl);
+                stream = fs.createReadStream(tempFilePath);
               }
               
               sentToStorage = await bot.telegram.sendAudio(
@@ -711,28 +761,20 @@ export async function trackDownloadProcessor(task) {
                   disable_notification: true
                 }
               );
-              
-              // Успешно отправили — выходим из цикла
               break;
               
             } catch (sendErr) {
-              // Проверяем 429 (Rate Limit)
               if (sendErr.message?.includes('429')) {
                 const retryMatch = sendErr.message.match(/retry after (\d+)/);
                 const waitTime = retryMatch ? parseInt(retryMatch[1], 10) : 5;
                 
                 retryCount++;
-                if (retryCount >= maxRetries) {
-                  console.error(`[Worker/SoundCloud] ❌ Превышен лимит retry (429)`);
-                  throw sendErr; // Переходим к yt-dlp
-                }
+                if (retryCount >= maxRetries) throw sendErr;
                 
                 console.log(`[Worker/SoundCloud] ⏳ Rate limit, жду ${waitTime + 1} сек...`);
                 await new Promise(r => setTimeout(r, (waitTime + 1) * 1000));
                 continue;
               }
-              
-              // Другая ошибка — переходим к yt-dlp
               throw sendErr;
             }
           }
@@ -742,46 +784,38 @@ export async function trackDownloadProcessor(task) {
           
           console.log(`[Worker/SoundCloud] 📊 Ожидаемая: ${expectedDuration}с, Реальная: ${realDuration}с`);
           
-          // 2️⃣ ПРОВЕРКА НА ПРЕВЬЮ
+          // Проверка на превью
           if (expectedDuration > 60 && realDuration < 35) {
             console.warn(`[Worker/SoundCloud] ⚠️ Обнаружено превью! Удаляю и пробую yt-dlp...`);
-            
-            // Удаляем битый файл из хранилища
             await bot.telegram.deleteMessage(STORAGE_CHANNEL_ID, sentToStorage.message_id).catch(() => {});
-            sentToStorage = null;
-            
             throw new Error('PREVIEW_DETECTED');
           }
           
-          // ✅ Всё ок
           finalFileId = sentToStorage.audio?.file_id;
           scdlSucceeded = true;
           console.log(`[Worker/SoundCloud] ✅ Быстрый метод успешен!`);
-          
-        } else {
-          // Хранилище не настроено — отправляем напрямую юзеру
-          // Но тогда мы НЕ МОЖЕМ проверить длительность до отправки
-          // Поэтому лучше использовать yt-dlp (файловый метод)
-          console.log(`[Worker/SoundCloud] ⚠️ Хранилище не настроено, переключаюсь на yt-dlp для проверки...`);
-          throw new Error('NO_STORAGE_USE_YTDLP');
         }
         
       } catch (scdlError) {
-        // 3️⃣ МЕДЛЕННЫЙ ПУТЬ: yt-dlp (если scdl упал, превью, или 429)
+        // МЕДЛЕННЫЙ ПУТЬ: yt-dlp
         console.warn(`[Worker/SoundCloud] ⚠️ Быстрый метод не сработал: ${scdlError.message}`);
-        console.log(`[Worker/SoundCloud] 🐢 Пробую медленный метод (yt-dlp)...`);
+        console.log(`[Worker/SoundCloud] 🐢 Пробую yt-dlp...`);
         
         usedSlowMethod = true;
+        
+        // Удаляем битый временный файл если есть
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+          try { fs.unlinkSync(tempFilePath); } catch (e) {}
+          tempFilePath = null;
+        }
         
         try {
           tempFilePath = await downloadWithYtdlp(fullUrl, quality);
           
-          // Проверяем размер файла
           const fileStats = fs.statSync(tempFilePath);
           const fileSizeMB = fileStats.size / 1024 / 1024;
           
           if (fileSizeMB < 0.3) {
-            console.error(`[Worker/SoundCloud] ❌ Файл слишком маленький: ${fileSizeMB.toFixed(2)} MB`);
             throw new Error('DOWNLOAD_FAILED_EMPTY');
           }
           
@@ -791,87 +825,48 @@ export async function trackDownloadProcessor(task) {
               const { execSync } = await import('child_process');
               const ffprobePath = ffmpegPath.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
               const probeCmd = `"${ffprobePath}" -v error -show_entries format=duration -of csv=p=0 "${tempFilePath}"`;
-              const realDuration = parseFloat(execSync(probeCmd, { encoding: 'utf8', timeout: 10000 }).trim()) || 0;
+              const realDur = parseFloat(execSync(probeCmd, { encoding: 'utf8', timeout: 10000 }).trim()) || 0;
               
-              console.log(`[Worker/SoundCloud] 📊 yt-dlp: Ожидаемая ${roundedDuration}с, Реальная ${realDuration.toFixed(1)}с`);
+              console.log(`[Worker/SoundCloud] 📊 yt-dlp: Ожидаемая ${roundedDuration}с, Реальная ${realDur.toFixed(1)}с`);
               
-              if (realDuration < 35 && roundedDuration > 60) {
-                console.error(`[Worker/SoundCloud] ❌ yt-dlp тоже скачал превью!`);
+              if (realDur < 35 && roundedDuration > 60) {
                 throw new Error('PREVIEW_ONLY');
               }
             } catch (probeErr) {
               if (probeErr.message === 'PREVIEW_ONLY') throw probeErr;
-              console.warn(`[Worker/SoundCloud] ffprobe недоступен: ${probeErr.message}`);
             }
           }
           
-          console.log(`[Worker/SoundCloud] ✅ Файл проверен: ${fileSizeMB.toFixed(2)} MB`);
+          console.log(`[Worker/SoundCloud] ✅ yt-dlp успешен: ${fileSizeMB.toFixed(2)} MB`);
           
-          // Отправляем в хранилище (с retry при 429)
+          // Отправляем в хранилище
           if (STORAGE_CHANNEL_ID) {
-            let retryCount = 0;
-            const maxRetries = 3;
-            
-            while (retryCount < maxRetries) {
-              try {
-                stream = fs.createReadStream(tempFilePath);
-                
-                sentToStorage = await bot.telegram.sendAudio(
-                  STORAGE_CHANNEL_ID,
-                  { source: stream, filename: `${sanitizeFilename(title)}.mp3` },
-                  {
-                    title,
-                    performer: uploader,
-                    duration: roundedDuration,
-                    thumb: thumbPath ? { source: fs.createReadStream(thumbPath) } : undefined,
-                    disable_notification: true
-                  }
-                );
-                
-                finalFileId = sentToStorage.audio?.file_id;
-                console.log(`[Worker/SoundCloud] ✅ Медленный метод успешен!`);
-                break;
-                
-              } catch (sendErr) {
-                if (sendErr.message?.includes('429')) {
-                  const retryMatch = sendErr.message.match(/retry after (\d+)/);
-                  const waitTime = retryMatch ? parseInt(retryMatch[1], 10) : 5;
-                  
-                  retryCount++;
-                  if (retryCount >= maxRetries) {
-                    console.error(`[Worker/SoundCloud] ❌ Превышен лимит retry для yt-dlp`);
-                    // Не падаем — просто отправим напрямую юзеру
-                    break;
-                  }
-                  
-                  console.log(`[Worker/SoundCloud] ⏳ Rate limit (yt-dlp), жду ${waitTime + 1} сек...`);
-                  await new Promise(r => setTimeout(r, (waitTime + 1) * 1000));
-                  continue;
-                }
-                
-                console.error(`[Worker/SoundCloud] ❌ Ошибка отправки в хранилище: ${sendErr.message}`);
-                break; // Не падаем, отправим напрямую
-              }
-            }
-          }
-          
-          // Устанавливаем stream для отправки юзеру (если хранилище не сработало)
-          if (!finalFileId && tempFilePath) {
             stream = fs.createReadStream(tempFilePath);
+            
+            sentToStorage = await bot.telegram.sendAudio(
+              STORAGE_CHANNEL_ID,
+              { source: stream, filename: `${sanitizeFilename(title)}.mp3` },
+              {
+                title,
+                performer: uploader,
+                duration: roundedDuration,
+                thumb: thumbPath ? { source: fs.createReadStream(thumbPath) } : undefined,
+                disable_notification: true
+              }
+            );
+            
+            finalFileId = sentToStorage.audio?.file_id;
           }
           
         } catch (ytdlpError) {
-          console.error(`[Worker/SoundCloud] ❌ Оба метода провалились: ${ytdlpError.message}`);
-          
+          console.error(`[Worker/SoundCloud] ❌ Все методы провалились: ${ytdlpError.message}`);
           const reason = ytdlpError.message === 'PREVIEW_ONLY' ? 'PREVIEW_ONLY' : 'DOWNLOAD_FAILED';
           await db.logBrokenTrack(fullUrl, title, userId, reason).catch(() => {});
-          
           throw ytdlpError;
         }
       }
       
       usedFallback = usedSlowMethod;
-      
       // Для медленного пути stream уже установлен выше
       
       // Для медленного пути (yt-dlp) нужно установить stream из tempFilePath
