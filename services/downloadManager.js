@@ -823,7 +823,7 @@ export async function trackDownloadProcessor(task) {
           if (roundedDuration && roundedDuration > 60) {
             try {
               const { execSync } = await import('child_process');
-              const ffprobePath = ffmpegPath.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
+              const ffprobePath = 'ffprobe'; // Используем системный ffprobe
               const probeCmd = `"${ffprobePath}" -v error -show_entries format=duration -of csv=p=0 "${tempFilePath}"`;
               const realDur = parseFloat(execSync(probeCmd, { encoding: 'utf8', timeout: 10000 }).trim()) || 0;
               
