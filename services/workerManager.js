@@ -219,24 +219,33 @@ function setupGracefulShutdown(server) {
       downloadQueue.pause();
       console.log('[Shutdown] Очередь скачивания приостановлена');
       
-      // Ждём завершения активных задач (с таймаутом)
-      if (downloadQueue.pending > 0 || downloadQueue.size > 0) {
+      // Ждём завершения активных задач (с таймаутом и периодической проверкой)
+      const maxWaitTime = 30000; // 30 секунд
+      const startTime = Date.now();
+      
+      while (Date.now() - startTime < maxWaitTime) {
+        const stats = downloadQueue.getStats();
+        
+        if (stats.activeTasks === 0 && stats.queueSize === 0) {
+          console.log('[Shutdown] Все активные задачи завершены');
+          break;
+        }
+        
+        const remainingSeconds = Math.round((maxWaitTime - (Date.now() - startTime)) / 1000);
         console.log(
-          `[Shutdown] Ожидаю завершения задач в очереди ` +
-          `(активных: ${downloadQueue.pending}, в ожидании: ${downloadQueue.size}). ` +
-          `Макс. ${SHUTDOWN_TIMEOUT / 1000}с...`
+          `[Shutdown] Ожидаю завершения задач... ` +
+          `(активных: ${stats.activeTasks}, в ожидании: ${stats.queueSize}). ` +
+          `Осталось: ${remainingSeconds}с`
         );
         
-        await Promise.race([
-          downloadQueue.onIdle(),
-          new Promise(resolve => setTimeout(resolve, SHUTDOWN_TIMEOUT))
-        ]);
-        
-        // Если задачи не успели завершиться — очищаем очередь
-        if (downloadQueue.size > 0) {
-          console.warn(`[Shutdown] Не все задачи завершились, очищаю очередь (${downloadQueue.size} задач)`);
-          downloadQueue.clear();
-        }
+        await new Promise(r => setTimeout(r, 2000)); // Проверяем каждые 2 секунды
+      }
+      
+      // Очищаем очередь ожидания после таймаута
+      const finalStats = downloadQueue.getStats();
+      if (finalStats.queueSize > 0) {
+        console.warn(`[Shutdown] Не все задачи завершились, очищаю очередь (${finalStats.queueSize} задач)`);
+        downloadQueue.clear();
       }
       
       // Закрываем соединения с БД и Redis
@@ -264,10 +273,14 @@ function setupGracefulShutdown(server) {
   process.on('unhandledRejection', (reason, promise) => {
     console.error('[UnhandledRejection]', reason);
     console.error('Promise:', promise);
+    // Не завершаем процесс для unhandledRejection, так как это может быть обработано
   });
   
+  // Для uncaughtException НЕ делаем graceful shutdown - сразу выходим
   process.on('uncaughtException', (error) => {
     console.error('[UncaughtException]', error);
+    console.error('[Shutdown] Критическая ошибка, немедленный выход');
+    process.exit(1); // Немедленный выход без graceful shutdown;
     gracefulShutdown('UNCAUGHT_EXCEPTION');
   });
 }

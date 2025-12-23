@@ -17,8 +17,18 @@ if (!fs.existsSync(COOKIES_PATH)) {
     COOKIES_PATH = path.join(process.cwd(), 'cookies.txt');
 }
 
+// Копируем cookies во временную папку (доступную для записи) для использования в yt-dlp
+let WRITABLE_COOKIES_PATH = null;
 if (fs.existsSync(COOKIES_PATH)) {
-    console.log('🍪 [Cookies] Файл найден:', COOKIES_PATH);
+    try {
+        WRITABLE_COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
+        fs.copyFileSync(COOKIES_PATH, WRITABLE_COOKIES_PATH);
+        console.log('🍪 [Cookies] Файл найден и скопирован в:', WRITABLE_COOKIES_PATH);
+    } catch (err) {
+        console.warn('⚠️ [Cookies] Не удалось скопировать во временную папку:', err.message);
+        // Используем оригинальный путь как fallback
+        WRITABLE_COOKIES_PATH = COOKIES_PATH;
+    }
 } else {
     console.warn('⚠️ [Cookies] Файл НЕ найден!');
 }
@@ -226,9 +236,9 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
       '--format-sort', 'acodec:m4a,acodec:aac,acodec:opus,acodec:mp3',
     ];
     
-    if (fs.existsSync(COOKIES_PATH)) {
-      args.push('--cookies', COOKIES_PATH);
-      console.log(`[yt-dlp/file] Использую куки из: ${COOKIES_PATH}`);
+    if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
+      args.push('--cookies', WRITABLE_COOKIES_PATH);
+      console.log(`[yt-dlp/file] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
     } else {
       console.warn('[yt-dlp/file] Куки не найдены, пробую без них (возможна блокировка)');
     }
@@ -320,9 +330,9 @@ async function downloadWithYtdlp(url, quality = 'high') {
       '--format-sort', 'acodec:m4a,acodec:aac,acodec:opus',
     ];
     
-    if (fs.existsSync(COOKIES_PATH)) {
-      args.push('--cookies', COOKIES_PATH);
-      console.log(`[yt-dlp/fallback] Использую куки из: ${COOKIES_PATH}`);
+    if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
+      args.push('--cookies', WRITABLE_COOKIES_PATH);
+      console.log(`[yt-dlp/fallback] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
     } else {
       console.warn('[yt-dlp/fallback] Куки не найдены, пробую без них (возможна блокировка)');
     }
@@ -681,6 +691,7 @@ export async function trackDownloadProcessor(task) {
       let usedSlowMethod = false;
       let scdlSucceeded = false;
       
+      // Внешний try-catch для предотвращения uncaughtException
       try {
         console.log(`[Worker/SoundCloud] 🚀 Быстрый метод (scdl + ffmpeg): ${fullUrl}`);
         
@@ -692,6 +703,7 @@ export async function trackDownloadProcessor(task) {
         const outputPath = path.join(TEMP_DIR, `scdl_${Date.now()}.mp3`);
         
         // Конвертируем через FFmpeg (AAC/HLS → MP3)
+        const FFMPEG_TIMEOUT = 30000; // 30 секунд
         await new Promise((resolve, reject) => {
           const ffmpeg = spawn(ffmpegPath, [
             '-i', 'pipe:0',           // Вход из stdin
@@ -702,15 +714,83 @@ export async function trackDownloadProcessor(task) {
             outputPath
           ]);
           
-          // Подаём поток от scdl на вход ffmpeg
-          rawStream.pipe(ffmpeg.stdin);
-          
+          let hasError = false;
           let stderrData = '';
+          
+          // Timeout для предотвращения зависания FFmpeg
+          const timeoutId = setTimeout(() => {
+            if (!hasError) {
+              hasError = true;
+              console.warn('[Worker/SoundCloud] FFmpeg timeout, killing process');
+              ffmpeg.kill('SIGKILL');
+              reject(new Error('FFmpeg timeout'));
+            }
+          }, FFMPEG_TIMEOUT);
+          
+          // Обработка ошибок stream'а от scdl
+          rawStream.on('error', (err) => {
+            if (!hasError) {
+              hasError = true;
+              clearTimeout(timeoutId);
+              console.error(`[Worker/SoundCloud] SCDL Stream error: ${err.message}`);
+              try {
+                ffmpeg.stdin.end(); // Корректно закрываем stdin
+              } catch (e) {
+                // Игнорируем ошибки при закрытии
+              }
+              reject(err);
+            }
+          });
+          
+          // Обработка завершения потока от scdl
+          rawStream.on('end', () => {
+            console.log('[Worker/SoundCloud] SCDL Stream ended');
+            try {
+              ffmpeg.stdin.end(); // Закрываем stdin после завершения потока
+            } catch (e) {
+              // Игнорируем ошибки при закрытии
+            }
+          });
+          
+          // Подаём поток от scdl на вход ffmpeg с обработкой ошибок
+          const pipedStream = rawStream.pipe(ffmpeg.stdin);
+          
+          // Обработка EPIPE ошибки на pipe (процесс закрылся, но мы пытаемся писать)
+          pipedStream.on('error', (err) => {
+            if (err.code === 'EPIPE') {
+              // Игнорируем EPIPE, так как процесс уже мертв, и мы обработаем это в событии close
+              return;
+            }
+            if (!hasError) {
+              hasError = true;
+              clearTimeout(timeoutId);
+              console.error(`[Worker/SoundCloud] Pipe error: ${err.message}`);
+              reject(err);
+            }
+          });
+          
+          // Также обрабатываем ошибки на stdin процесса ffmpeg
+          ffmpeg.stdin.on('error', (err) => {
+            if (err.code === 'EPIPE') {
+              // Игнорируем EPIPE, процесс уже закрыт
+              return;
+            }
+            if (!hasError) {
+              hasError = true;
+              clearTimeout(timeoutId);
+              console.error(`[Worker/SoundCloud] FFmpeg stdin error: ${err.message}`);
+              reject(err);
+            }
+          });
+          
           ffmpeg.stderr.on('data', (data) => {
             stderrData += data.toString();
           });
           
           ffmpeg.on('close', (code) => {
+            clearTimeout(timeoutId);
+            if (hasError) return; // Уже обработана ошибка
+            
             if (code === 0) {
               resolve();
             } else {
@@ -718,11 +798,12 @@ export async function trackDownloadProcessor(task) {
             }
           });
           
-          ffmpeg.on('error', reject);
-          
-          rawStream.on('error', (err) => {
-            ffmpeg.stdin.end();
-            reject(err);
+          ffmpeg.on('error', (err) => {
+            if (!hasError) {
+              hasError = true;
+              clearTimeout(timeoutId);
+              reject(err);
+            }
           });
         });
         
@@ -823,8 +904,7 @@ export async function trackDownloadProcessor(task) {
           if (roundedDuration && roundedDuration > 60) {
             try {
               const { execSync } = await import('child_process');
-              const ffprobePath = 'ffprobe'; // Используем системный ffprobe
-              const probeCmd = `"${ffprobePath}" -v error -show_entries format=duration -of csv=p=0 "${tempFilePath}"`;
+              const ffprobePath = ffmpegPath.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');              const probeCmd = `"${ffprobePath}" -v error -show_entries format=duration -of csv=p=0 "${tempFilePath}"`;
               const realDur = parseFloat(execSync(probeCmd, { encoding: 'utf8', timeout: 10000 }).trim()) || 0;
               
               console.log(`[Worker/SoundCloud] 📊 yt-dlp: Ожидаемая ${roundedDuration}с, Реальная ${realDur.toFixed(1)}с`);
@@ -867,7 +947,6 @@ export async function trackDownloadProcessor(task) {
       }
       
       usedFallback = usedSlowMethod;
-      // Для медленного пути stream уже установлен выше
       
       // Для медленного пути (yt-dlp) нужно установить stream из tempFilePath
       // для случая, если хранилище не настроено (прямая отправка пользователю)

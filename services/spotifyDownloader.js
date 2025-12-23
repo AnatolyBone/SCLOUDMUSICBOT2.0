@@ -19,11 +19,20 @@ if (!fs.existsSync(COOKIES_PATH)) {
     COOKIES_PATH = path.join(process.cwd(), 'cookies.txt');
 }
 
-// Лог для отладки
+// Копируем cookies во временную папку (доступную для записи) для использования в yt-dlp
+let WRITABLE_COOKIES_PATH = null;
 if (fs.existsSync(COOKIES_PATH)) {
-    console.log('🍪 [SpotifyDL/Cookies] Файл найден по пути:', COOKIES_PATH);
+    try {
+        WRITABLE_COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
+        fs.copyFileSync(COOKIES_PATH, WRITABLE_COOKIES_PATH);
+        console.log('🍪 [SpotifyDL/Cookies] Файл найден и скопирован в:', WRITABLE_COOKIES_PATH);
+    } catch (err) {
+        console.warn('⚠️ [SpotifyDL/Cookies] Не удалось скопировать во временную папку:', err.message);
+        // Используем оригинальный путь как fallback
+        WRITABLE_COOKIES_PATH = COOKIES_PATH;
+    }
 } else {
-    console.warn('⚠️ [SpotifyDL/Cookies] Файл НЕ найден! Проверьте Secret Files на Render.');
+    console.warn('⚠️ [SpotifyDL/Cookies] Файл НЕ найден!');
 }
 
 // Создаём папку если нет
@@ -61,9 +70,9 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
     ];
     
     // Куки если есть
-    if (fs.existsSync(COOKIES_PATH)) {
-      ytdlpArgs.push('--cookies', COOKIES_PATH);
-      console.log(`[SpotifyDL/Stream] Использую куки из: ${COOKIES_PATH}`);
+    if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
+      ytdlpArgs.push('--cookies', WRITABLE_COOKIES_PATH);
+      console.log(`[SpotifyDL/Stream] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
     } else {
       console.warn('[SpotifyDL/Stream] Куки не найдены, пробую без них (возможна блокировка)');
     }
@@ -220,9 +229,9 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
     ];
     
     // Куки если есть
-    if (fs.existsSync(COOKIES_PATH)) {
-      args.push('--cookies', COOKIES_PATH);
-      console.log(`[SpotifyDL] Использую куки из: ${COOKIES_PATH}`);
+    if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
+      args.push('--cookies', WRITABLE_COOKIES_PATH);
+      console.log(`[SpotifyDL] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
     } else {
       console.warn('[SpotifyDL] Куки не найдены, пробую без них (возможна блокировка)');
     }
@@ -347,9 +356,9 @@ export async function downloadFromYouTubeFallback(searchQuery, options = {}) {
       '--ffmpeg-location', ffmpegPath,
     ];
     
-    if (fs.existsSync(COOKIES_PATH)) {
-      args.push('--cookies', COOKIES_PATH);
-      console.log(`[SpotifyDL/Fallback] Использую куки из: ${COOKIES_PATH}`);
+    if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
+      args.push('--cookies', WRITABLE_COOKIES_PATH);
+      console.log(`[SpotifyDL/Fallback] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
     } else {
       console.warn('[SpotifyDL/Fallback] Куки не найдены, пробую без них (возможна блокировка)');
     }
