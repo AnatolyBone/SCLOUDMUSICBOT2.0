@@ -31,8 +31,10 @@ RUN npm install --omit=dev
 # Копируем исходники
 COPY . .
 
-# Копируем cookies файл (⚠️ файл должен существовать, иначе сборка упадёт)
-COPY cookies.txt .
+# ❌ УБРАЛИ ЭТУ СТРОКУ:
+# Cookies берутся из Render Secret Files → /etc/secrets/cookies.txt
+# Они монтируются автоматически в runtime, копировать не нужно
+# COPY cookies.txt .
 
 ENV NODE_ENV=production
 EXPOSE 10000
