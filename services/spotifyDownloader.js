@@ -9,7 +9,22 @@ import { PassThrough } from 'stream';
 import ffmpegPath from 'ffmpeg-static';
 
 const TEMP_DIR = path.join(os.tmpdir(), 'spotify-dl');
-const COOKIES_PATH = path.join(process.cwd(), 'youtube_cookies.txt');
+
+// Логика определения пути к кукам:
+// 1. Сначала ищем в секретах Render (/etc/secrets/cookies.txt)
+// 2. Если нет, ищем в корне проекта (для локальной разработки)
+let COOKIES_PATH = '/etc/secrets/cookies.txt';
+
+if (!fs.existsSync(COOKIES_PATH)) {
+    COOKIES_PATH = path.join(process.cwd(), 'cookies.txt');
+}
+
+// Лог для отладки
+if (fs.existsSync(COOKIES_PATH)) {
+    console.log('🍪 [SpotifyDL/Cookies] Файл найден по пути:', COOKIES_PATH);
+} else {
+    console.warn('⚠️ [SpotifyDL/Cookies] Файл НЕ найден! Проверьте Secret Files на Render.');
+}
 
 // Создаём папку если нет
 if (!fs.existsSync(TEMP_DIR)) {
@@ -48,6 +63,9 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
     // Куки если есть
     if (fs.existsSync(COOKIES_PATH)) {
       ytdlpArgs.push('--cookies', COOKIES_PATH);
+      console.log(`[SpotifyDL/Stream] Использую куки из: ${COOKIES_PATH}`);
+    } else {
+      console.warn('[SpotifyDL/Stream] Куки не найдены, пробую без них (возможна блокировка)');
     }
     
     const ytdlp = spawn('python3', ytdlpArgs, {
@@ -204,6 +222,9 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
     // Куки если есть
     if (fs.existsSync(COOKIES_PATH)) {
       args.push('--cookies', COOKIES_PATH);
+      console.log(`[SpotifyDL] Использую куки из: ${COOKIES_PATH}`);
+    } else {
+      console.warn('[SpotifyDL] Куки не найдены, пробую без них (возможна блокировка)');
     }
 
     console.log(`[SpotifyDL] 🚀 Запуск yt-dlp...`);
@@ -328,6 +349,9 @@ export async function downloadFromYouTubeFallback(searchQuery, options = {}) {
     
     if (fs.existsSync(COOKIES_PATH)) {
       args.push('--cookies', COOKIES_PATH);
+      console.log(`[SpotifyDL/Fallback] Использую куки из: ${COOKIES_PATH}`);
+    } else {
+      console.warn('[SpotifyDL/Fallback] Куки не найдены, пробую без них (возможна блокировка)');
     }
 
     const proc = spawn('python3', args, { cwd: TEMP_DIR });

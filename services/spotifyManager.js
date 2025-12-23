@@ -643,7 +643,13 @@ export function registerSpotifyCallbacks(bot) {
       
       console.log(`[Spotify] Добавляю в очередь: "${track.artist} - ${track.title}" (${quality})`);
       try {
-        downloadQueue.add(task);
+        downloadQueue.add(task).catch(err => {
+          if (err.message === 'TASK_TIMEOUT') {
+            console.error(`[TaskQueue] Задача отменена по таймауту: ${track.title}`);
+          } else {
+            console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
+          }
+        });
         addedCount++;
         console.log(`[Spotify] ✅ Задача добавлена (${addedCount}/${tracksToProcess.length})`);
       } catch (err) {

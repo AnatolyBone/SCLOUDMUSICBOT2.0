@@ -76,7 +76,13 @@ async function addTaskToQueue(task) {
         });
         
         // ВАЖНО: передаем в очередь ОБЪЕКТ ЗАДАЧИ, а не функцию
-        downloadQueue.add({ ...task, priority });
+        downloadQueue.add({ ...task, priority }).catch(err => {
+          if (err.message === 'TASK_TIMEOUT') {
+            console.error(`[TaskQueue] Задача отменена по таймауту: ${task.url || task.originalUrl}`);
+          } else {
+            console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
+          }
+        });
     } catch (e) {
         console.error(`[Queue] Ошибка при добавлении задачи в очередь для ${task.userId}:`, e);
     }

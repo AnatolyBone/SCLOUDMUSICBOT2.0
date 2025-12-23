@@ -198,6 +198,12 @@ export async function handleYouTubeQualitySelection(ctx, sessionId, quality) {
           thumbnail: entry.thumbnail
         },
         priority: user.premium_limit || 5
+      }).catch(err => {
+        if (err.message === 'TASK_TIMEOUT') {
+          console.error(`[TaskQueue] Задача отменена по таймауту: ${entry.title}`);
+        } else {
+          console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
+        }
       });
     }
     
@@ -224,6 +230,12 @@ export async function handleYouTubeQualitySelection(ctx, sessionId, quality) {
         thumbnail: metadata.thumbnail
       },
       priority: user.premium_limit || 5
+    }).catch(err => {
+      if (err.message === 'TASK_TIMEOUT') {
+        console.error(`[TaskQueue] Задача отменена по таймауту: ${metadata.title}`);
+      } else {
+        console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
+      }
     });
     
     await ctx.editMessageText(

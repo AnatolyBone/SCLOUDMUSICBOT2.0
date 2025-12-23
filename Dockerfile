@@ -31,6 +31,9 @@ RUN npm install --omit=dev
 # Копируем исходники
 COPY . .
 
+# Копируем cookies файл (⚠️ файл должен существовать, иначе сборка упадёт)
+COPY cookies.txt .
+
 ENV NODE_ENV=production
 EXPOSE 10000
 
