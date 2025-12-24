@@ -47,6 +47,155 @@ if (!fs.existsSync(TEMP_DIR)) {
  * @param {object} options - { quality: 'high'|'medium'|'low' }
  * @returns {Promise<{buffer: Buffer, size: number}>}
  */
+/**
+ * 🔥 STREAMING ВЕРСИЯ - отправка начинается через 3-5 секунд!
+ * Возвращает readable stream вместо buffer
+ */
+export async function downloadSpotifyAsStream(searchQuery, options = {}) {
+  const { quality = 'medium' } = options;
+  
+  const bitrate = {
+    'high': '320k',
+    'medium': '192k',
+    'low': '128k'
+  }[quality] || '192k';
+
+  console.log(`[SpotifyDL/Stream] 🔍 Ищу: "${searchQuery}"`);
+
+  return new Promise((resolve, reject) => {
+    // yt-dlp → stdout
+    const ytdlpArgs = [
+      '-m', 'yt_dlp',
+      `ytsearch1:${searchQuery}`,
+      '-f', 'bestaudio/best',
+      '-o', '-',  // ✅ Вывод в stdout
+      '--no-playlist',
+      '--quiet',
+      '--no-warnings',
+    ];
+    
+    if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
+      ytdlpArgs.push('--cookies', WRITABLE_COOKIES_PATH);
+      console.log(`[SpotifyDL/Stream] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
+    }
+    
+    const ytdlp = spawn('python3', ytdlpArgs, {
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    });
+
+    // FFmpeg конвертирует поток в MP3
+    const ffmpeg = spawn(ffmpegPath, [
+      '-i', 'pipe:0',
+      '-vn',
+      '-acodec', 'libmp3lame',
+      '-b:a', bitrate,
+      '-f', 'mp3',
+      'pipe:1'  // ✅ Вывод в stdout
+    ]);
+
+    // Соединяем pipe
+    ytdlp.stdout.pipe(ffmpeg.stdin);
+
+    // ✅ ГЛАВНОЕ: Возвращаем stream, НЕ собираем buffer!
+    const outputStream = new PassThrough();
+    ffmpeg.stdout.pipe(outputStream);
+
+    let hasStarted = false;
+    let bytesReceived = 0;
+    let errorLogs = '';
+
+    // Отслеживаем начало потока
+    outputStream.on('data', (chunk) => {
+      bytesReceived += chunk.length;
+      
+      if (!hasStarted) {
+        hasStarted = true;
+        console.log(`[SpotifyDL/Stream] ✅ Поток начался! Отправляем в Telegram...`);
+      }
+    });
+
+    // Собираем ошибки
+    ytdlp.stderr.on('data', (data) => {
+      errorLogs += data.toString();
+    });
+
+    ffmpeg.stderr.on('data', (data) => {
+      errorLogs += data.toString();
+    });
+
+    // Таймаут только на НАЧАЛО потока (не на весь файл!)
+    const startTimeout = setTimeout(() => {
+      if (!hasStarted) {
+        console.error(`[SpotifyDL/Stream] ❌ Таймаут: поток не начался за 30 сек`);
+        ytdlp.kill('SIGTERM');
+        ffmpeg.kill('SIGTERM');
+        reject(new Error('STREAM_START_TIMEOUT'));
+      }
+    }, 30000); // 30 сек чтобы начался
+
+    // Когда поток начался - резолвим промис
+    outputStream.once('data', (firstChunk) => {
+      clearTimeout(startTimeout);
+      
+      // Создаём новый stream и пушим первый чанк обратно
+      const finalStream = new PassThrough();
+      finalStream.write(firstChunk);
+      outputStream.pipe(finalStream);
+      
+      // ✅ Возвращаем stream СРАЗУ!
+      resolve({
+        stream: finalStream,
+        
+        // Функция для принудительной остановки
+        cleanup: () => {
+          console.log(`[SpotifyDL/Stream] 🧹 Cleanup вызван (получено ${(bytesReceived/1024/1024).toFixed(2)} MB)`);
+          ytdlp.kill('SIGTERM');
+          ffmpeg.kill('SIGTERM');
+        },
+        
+        // Promise который резолвится когда скачивание завершится
+        waitComplete: new Promise((res, rej) => {
+          outputStream.on('end', () => {
+            console.log(`[SpotifyDL/Stream] ✅ Полностью скачано: ${(bytesReceived/1024/1024).toFixed(2)} MB`);
+            res(bytesReceived);
+          });
+          outputStream.on('error', rej);
+        })
+      });
+    });
+
+    // Обработка ошибок процессов
+    ytdlp.on('close', (code) => {
+      if (code !== 0 && code !== null && !hasStarted) {
+        clearTimeout(startTimeout);
+        console.error(`[SpotifyDL/Stream] yt-dlp error (code ${code}): ${errorLogs.slice(-300)}`);
+        reject(new Error(`yt-dlp failed: ${errorLogs.slice(-200)}`));
+      }
+    });
+
+    ffmpeg.on('close', (code) => {
+      clearTimeout(startTimeout);
+      outputStream.end();
+      
+      if (code !== 0 && !hasStarted) {
+        console.error(`[SpotifyDL/Stream] FFmpeg error (code ${code}): ${errorLogs.slice(-300)}`);
+        reject(new Error(`FFmpeg failed`));
+      }
+    });
+
+    ytdlp.on('error', (err) => {
+      clearTimeout(startTimeout);
+      console.error(`[SpotifyDL/Stream] ytdlp spawn error:`, err);
+      reject(err);
+    });
+
+    ffmpeg.on('error', (err) => {
+      clearTimeout(startTimeout);
+      console.error(`[SpotifyDL/Stream] ffmpeg spawn error:`, err);
+      reject(err);
+    });
+  });
+}
 export async function downloadSpotifyStream(searchQuery, options = {}) {
   const { quality = 'medium' } = options;
   
