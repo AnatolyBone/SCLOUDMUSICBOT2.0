@@ -660,16 +660,22 @@ export async function cacheTrack({
     
     await query(sql, [url, fileId, title, artist, duration, thumbnail, source, quality, spotifyId, isrc]);
 
-    // Алиасы (если есть)
+    // Алиасы (если есть) — bulk INSERT
     if (aliases && aliases.length > 0) {
+      const placeholders = [];
+      const values = [];
+      let idx = 1;
       for (const aliasUrl of aliases) {
-        await query(
-           `INSERT INTO track_cache (url, file_id, title, artist, duration, source, quality, cached_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-            ON CONFLICT (url) DO NOTHING`,
-           [aliasUrl, fileId, title, artist, duration, source, quality]
-        );
+        placeholders.push(`($${idx}, $${idx+1}, $${idx+2}, $${idx+3}, $${idx+4}, $${idx+5}, $${idx+6}, NOW())`);
+        values.push(aliasUrl, fileId, title, artist, duration, source, quality);
+        idx += 7;
       }
+      await query(
+        `INSERT INTO track_cache (url, file_id, title, artist, duration, source, quality, cached_at)
+         VALUES ${placeholders.join(', ')}
+         ON CONFLICT (url) DO NOTHING`,
+        values
+      );
       console.log(`[Cache] Сохранено ${aliases.length} алиасов для: ${title}`);
     }
 
@@ -1466,13 +1472,13 @@ export async function getTopRecentSearches(limit = 5) {
 
 export async function getNewUsersCount(days = 1) {
   try {
-    const { rows } = await query(`
-      SELECT COUNT(*) as count 
-      FROM users 
-      WHERE created_at >= NOW() - INTERVAL '${days} days'
-    `);
+    const safeDays = Math.max(1, parseInt(days, 10) || 1);
+    const { rows } = await query(
+      `SELECT COUNT(*) as count FROM users WHERE created_at >= NOW() - ($1 || ' days')::interval`,
+      [safeDays]
+    );
     const count = parseInt(rows[0]?.count || 0);
-    console.log(`[DB] Новых пользователей за ${days} дн.: ${count}`);
+    console.log(`[DB] Новых пользователей за ${safeDays} дн.: ${count}`);
     return count;
   } catch (error) {
     console.error(`[DB] Ошибка getNewUsersCount(${days}):`, error.message);
@@ -1481,15 +1487,16 @@ export async function getNewUsersCount(days = 1) {
 }
 
 export async function getUserActivityByDayHour(days = 30) {
+  const safeDays = Math.max(1, parseInt(days, 10) || 30);
   const { rows } = await query(`
     SELECT TO_CHAR(last_active, 'YYYY-MM-DD') AS day,
            EXTRACT(HOUR FROM last_active) AS hour,
            COUNT(*) AS count
     FROM users
-    WHERE last_active >= CURRENT_DATE - INTERVAL '${days} days'
+    WHERE last_active >= CURRENT_DATE - ($1 || ' days')::interval
     GROUP BY day, hour
     ORDER BY day, hour
-  `);
+  `, [safeDays]);
   const activity = {};
   rows.forEach(row => {
     if (!activity[row.day]) activity[row.day] = Array(24).fill(0);

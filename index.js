@@ -183,8 +183,11 @@ await loadSettings();
       });
     }
     
-    // Диагностический роут для просмотра состояния вебхука
-    app.get('/debug/webhook', async (req, res) => {
+    // Диагностический роут для просмотра состояния вебхука (требует авторизации)
+    app.get('/debug/webhook', (req, res, next) => {
+      if (req.session?.authenticated && req.session?.userId === ADMIN_ID) return next();
+      res.status(403).send('Forbidden');
+    }, async (req, res) => {
       try {
         const info = await bot.telegram.getWebhookInfo();
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -298,7 +301,9 @@ function setupExpress() {
     saveUninitialized: false,
     cookie: {
       maxAge: 30 * 24 * 60 * 60 * 1000,
-      secure: process.env.NODE_ENV === 'production'
+      secure: process.env.NODE_ENV === 'production',
+      httpOnly: true,
+      sameSite: 'lax'
     }
   }));
 
@@ -486,12 +491,25 @@ app.post('/api/broken-tracks/fix-and-send', requireAuth, async (req, res) => {
     res.render('login', { title: 'Вход', page: 'login', layout: false, error: null });
   });
 
+  const loginAttempts = new Map();
   app.post('/admin', (req, res) => {
+    const ip = req.ip;
+    const now = Date.now();
+    const attempts = loginAttempts.get(ip) || [];
+    const recentAttempts = attempts.filter(ts => now - ts < 15 * 60 * 1000);
+
+    if (recentAttempts.length >= 5) {
+      return res.render('login', { title: 'Вход', error: 'Слишком много попыток. Попробуйте через 15 минут.', page: 'login', layout: false });
+    }
+
     if (req.body.username === ADMIN_LOGIN && req.body.password === ADMIN_PASSWORD) {
+      loginAttempts.delete(ip);
       req.session.authenticated = true;
       req.session.userId = ADMIN_ID;
       res.redirect('/dashboard');
     } else {
+      recentAttempts.push(now);
+      loginAttempts.set(ip, recentAttempts);
       res.render('login', { title: 'Вход', error: 'Неверные данные', page: 'login', layout: false });
     }
   });

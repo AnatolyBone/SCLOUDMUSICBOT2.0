@@ -1336,7 +1336,6 @@ export async function trackDownloadProcessor(task) {
 
   } finally {
     // 6. ОЧИСТКА
-    // Останавливаем индикатор прогресса
     if (progressInterval) {
       clearInterval(progressInterval);
     }
@@ -1344,13 +1343,17 @@ export async function trackDownloadProcessor(task) {
     if (statusMessage) {
       try { await bot.telegram.deleteMessage(userId, statusMessage.message_id); } catch (e) {}
     }
+
+    // Закрываем незавершённый стрим, если он ещё жив
+    if (stream && !stream.destroyed) {
+      try { stream.destroy(); } catch (e) {}
+    }
     
     // Удаляем временные файлы
     if (tempFilePath && fs.existsSync(tempFilePath)) {
       try {
         fs.unlinkSync(tempFilePath);
         
-        // Если это была папка spotdl
         const parentDir = path.dirname(tempFilePath);
         if (path.basename(parentDir).startsWith('spot_')) {
           fs.rmSync(parentDir, { recursive: true, force: true });

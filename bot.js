@@ -249,42 +249,33 @@ bot.use(async (ctx, next) => {
     return next();
 });
 bot.start(async (ctx) => {
-                // ==========================================================
-                //            ДОБАВЬ ЭТУ СТРОКУ ДЛЯ ОТЛАДКИ
-                // ==========================================================
-                console.log('[START] got start for', ctx.from.id, 'payload=', ctx.startPayload);
-                // ==========================================================
-                
-                console.log(`[DEBUG] Checkpoint 1 (bot.start): startPayload = ${ctx.startPayload}`);
-                // 1. Мы вызываем ТОЛЬКО getUser, передавая в него всю информацию, включая startPayload.
-                // getUser сам разберется: если пользователя нет - создаст его с referrer_id, если есть - просто вернет.
+  try {
+    console.log('[START] got start for', ctx.from.id, 'payload=', ctx.startPayload);
+
     const user = await getUser(ctx.from.id, ctx.from.first_name, ctx.from.username, ctx.startPayload || null);
-    
-    // 2. Проверяем, действительно ли это новая регистрация.
+
     const isNewRegistration = (Date.now() - new Date(user.created_at).getTime()) < 5000;
-    
-    // 3. Если пользователь новый, запускаем всю логику для новичков.
+
     if (isNewRegistration) {
-        // Логируем сам факт регистрации
         await logUserAction(ctx.from.id, 'registration');
-        
-        // Запускаем нашу новую реферальную логику.
-        // Она сама проверит, есть ли у пользователя referrer_id, и начислит бонусы.
         await processNewUserReferral(user, ctx);
     }
-    
-    // 4. Отправляем приветственное сообщение.
+
     const startMessage = isNewRegistration ? T('start_new_user') : T('start');
-    
+
     await ctx.reply(startMessage, {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.keyboard([
-    [T('menu'), '🆔 Распознать', T('upgrade')],
-    [T('mytracks'), T('help')],
-    [T('vpn')]
-]).resize()
+            [T('menu'), '🆔 Распознать', T('upgrade')],
+            [T('mytracks'), T('help')],
+            [T('vpn')]
+        ]).resize()
     });
+  } catch (err) {
+    console.error(`[bot.start] Ошибка для userId=${ctx.from?.id}:`, err.message);
+    await ctx.reply('Произошла ошибка при запуске. Попробуйте ещё раз: /start').catch(() => {});
+  }
 });
 
 function sanitizeFilename(name) {
@@ -309,88 +300,6 @@ bot.command('cleantrash', async (ctx) => {
     }
 });
 
-bot.command('testdl', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return;
-  
-  const url = ctx.message.text.split(' ')[1];
-  if (!url) {
-    return ctx.reply('Использование: /testdl <soundcloud_url>');
-  }
-  
-  try {
-    await ctx.reply('🔍 Тестирую скачивание...');
-    
-    // Получаем метаданные
-    const info = await ytdl(url, { 
-      'dump-single-json': true, 
-      'no-playlist': true,
-      ...YTDL_COMMON 
-    });
-    
-    const expectedDuration = Math.round(info.duration || 0);
-    
-    await ctx.reply(
-      `📊 Метаданные:\n` +
-      `• Название: ${info.title}\n` +
-      `• Исполнитель: ${info.uploader}\n` +
-      `• Ожидаемая длительность: ${expectedDuration}s\n` +
-      `• ID: ${info.id}\n\n` +
-      `Пробую скачать через SCDL...`
-    );
-    
-    // Пробуем SCDL
-    try {
-      const stream = await scdl.default.download(url);
-      const testMsg = await bot.telegram.sendAudio(
-        STORAGE_CHANNEL_ID,
-        { source: stream, filename: 'test.mp3' },
-        { title: info.title, performer: info.uploader }
-      );
-      
-      const realDuration = testMsg.audio?.duration || 0;
-      
-      await ctx.reply(
-        `📦 SCDL результат:\n` +
-        `• Реальная длительность: ${realDuration}s\n` +
-        `• Ожидалось: ${expectedDuration}s\n` +
-        `• Статус: ${realDuration < expectedDuration * 0.5 ? '❌ ПРЕВЬЮ' : '✅ ПОЛНЫЙ'}`
-      );
-      
-      // Удаляем тестовый файл
-      await bot.telegram.deleteMessage(STORAGE_CHANNEL_ID, testMsg.message_id).catch(() => {});
-      
-    } catch (scdlErr) {
-      await ctx.reply(`❌ SCDL ошибка: ${scdlErr.message}\n\nПробую YT-DLP...`);
-      
-      // Пробуем YT-DLP
-      const tempFile = `/tmp/test_${Date.now()}.mp3`;
-      await ytdl(url, { output: tempFile, format: 'bestaudio', ...YTDL_COMMON });
-      
-      if (fs.existsSync(tempFile)) {
-        const testMsg = await bot.telegram.sendAudio(
-          STORAGE_CHANNEL_ID,
-          { source: fs.createReadStream(tempFile) },
-          { title: info.title }
-        );
-        
-        const realDuration = testMsg.audio?.duration || 0;
-        
-        await ctx.reply(
-          `📦 YT-DLP результат:\n` +
-          `• Реальная длительность: ${realDuration}s\n` +
-          `• Ожидалось: ${expectedDuration}s\n` +
-          `• Статус: ${realDuration < expectedDuration * 0.5 ? '❌ ПРЕВЬЮ (трек защищён!)' : '✅ ПОЛНЫЙ'}`
-        );
-        
-        await bot.telegram.deleteMessage(STORAGE_CHANNEL_ID, testMsg.message_id).catch(() => {});
-        fs.unlinkSync(tempFile);
-      }
-    }
-    
-  } catch (err) {
-    await ctx.reply(`❌ Ошибка: ${err.message}`);
-  }
-});
 bot.command('fixuser', async (ctx) => {
   // 1. Проверяем, что это админ
   if (ctx.from.id !== ADMIN_ID) {
@@ -655,22 +564,20 @@ bot.command('admin', async (ctx) => {
 bot.command('referral', handleReferralCommand);
 // bot.js
 
-// ЗАМЕНИТЕ ВАШУ ВЕРСИЮ НА ЭТУ
-bot.command('maintenance', (ctx) => {
+bot.command('maintenance', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
     
     const command = ctx.message.text.split(' ')[1]?.toLowerCase();
     
     if (command === 'on') {
         setMaintenanceMode(true);
-        ctx.reply('✅ Режим обслуживания ВКЛЮЧЕН.');
+        await ctx.reply('✅ Режим обслуживания ВКЛЮЧЕН.');
     } else if (command === 'off') {
         setMaintenanceMode(false);
-        ctx.reply('☑️ Режим обслуживания ВЫКЛЮЧЕН.');
+        await ctx.reply('☑️ Режим обслуживания ВЫКЛЮЧЕН.');
     } else {
-        // =====> ВОТ ИСПРАВЛЕНИЕ <=====
-        ctx.reply('ℹ️ Статус: ' + (isMaintenanceMode ? 'ВКЛЮЧЕН' : 'ВЫКЛЮЧЕН') + '\n\nИспользуйте: `/maintenance on` или `/maintenance off`'); // ПРАВИЛЬНО
-}
+        await ctx.reply('ℹ️ Статус: ' + (isMaintenanceMode() ? 'ВКЛЮЧЕН' : 'ВЫКЛЮЧЕН') + '\n\nИспользуйте: `/maintenance on` или `/maintenance off`');
+    }
 });
 bot.command('premium', (ctx) => ctx.reply(T('upgradeInfo'), { parse_mode: 'HTML', disable_web_page_preview: true }));
 // bot.js
@@ -997,16 +904,16 @@ bot.action(/pl_toggle:(.+):(\d+)/, async (ctx) => {
 // bot.js (ФИНАЛЬНАЯ ВЕРСИЯ ОБРАБОТЧИКА КНОПКИ "ГОТОВО")
 
 bot.action(/pl_finish:(.+)/, async (ctx) => {
+    await ctx.answerCbQuery();
     const playlistId = ctx.match[1];
     const userId = ctx.from.id;
     const session = playlistSessions.get(userId);
     
-    // --- Стандартные проверки ---
     if (!session) {
-        return await ctx.answerCbQuery('❗️ Сессия выбора истекла.', { show_alert: true });
+        return await ctx.reply('❗️ Сессия выбора истекла.');
     }
     if (session.selected.size === 0) {
-        return await ctx.answerCbQuery('Вы не выбрали ни одного трека.', { show_alert: true });
+        return await ctx.reply('Вы не выбрали ни одного трека.');
     }
     // Так как названия важны, оставляем проверку, что они были загружены
     if (!session.fullTracks) {
