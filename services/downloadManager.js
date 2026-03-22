@@ -438,9 +438,10 @@ const YANDEX_PROMO_URL =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
 function checkAndSendYandexPromo(userId, user) {
-  const count = Number(user?.downloads_count);
+  // Отдельный счётчик с момента старта акции (см. yandex_promo_progress в БД)
+  const progress = Number(user?.yandex_promo_progress);
   const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
-  if (!user || count !== 3 || promoAlready) return;
+  if (!user || progress !== 3 || promoAlready) return;
 
   (async () => {
     try {

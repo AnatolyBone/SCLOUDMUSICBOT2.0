@@ -735,11 +735,12 @@ app.get('/dashboard', requireAuth, async (req, res) => {
           AND premium_until < NOW()
           AND premium_limit <> 5
       `),
-      // Статистика промо Яндекс
+      // Статистика промо Яндекс (воронка акции по yandex_promo_progress; lifetime отдельно)
       pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE yandex_promo_shown = true)::int AS promo_shown,
-          COUNT(*) FILTER (WHERE downloads_count >= 3)::int AS eligible
+          COUNT(*) FILTER (WHERE COALESCE(yandex_promo_progress, 0) >= 3)::int AS eligible_campaign,
+          COUNT(*) FILTER (WHERE COALESCE(downloads_count, 0) >= 3)::int AS lifetime_3plus
         FROM users
       `)
     ]);
@@ -750,7 +751,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     const promoRow = promoStatsResult?.rows?.[0] || {};
     const promoStats = {
       shown: Number(promoRow.promo_shown ?? 0),
-      eligible: Number(promoRow.eligible ?? 0)
+      eligibleCampaign: Number(promoRow.eligible_campaign ?? 0),
+      lifetime3plus: Number(promoRow.lifetime_3plus ?? 0)
     };
 
     const usersByTariff = {

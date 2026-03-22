@@ -826,6 +826,7 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
      SET downloads_today  = downloads_today + 1,
          total_downloads  = total_downloads + 1,
          downloads_count  = COALESCE(downloads_count, 0) + 1,
+         yandex_promo_progress = COALESCE(yandex_promo_progress, 0) + 1,
          tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
      WHERE id = $2 AND downloads_today < premium_limit
      RETURNING *`,
@@ -1642,6 +1643,7 @@ export async function incrementDownloadsAndLogPg(userId, trackTitle, fileId, url
        SET downloads_today = downloads_today + 1,
            total_downloads  = total_downloads + 1,
            downloads_count  = COALESCE(downloads_count, 0) + 1,
+           yandex_promo_progress = COALESCE(yandex_promo_progress, 0) + 1,
            tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
        WHERE id = $2 AND downloads_today < premium_limit
        RETURNING id`,
