@@ -723,7 +723,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE yandex_promo_shown = true)::int AS promo_shown,
-          COUNT(*) FILTER (WHERE total_downloads >= 3)::int AS eligible
+          COUNT(*) FILTER (WHERE downloads_count >= 3)::int AS eligible
         FROM users
       `)
     ]);

@@ -858,18 +858,33 @@ export async function logDownload(userId, trackTitle, url, source = null) {
 }
 
 /**
- * Атомарно помечает промо Яндекс как показанное.
- * Возвращает true, если флаг был переключён (т.е. промо ещё не показывалось).
+ * Атомарно: инкремент downloads_count + проверка промо Яндекс.
+ * Возвращает { newCount, shouldShowPromo }.
  */
-export async function markYandexPromoShown(userId) {
-  const res = await query(
-    `UPDATE users
-     SET yandex_promo_shown = true
-     WHERE id = $1 AND yandex_promo_shown = false AND total_downloads >= 3
-     RETURNING id`,
+export async function incrementDownloadsCountAndCheckPromo(userId) {
+  const { rows } = await query(
+    'SELECT downloads_count, yandex_promo_shown FROM users WHERE id = $1',
     [userId]
   );
-  return res.rowCount > 0;
+  if (!rows.length) return { newCount: 0, shouldShowPromo: false };
+
+  const user = rows[0];
+  const newCount = (user.downloads_count || 0) + 1;
+  const shouldShowPromo = (newCount === 3 && user.yandex_promo_shown === false);
+
+  if (shouldShowPromo) {
+    await query(
+      'UPDATE users SET downloads_count = $1, yandex_promo_shown = true WHERE id = $2',
+      [newCount, userId]
+    );
+  } else {
+    await query(
+      'UPDATE users SET downloads_count = $1 WHERE id = $2',
+      [newCount, userId]
+    );
+  }
+
+  return { newCount, shouldShowPromo };
 }
 
 export async function logEvent(userId, event) {
