@@ -33,7 +33,6 @@ if (fs.existsSync(COOKIES_PATH)) {
     console.warn('⚠️ [Cookies] Файл НЕ найден!');
 }
 import { Markup } from 'telegraf';
-import { T } from '../config/texts.js';
 import ffmpegPath from 'ffmpeg-static';
 import scdl from 'soundcloud-downloader';
 
