@@ -33,6 +33,7 @@ if (fs.existsSync(COOKIES_PATH)) {
     console.warn('⚠️ [Cookies] Файл НЕ найден!');
 }
 import { Markup } from 'telegraf';
+import { T } from '../config/texts.js';
 import ffmpegPath from 'ffmpeg-static';
 import scdl from 'soundcloud-downloader';
 
@@ -426,15 +427,8 @@ async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = 
   return updatedUser;
 }
 
-const YANDEX_PROMO_TEXT =
-  '🔥 Вижу, ты скачал уже 3 трека\\! Как тебе скорость?\n\n' +
-  'Бот работает *абсолютно бесплатно*, без лимитов и подписок\\. ' +
-  'Но ты можешь поддержать нас \\(и получить бонус себе\\) 👇\n\n' +
-  '🎁 *Яндекс дарит 300₽ на баланс телефона*, если просто сделать его поиском по умолчанию в Safari или Chrome\\.\n\n' +
-  'Занимает 1 минуту, деньги приходят сразу на счет\\.\n' +
-  '_\\(Работает только с телефона, если Яндекс еще не стоял по умолчанию\\)_';
-
-const YANDEX_PROMO_URL =
+/** Запасной URL, если в админке очистили yandex_promo_url */
+const YANDEX_PROMO_URL_FALLBACK =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
 function checkAndSendYandexPromo(userId, user) {
@@ -450,12 +444,13 @@ function checkAndSendYandexPromo(userId, user) {
 
       setTimeout(async () => {
         try {
-          await bot.telegram.sendMessage(userId, YANDEX_PROMO_TEXT, {
-            parse_mode: 'MarkdownV2',
+          const promoBody = T('yandex_promo_message');
+          const btnLabel = (T('yandex_promo_button') || '💰 Забрать 300₽ на телефон').trim();
+          const promoUrl = (T('yandex_promo_url') || '').trim() || YANDEX_PROMO_URL_FALLBACK;
+          await bot.telegram.sendMessage(userId, promoBody, {
+            parse_mode: 'HTML',
             disable_web_page_preview: true,
-            ...Markup.inlineKeyboard([
-              [Markup.button.url('💰 Забрать 300₽ на телефон', YANDEX_PROMO_URL)]
-            ])
+            ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
           });
           console.log(`[YandexPromo] ✅ Промо отправлено пользователю ${userId}`);
         } catch (e) {
