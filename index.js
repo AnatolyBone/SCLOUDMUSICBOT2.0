@@ -97,9 +97,7 @@ async function startApp() {
   setMaintenanceMode(false);
   console.log('[App] Запуск приложения...');
   const forcePolling = process.env.FORCE_POLLING === '1';
-  
-  setMaintenanceMode(false);
-  console.log('[App] Запуск приложения...');
+
   try {
     // Запускаем сервер и настраиваем Express СРАЗУ, чтобы Render.com определил порт
     const server = app.listen(PORT, () => console.log(`✅ [App] Сервер запущен на порту ${PORT}.`));

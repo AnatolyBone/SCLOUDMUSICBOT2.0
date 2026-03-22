@@ -20,7 +20,7 @@ RUN pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-ac
 
 # 🔥 ВАЖНО: Удаляем старый yt-dlp и ставим ночную сборку с GitHub
 # Это лечит ошибку "Did not get any data blocks" и другие проблемы с YouTube
-RUN pip3 uninstall -y yt-dlp || true && \
+RUN pip3 uninstall -y yt-dlp --break-system-packages --root-user-action=ignore || true && \
     pip3 install --no-cache-dir --upgrade --break-system-packages --root-user-action=ignore \
     https://github.com/yt-dlp/yt-dlp/archive/master.zip
 

@@ -35,6 +35,14 @@ if (fs.existsSync(COOKIES_PATH)) {
 import { Markup } from 'telegraf';
 import ffmpegPath from 'ffmpeg-static';
 import scdl from 'soundcloud-downloader';
+
+/** ffprobe рядом с ffmpeg-static часто отсутствует; в Docker используем системный ffprobe из apt */
+function resolveFfprobePath() {
+  if (!ffmpegPath) return 'ffprobe';
+  const fromStatic = ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+  if (fs.existsSync(fromStatic)) return fromStatic;
+  return 'ffprobe';
+}
 import os from 'os';
 import { fileURLToPath } from 'url';
 import ytdl from 'youtube-dl-exec';
@@ -430,7 +438,9 @@ const YANDEX_PROMO_URL =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
 function checkAndSendYandexPromo(userId, user) {
-  if (!user || user.downloads_count !== 3 || user.yandex_promo_shown === true) return;
+  const count = Number(user?.downloads_count);
+  const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
+  if (!user || count !== 3 || promoAlready) return;
 
   (async () => {
     try {
@@ -661,7 +671,8 @@ export async function trackDownloadProcessor(task) {
   let tempFilePath = null;
   let thumbPath = null;
   let progressInterval = null; // Для индикатора прогресса
-  
+  let stream = null; // область видимости для try/finally (destroy в finally)
+
   try {
     // 1. Проверка лимитов
     const usage = await getUserUsage(userId);
@@ -742,7 +753,6 @@ export async function trackDownloadProcessor(task) {
       }
     }, 5000); // Обновляем каждые 5 секунд
     
-    let stream;
     let usedFallback = false;
     let spotifyBuffer = null; // Для хранения buffer'а из pipe-стриминга
     let finalFileId = null; // Может быть установлен для SoundCloud (быстрый путь)
@@ -974,7 +984,8 @@ export async function trackDownloadProcessor(task) {
           if (roundedDuration && roundedDuration > 60) {
             try {
               const { execSync } = await import('child_process');
-              const ffprobePath = ffmpegPath.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');              const probeCmd = `"${ffprobePath}" -v error -show_entries format=duration -of csv=p=0 "${tempFilePath}"`;
+              const ffprobeBin = resolveFfprobePath();
+              const probeCmd = `"${ffprobeBin}" -v error -show_entries format=duration -of csv=p=0 "${tempFilePath}"`;
               const realDur = parseFloat(execSync(probeCmd, { encoding: 'utf8', timeout: 10000 }).trim()) || 0;
               
               console.log(`[Worker/SoundCloud] 📊 yt-dlp: Ожидаемая ${roundedDuration}с, Реальная ${realDur.toFixed(1)}с`);
@@ -1280,7 +1291,7 @@ export async function trackDownloadProcessor(task) {
         stream = fs.createReadStream(tempFilePath);
       }
 
-      await bot.telegram.sendAudio(
+      const directMsg = await bot.telegram.sendAudio(
         userId, 
         { source: stream, filename: `${sanitizeFilename(title)}.mp3` },
         { title, performer: uploader, duration: roundedDuration }
@@ -1294,6 +1305,13 @@ export async function trackDownloadProcessor(task) {
         } catch (e) {
           // Игнорируем ошибки удаления
         }
+      }
+      
+      const directFileId = directMsg?.audio?.file_id;
+      if (directFileId) {
+        await incrementDownload(userId, title, directFileId, task.originalUrl || cacheKey, source);
+      } else {
+        console.warn('[Worker/Direct] Нет file_id после sendAudio — счётчики и лог не обновлены');
       }
       
       console.log(`✅ [Direct] Отправлено пользователю (без кэша)`);

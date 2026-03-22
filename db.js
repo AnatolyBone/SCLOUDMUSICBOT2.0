@@ -878,7 +878,9 @@ export async function logDownload(userId, trackTitle, url, source = null) {
  */
 export async function markYandexPromoShown(userId) {
   const res = await query(
-    'UPDATE users SET yandex_promo_shown = true WHERE id = $1 AND yandex_promo_shown = false RETURNING id',
+    `UPDATE users SET yandex_promo_shown = true
+     WHERE id = $1 AND COALESCE(yandex_promo_shown, false) = false
+     RETURNING id`,
     [userId]
   );
   return res.rowCount > 0;
@@ -1639,6 +1641,7 @@ export async function incrementDownloadsAndLogPg(userId, trackTitle, fileId, url
       `UPDATE users
        SET downloads_today = downloads_today + 1,
            total_downloads  = total_downloads + 1,
+           downloads_count  = COALESCE(downloads_count, 0) + 1,
            tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
        WHERE id = $2 AND downloads_today < premium_limit
        RETURNING id`,
