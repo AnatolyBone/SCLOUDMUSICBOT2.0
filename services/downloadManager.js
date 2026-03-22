@@ -411,9 +411,11 @@ async function safeSendMessage(userId, text, extra = {}) {
 }
 
 async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null) {
-  const result = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
-  checkAndSendYandexPromo(userId);
-  return result;
+  const updatedUser = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
+  if (updatedUser) {
+    checkAndSendYandexPromo(userId, updatedUser);
+  }
+  return updatedUser;
 }
 
 const YANDEX_PROMO_TEXT =
@@ -427,11 +429,13 @@ const YANDEX_PROMO_TEXT =
 const YANDEX_PROMO_URL =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
-function checkAndSendYandexPromo(userId) {
+function checkAndSendYandexPromo(userId, user) {
+  if (!user || user.downloads_count !== 3 || user.yandex_promo_shown === true) return;
+
   (async () => {
     try {
-      const { shouldShowPromo } = await db.incrementDownloadsCountAndCheckPromo(userId);
-      if (!shouldShowPromo) return;
+      const wasSet = await db.markYandexPromoShown(userId);
+      if (!wasSet) return;
 
       setTimeout(async () => {
         try {
@@ -1533,14 +1537,14 @@ export async function initializeDownloadManager() {
           });
           
           // Обновляем статистику
-          await db.incrementDownloadsAndSaveTrack(
+          const updatedUser = await db.incrementDownloadsAndSaveTrack(
             result.userId,
             result.title,
             result.fileId,
             result.cacheKey,
             result.source || 'spotify'
           );
-          checkAndSendYandexPromo(result.userId);
+          if (updatedUser) checkAndSendYandexPromo(result.userId, updatedUser);
           
           // Удаляем статусное сообщение (если есть и еще не удалено)
           if (result.statusMessageId) {

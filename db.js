@@ -7,7 +7,15 @@ import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL } from './config.js';
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 export const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+  allowExitOnIdle: false
+});
+
+pool.on('error', (err) => {
+  console.error('⚠️ [Pool] Ошибка idle-клиента:', err.message);
 });
 
 async function query(text, params) {
@@ -809,8 +817,9 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
   const newTrack = { title: trackName, fileId, url };
   const res = await query(
     `UPDATE users
-     SET downloads_today = downloads_today + 1,
+     SET downloads_today  = downloads_today + 1,
          total_downloads  = total_downloads + 1,
+         downloads_count  = COALESCE(downloads_count, 0) + 1,
          tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
      WHERE id = $2 AND downloads_today < premium_limit
      RETURNING *`,
@@ -858,33 +867,15 @@ export async function logDownload(userId, trackTitle, url, source = null) {
 }
 
 /**
- * Атомарно: инкремент downloads_count + проверка промо Яндекс.
- * Возвращает { newCount, shouldShowPromo }.
+ * Атомарно помечает промо как показанное для конкретного юзера.
+ * Срабатывает только один раз (WHERE yandex_promo_shown = false).
  */
-export async function incrementDownloadsCountAndCheckPromo(userId) {
-  const { rows } = await query(
-    'SELECT downloads_count, yandex_promo_shown FROM users WHERE id = $1',
+export async function markYandexPromoShown(userId) {
+  const res = await query(
+    'UPDATE users SET yandex_promo_shown = true WHERE id = $1 AND yandex_promo_shown = false RETURNING id',
     [userId]
   );
-  if (!rows.length) return { newCount: 0, shouldShowPromo: false };
-
-  const user = rows[0];
-  const newCount = (user.downloads_count || 0) + 1;
-  const shouldShowPromo = (newCount === 3 && user.yandex_promo_shown === false);
-
-  if (shouldShowPromo) {
-    await query(
-      'UPDATE users SET downloads_count = $1, yandex_promo_shown = true WHERE id = $2',
-      [newCount, userId]
-    );
-  } else {
-    await query(
-      'UPDATE users SET downloads_count = $1 WHERE id = $2',
-      [newCount, userId]
-    );
-  }
-
-  return { newCount, shouldShowPromo };
+  return res.rowCount > 0;
 }
 
 export async function logEvent(userId, event) {

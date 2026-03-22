@@ -180,12 +180,27 @@ registerSpotifyCallbacks(bot);
 // ЗАМЕНИ СТАРЫЙ БЛОК bot.catch НА ЭТОТ В ФАЙЛЕ bot.js
 
 bot.catch(async (err, ctx) => {
-    // Шаг 1: Логируем ошибку в консоль, как и раньше.
-    console.error(`🔴 [Telegraf Catch] Глобальная ошибка для update ${ctx.update.update_id}:`, err);
-    
-    // Шаг 2: Формируем подробное сообщение для админа.
-    const updateInfo = ctx.update ? JSON.stringify(ctx.update, null, 2) : 'N/A';
-    const errorMessage = `
+    console.error(`🔴 [Telegraf Catch] Ошибка для update ${ctx.update?.update_id}:`, err.message);
+
+    // 403 — юзер заблокировал бота. Тихо помечаем неактивным, не алертим админа.
+    if (err instanceof TelegramError && err.response?.error_code === 403) {
+        if (ctx.from?.id) {
+            await updateUserField(ctx.from.id, 'active', false).catch(() => {});
+            console.log(`[Bot] Пользователь ${ctx.from.id} заблокировал бота — помечен неактивным.`);
+        }
+        return;
+    }
+
+    // TimeoutError — логируем, но не алертим (плейлисты на 1000+ треков)
+    if (err.name === 'TimeoutError') {
+        console.warn(`[Bot] Таймаут обработчика (update ${ctx.update?.update_id})`);
+        return;
+    }
+
+    // Остальные ошибки — отправляем админу
+    try {
+        const updateInfo = ctx.update ? JSON.stringify(ctx.update, null, 2) : 'N/A';
+        const errorMessage = `
 🔴 <b>Критическая ошибка в боте!</b>
 
 <b>Тип ошибки:</b>
@@ -199,21 +214,10 @@ bot.catch(async (err, ctx) => {
 
 <b>Update, вызвавший ошибку:</b>
 <pre><code class="language-json">${updateInfo.slice(0, 3500)}</code></pre>
-    `;
-    
-    // Шаг 3: Пытаемся отправить сообщение админу.
-    try {
-        // Убедись, что ADMIN_ID импортирован из config.js
+        `;
         await bot.telegram.sendMessage(ADMIN_ID, errorMessage, { parse_mode: 'HTML' });
     } catch (sendError) {
-        console.error('🔥🔥🔥 КРИТИЧЕСКАЯ ОШИБКА: Не удалось даже отправить уведомление админу!', sendError);
-    }
-    
-    // Шаг 4: Обрабатываем частный случай блокировки бота (как и раньше).
-    if (err instanceof TelegramError && err.response?.error_code === 403) {
-        if (ctx.from?.id) {
-            await updateUserField(ctx.from.id, 'active', false);
-        }
+        console.error('🔥 Не удалось отправить уведомление админу:', sendError.message);
     }
 });
 bot.use(async (ctx, next) => {
@@ -844,9 +848,59 @@ function generateSelectionMenu(userId) {
 // --- Обработчики кнопок плейлистов (actions) ---
 bot.action('pl_nop', (ctx) => ctx.answerCbQuery());
 
-// bot.js
+async function processPlaylistDownload(ctx, session, isAll, userId) {
+    if (!session.fullTracks) {
+        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько минут.');
+        
+        const youtubeDl = getYoutubeDl();
+        const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+        session.tracks = fullData.entries.filter(track => track && track.url);
+        session.fullTracks = true;
+    }
 
-// bot.js (ФИНАЛЬНАЯ ВЕРСИЯ ОБРАБОТЧИКА КНОПОК ПЛЕЙЛИСТА С КОРРЕКТНЫМИ ЛИМИТАМИ)
+    const user = await getUser(userId);
+    const remainingLimit = user.premium_limit - (user.downloads_today || 0);
+
+    if (remainingLimit <= 0) {
+        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+        const bonusText = bonusAvailable
+            ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+            : '';
+        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+        if (bonusAvailable) {
+            extra.reply_markup = {
+                inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
+            };
+        }
+        await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
+        playlistSessions.delete(userId);
+        return;
+    }
+
+    await ctx.editMessageText('✅ Отлично! Добавляю треки в очередь...');
+
+    const tracksToTake = isAll ? session.tracks.length : 10;
+    const numberOfTracksToQueue = Math.min(tracksToTake, remainingLimit);
+    const tracksToProcess = session.tracks.slice(0, numberOfTracksToQueue);
+
+    for (const track of tracksToProcess) {
+        addTaskToQueue({
+            userId,
+            source: 'soundcloud',
+            url: track.webpage_url || track.url,
+            originalUrl: track.webpage_url || track.url,
+            metadata: track,
+        });
+    }
+
+    let reportMessage = `⏳ ${tracksToProcess.length} трек(ов) добавлено в очередь.`;
+    if (numberOfTracksToQueue < tracksToTake) {
+        reportMessage += '\n\nℹ️ Ваш дневной лимит будет исчерпан. Остальные треки из плейлиста не были добавлены.';
+    }
+    await bot.telegram.sendMessage(userId, reportMessage);
+    playlistSessions.delete(userId);
+}
 
 bot.action(/pl_download_all:|pl_download_10:/, async (ctx) => {
     const isAll = ctx.callbackQuery.data.includes('pl_download_all');
@@ -857,80 +911,16 @@ bot.action(/pl_download_all:|pl_download_10:/, async (ctx) => {
     if (!session) {
         return await ctx.answerCbQuery('❗️ Сессия выбора истекла.', { show_alert: true });
     }
-    
-    // --- 1. Дозагрузка данных (остается без изменений) ---
-    if (!session.fullTracks) {
-        await ctx.answerCbQuery('⏳ Получаю полные данные плейлиста...');
-        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько секунд.');
-        
-        try {
-            const youtubeDl = getYoutubeDl();
-            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
-            session.tracks = fullData.entries.filter(track => track && track.url);
-            session.fullTracks = true;
-        } catch (e) {
-            console.error('[Playlist] Ошибка при дозагрузке названий:', e);
-            await ctx.editMessageText('❌ Не удалось получить детали плейлиста.');
-            return await ctx.answerCbQuery('Ошибка!', { show_alert: true });
-        }
-    }
-    
-    // --- 2. Получаем актуальные лимиты пользователя ---
-    const user = await getUser(userId);
-    const remainingLimit = user.premium_limit - (user.downloads_today || 0);
-    
-    if (remainingLimit <= 0) {
-  const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-  const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-  const bonusText = bonusAvailable
-    ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-    : '';
-  const extra = {
-    parse_mode: 'HTML',
-    disable_web_page_preview: true
-  };
-  if (bonusAvailable) {
-    extra.reply_markup = {
-      inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
-    };
-  }
-  await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
-  playlistSessions.delete(userId);
-  return;
-}
-    
-    await ctx.editMessageText(`✅ Отлично! Добавляю треки в очередь...`);
-    
-    // --- 3. Определяем, сколько треков нужно обработать, С УЧЕТОМ ЛИМИТА ---
-    const tracksToTake = isAll ? session.tracks.length : 10;
-    
-    // Берем минимальное из: (желаемое кол-во треков) и (оставшийся лимит)
-    const numberOfTracksToQueue = Math.min(tracksToTake, remainingLimit);
-    
-    const tracksToProcess = session.tracks.slice(0, numberOfTracksToQueue);
-    
-    // --- 4. Просто ставим задачи в очередь (без проверки кэша) ---
-    for (const track of tracksToProcess) {
-        addTaskToQueue({
-            userId,
-            source: 'soundcloud',
-            url: track.webpage_url || track.url,
-            originalUrl: track.webpage_url || track.url,
-            metadata: track, // <--- ИСПРАВЛЕНИЕ! Передаем ВЕСЬ объект track как metadata
-        });
-    }
-    
-    // --- 5. Отправляем корректный отчет пользователю ---
-    let reportMessage = `⏳ ${tracksToProcess.length} трек(ов) добавлено в очередь.`;
-    
-    if (numberOfTracksToQueue < tracksToTake) {
-        reportMessage += `\n\nℹ️ Ваш дневной лимит будет исчерпан. Остальные треки из плейлиста не были добавлены.`;
-    }
-    
-    await ctx.reply(reportMessage);
-    playlistSessions.delete(userId);
-});
 
+    // Если данные ещё не загружены — отвечаем на callback и запускаем фоновую обработку.
+    // Handler завершается сразу, тяжёлая работа идёт вне Telegraf handlerTimeout.
+    await ctx.answerCbQuery('⏳ Обрабатываю...');
+
+    processPlaylistDownload(ctx, session, isAll, userId).catch(e => {
+        console.error(`[Playlist] Ошибка фоновой обработки для ${userId}:`, e.message);
+        bot.telegram.sendMessage(userId, '❌ Ошибка при обработке плейлиста. Попробуйте ещё раз.').catch(() => {});
+    });
+});
 
 bot.action(/pl_select_manual:(.+)/, async (ctx) => {
     const userId = ctx.from.id;
