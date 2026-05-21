@@ -1407,13 +1407,7 @@ console.log(`[DownloadManager] Очередь (threads=${MAX_CONCURRENT_DOWNLOAD
 export function enqueue(ctx, userId, url, earlyData = {}) {
   (async () => {
     let statusMessage = null;
-   let cleanUrl = url;
-    if (cleanUrl.includes('soundcloud.com') || cleanUrl.includes('spotify.com')) {
-      // Отрезаем все, что идет после знака вопроса (?)
-      cleanUrl = cleanUrl.split('?')[0];
-    }
-    
-    console.log(`[Enqueue] User ${userId}, URL: ${cleanUrl}`);
+    console.log(`[Enqueue] User ${userId}, URL: ${url}`);
     
     try {
       // Проверка бонусов/лимитов
@@ -1438,19 +1432,25 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
         const { webpage_url: fullUrl, id } = metadata;
         const cacheKey = id ? `sc:${id}` : null;
 
+        // Автоопределение источника для кэша
+        let detectedSource = 'soundcloud';
+        if (url.includes('spotify.com')) detectedSource = 'spotify';
+        else if (url.includes('youtube.com') || url.includes('youtu.be')) detectedSource = 'youtube';
+
         // Проверка кэша
-        const cached = await db.findCachedTrack(url, { source: 'soundcloud' }) 
-          || await db.findCachedTrack(fullUrl, { source: 'soundcloud' }) 
-          || (cacheKey && await db.findCachedTrack(cacheKey, { source: 'soundcloud' }));
+        const cached = await db.findCachedTrack(url, { source: detectedSource }) 
+          || await db.findCachedTrack(fullUrl, { source: detectedSource }) 
+          || (cacheKey && await db.findCachedTrack(cacheKey, { source: detectedSource }));
+        
         if (cached?.fileId) {
           console.log(`[Enqueue/Fast] ХИТ КЭША!`);
           await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist });
-          await incrementDownload(userId, cached.title, cached.fileId, url, 'soundcloud');
+          await incrementDownload(userId, cached.title, cached.fileId, url, detectedSource);
           return;
         }
 
         // Добавляем в очередь
-        const task = { userId, url: fullUrl, originalUrl: url, source: 'soundcloud', cacheKey, metadata };
+        const task = { userId, url: fullUrl, originalUrl: url, source: detectedSource, cacheKey, metadata };
         downloadQueue.add({ ...task, priority: user.premium_limit || 5 }).catch(err => {
           if (err.message === 'TASK_TIMEOUT') {
             console.error(`[TaskQueue] Задача отменена по таймауту: ${metadata.title}`);
@@ -1463,12 +1463,16 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       }
 
       // 2. SLOW PATH (Если просто кинули ссылку)
-      // Сначала проверим кэш по URL, чтобы не делать лишних запросов
-      const quickCache = await db.findCachedTrack(url, { source: 'soundcloud' });
+      // Автоопределение источника для кэша
+      let detectedSource = 'soundcloud';
+      if (url.includes('spotify.com')) detectedSource = 'spotify';
+      else if (url.includes('youtube.com') || url.includes('youtu.be')) detectedSource = 'youtube';
+
+      const quickCache = await db.findCachedTrack(url, { source: detectedSource });
       if (quickCache?.fileId) {
           console.log(`[Enqueue/Slow] ХИТ КЭША по URL!`);
           await bot.telegram.sendAudio(userId, quickCache.fileId, { title: quickCache.title, performer: quickCache.artist });
-          await incrementDownload(userId, quickCache.title, quickCache.fileId, url);
+          await incrementDownload(userId, quickCache.title, quickCache.fileId, url, detectedSource);
           return;
       }
 
@@ -1490,13 +1494,9 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
           for (const entry of info.entries) {
               const meta = extractMetadataFromInfo(entry);
               if (meta) {
-                  const task = { userId, url: meta.webpage_url, originalUrl: url, source: 'soundcloud', metadata: meta };
+                  const task = { userId, url: meta.webpage_url, originalUrl: url, source: detectedSource, metadata: meta };
                   downloadQueue.add({ ...task, priority: user.premium_limit || 5 }).catch(err => {
-                    if (err.message === 'TASK_TIMEOUT') {
-                      console.error(`[TaskQueue] Задача отменена по таймауту: ${meta.title}`);
-                    } else {
-                      console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
-                    }
+                    console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
                   });
                   addedCount++;
               }
@@ -1506,13 +1506,9 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
           // Одиночный трек
           const meta = extractMetadataFromInfo(info);
           if (meta) {
-              const task = { userId, url: meta.webpage_url, originalUrl: url, source: 'soundcloud', metadata: meta };
+              const task = { userId, url: meta.webpage_url, originalUrl: url, source: detectedSource, metadata: meta };
               downloadQueue.add({ ...task, priority: user.premium_limit || 5 }).catch(err => {
-                if (err.message === 'TASK_TIMEOUT') {
-                  console.error(`[TaskQueue] Задача отменена по таймауту: ${meta.title}`);
-                } else {
-                  console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
-                }
+                console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
               });
               await safeSendMessage(userId, `✅ Трек "${meta.title}" добавлен в очередь.`);
           } else {
@@ -1529,10 +1525,6 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
     }
   })().catch(e => console.error('Async Enqueue Error:', e));
 }
-
-/**
- * Инициализирует Download Manager и подключается к Redis для гибридной архитектуры
- */
 export async function initializeDownloadManager() {
   // Подключаемся к Upstash Redis для гибридной архитектуры
   const connected = await taskBroker.connect();
