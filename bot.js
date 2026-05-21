@@ -1130,7 +1130,7 @@ async function handleSoundCloudUrl(ctx, url) {
         if (!data) {
     console.error('[yt-dlp] data пустой:', cleanUrl);
     throw new Error('Пустой ответ от yt-dlp.');
-        
+        }
         if (data.entries && data.entries.length > 1) {
             // Плейлист
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
