@@ -104,9 +104,7 @@ const YTDL_COMMON = {
   'socket-timeout': 120,
   'no-warnings': true,
 };
-if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
-  YTDL_COMMON.cookies = WRITABLE_COOKIES_PATH;
-}
+
 // Базовые опции для получения метаданных/скачиваний через yt-dlp
 const YTDL_OPTIONS = {
   ...YTDL_COMMON,
