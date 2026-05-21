@@ -1034,13 +1034,14 @@ async function processUrlInBackground(ctx, url) {
         
         // 1. Сначала превращаем короткую ссылку в длинную
         const resolvedUrl = await resolveSoundCloudLink(url);
+        const cleanUrl = resolvedUrl.split('?')[0];
         
         const youtubeDl = getYoutubeDl();
         
         let data;
         try {
             // Используем уже РАСШИФРОВАННУЮ ссылку
-            data = await youtubeDl(resolvedUrl, { dumpSingleJson: true, flatPlaylist: true });
+            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true });
         } catch (ytdlError) {
             console.error(`[youtube-dl] Критическая ошибка (processUrlInBackground) для ${resolvedUrl}:`, ytdlError.stderr || ytdlError.message);
             throw new Error('Не удалось получить метаданные. Ссылка может быть недействительной или трек недоступен.');
@@ -1058,7 +1059,7 @@ async function processUrlInBackground(ctx, url) {
                 playlistId,
                 title: data.title,
                 tracks: data.entries,
-                originalUrl: resolvedUrl, // Сохраняем полную ссылку
+                originalUrl: cleanUrl, // Сохраняем полную ссылку
                 selected: new Set(),
                 currentPage: 0,
                 fullTracks: false
@@ -1088,8 +1089,8 @@ async function processUrlInBackground(ctx, url) {
             addTaskToQueue({
                 userId: ctx.from.id,
                 source: 'soundcloud',
-                url: data.webpage_url || resolvedUrl,
-                originalUrl: data.webpage_url || resolvedUrl,
+                url: data.webpage_url || cleanUrl,
+                originalUrl: data.webpage_url || cleanUrl,
                 metadata: { id: data.id, title: data.title, uploader: data.uploader, duration: data.duration, thumbnail: data.thumbnail },
                 ctx: null
             });
@@ -1111,13 +1112,13 @@ async function handleSoundCloudUrl(ctx, url) {
         
         // 1. Превращаем короткую ссылку в длинную
         const resolvedUrl = await resolveSoundCloudLink(url);
-        
+        const cleanUrl = resolvedUrl.split('?')[0];
         const youtubeDl = getYoutubeDl();
         
         let data;
         try {
             // Используем расшифрованную ссылку
-            data = await youtubeDl(resolvedUrl, { dumpSingleJson: true, flatPlaylist: true });
+            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true });
         } catch (ytdlError) {
             // ВАЖНОЕ ИЗМЕНЕНИЕ: Логируем ПОЛНЫЙ текст ошибки от youtube-dl
             console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${resolvedUrl}:`);
@@ -1126,7 +1127,9 @@ async function handleSoundCloudUrl(ctx, url) {
             throw new Error('Ошибка при запросе к SoundCloud (см. логи)');
         }
         
-        if (!data) throw new Error('Пустой ответ от yt-dlp.');
+        if (!data) {
+    console.error('[yt-dlp] data пустой:', cleanUrl);
+    throw new Error('Пустой ответ от yt-dlp.');
         
         if (data.entries && data.entries.length > 1) {
             // Плейлист
@@ -1137,7 +1140,7 @@ async function handleSoundCloudUrl(ctx, url) {
                 playlistId,
                 title: data.title,
                 tracks: data.entries,
-                originalUrl: resolvedUrl, 
+                originalUrl: cleanUrl, 
                 selected: new Set(),
                 currentPage: 0,
                 fullTracks: false
@@ -1150,7 +1153,7 @@ async function handleSoundCloudUrl(ctx, url) {
             // Одиночный трек
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
             // Важно передать resolvedUrl дальше
-            enqueue(ctx, ctx.from.id, resolvedUrl, { isSingleTrack: true, metadata: data });
+            enqueue(ctx, ctx.from.id, cleanUrl, { isSingleTrack: true, metadata: data });
         }
         
     } catch (error) {
