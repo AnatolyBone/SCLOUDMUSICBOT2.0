@@ -104,7 +104,9 @@ const YTDL_COMMON = {
   'socket-timeout': 120,
   'no-warnings': true,
 };
-
+if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
+  YTDL_COMMON.cookies = WRITABLE_COOKIES_PATH;
+}
 // Базовые опции для получения метаданных/скачиваний через yt-dlp
 const YTDL_OPTIONS = {
   ...YTDL_COMMON,
@@ -1407,7 +1409,13 @@ console.log(`[DownloadManager] Очередь (threads=${MAX_CONCURRENT_DOWNLOAD
 export function enqueue(ctx, userId, url, earlyData = {}) {
   (async () => {
     let statusMessage = null;
-    console.log(`[Enqueue] User ${userId}, URL: ${url}`);
+   let cleanUrl = url;
+    if (cleanUrl.includes('soundcloud.com') || cleanUrl.includes('spotify.com')) {
+      // Отрезаем все, что идет после знака вопроса (?)
+      cleanUrl = cleanUrl.split('?')[0];
+    }
+    
+    console.log(`[Enqueue] User ${userId}, URL: ${cleanUrl}`);
     
     try {
       // Проверка бонусов/лимитов
