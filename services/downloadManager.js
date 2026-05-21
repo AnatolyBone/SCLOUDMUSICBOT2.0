@@ -1325,18 +1325,27 @@ export async function trackDownloadProcessor(task) {
     // Определяем причину ошибки
     let reason = 'UNKNOWN_ERROR';
     
-    // 🔥 ДОБАВЛЕНА ОБРАБОТКА PREVIEW_ONLY И DOWNLOAD_FAILED_EMPTY 🔥
+    // 🔥 ВОТ СЮДА ДОБАВЛЯЕМ ОБРАБОТКУ ЛИМИТА 🔥
     if (err.message === 'PREVIEW_ONLY') {
       userMsg = `❌ К сожалению, "${trackTitle}" защищён от скачивания.\n\n💡 SoundCloud отдаёт только превью (30 сек). Попробуйте найти этот трек на Spotify.`;
       reason = 'PREVIEW_ONLY';
+
+    } else if (err.message === 'FILE_TOO_LARGE' || err.message === 'BUFFER_TOO_LARGE') {
+      // НАШ НОВЫЙ БЛОК:
+      userMsg = `❌ Трек "${trackTitle}" слишком большой.\n\n💡 Лимит Telegram — 50 МБ. Попробуйте скачать в качестве 128kbps или найти версию покороче.`;
+      reason = 'FILE_TOO_LARGE';
+
     } else if (err.message === 'DOWNLOAD_FAILED_EMPTY') {
       userMsg = `❌ Не удалось скачать "${trackTitle}".\n\n💡 Возможно, трек удалён или защищён. Попробуйте другую ссылку.`;
       reason = 'DOWNLOAD_FAILED_EMPTY';
+
     } else if (errorDetails.includes('404') || errorDetails.includes('Video unavailable')) {
       userMsg += "\n\n💡 Трек не найден на YouTube Music. Попробуйте отправить название трека текстом.";
       reason = '404_NOT_FOUND';
+
     } else if (errorDetails.includes('403')) {
       reason = '403_FORBIDDEN';
+
     } else if (errorDetails.includes('Sign in') || errorDetails.includes('bot')) {
       userMsg += "\n\n⚠️ YouTube требует авторизацию. Попробуйте позже.";
       reason = 'AUTH_REQUIRED';
