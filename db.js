@@ -702,11 +702,14 @@ export async function cacheTrack({
 /**
  * Ищет трек в кэше (переписано на прямые SQL-запросы для надежности и скорости)
  */
+/**
+ * Ищет трек в кэше (Комбинированный метод: быстрый SQL для точных совпадений + RPC для нечетких)
+ */
 export async function findCachedTrack(key, options = {}) {
   const { source, quality } = options;
   
   try {
-    // 1. Прямой поиск по ключу (SQL вместо Supabase Client)
+    // 1. Прямой поиск по ключу (Быстрый SQL)
     const exactSql = `SELECT * FROM track_cache WHERE url = $1 LIMIT 1`;
     const { rows: exactRows } = await query(exactSql, [key]);
 
@@ -716,7 +719,7 @@ export async function findCachedTrack(key, options = {}) {
       return { fileId: data.file_id, ...data };
     }
 
-    // 2. Поиск по Spotify ID (если передан)
+    // 2. Поиск по Spotify ID (Быстрый SQL)
     if (key.includes('spotify.com/track/')) {
       const spotifyId = key.match(/track\/([a-zA-Z0-9]+)/)?.[1];
       if (spotifyId && quality) {
@@ -731,13 +734,13 @@ export async function findCachedTrack(key, options = {}) {
       }
     }
 
-    // 3. Нечёткий поиск (Вызов RPC функции напрямую через SQL)
-    // В Supabase RPC - это обычные Postgres-функции, их можно вызывать селектом
-    const rpcSql = `SELECT * FROM find_similar_track($1) LIMIT 1`;
-    const { rows: similarRows } = await query(rpcSql, [key]);
+    // 3. Нечёткий поиск 
+    // ВОЗВРАЩАЕМ ВЫЗОВ ЧЕРЕЗ SUPABASE, чтобы избежать ошибки с типами (unknown)
+    const { data: similarData, error: rpcError } = await supabase
+      .rpc('find_similar_track', { search_key: key });
 
-    if (similarRows.length > 0) {
-      const match = similarRows[0];
+    if (!rpcError && similarData && similarData.length > 0) {
+      const match = similarData[0];
       console.log(`[✓ Cache HIT] ${match.title} (похожее совпадение)`);
       return { fileId: match.file_id, ...match };
     }
@@ -746,11 +749,10 @@ export async function findCachedTrack(key, options = {}) {
     return null;
 
   } catch (e) {
-    console.error('[Cache] Ошибка поиска (SQL):', e.message);
+    console.error('[Cache] Ошибка поиска:', e.message);
     return null;
   }
 }
-
 // ========================================
 // ПОИСК ПО МЕТАДАННЫМ (title, artist, duration)
 // ========================================
