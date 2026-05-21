@@ -2,6 +2,7 @@
 
 import { Pool } from 'pg';
 import { createClient } from '@supabase/supabase-js';
+import ws from 'ws';
 import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL } from './config.js';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
