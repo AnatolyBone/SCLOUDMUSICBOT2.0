@@ -1032,16 +1032,15 @@ async function processUrlInBackground(ctx, url) {
     try {
         loadingMessage = await ctx.reply('🔍 Анализирую ссылку...');
         
-        // 1. Сначала превращаем короткую ссылку в длинную
+        // 1. Сначала превращаем короткую ссылку в длинную (БЕЗ ОТПИЛИВАНИЯ ?)
         const resolvedUrl = await resolveSoundCloudLink(url);
-        const cleanUrl = resolvedUrl.split('?')[0];
         
         const youtubeDl = getYoutubeDl();
         
         let data;
         try {
-            // Используем уже РАСШИФРОВАННУЮ ссылку
-            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true });
+            // Используем РАСШИФРОВАННУЮ ссылку целиком (с токенами доступа)
+            data = await youtubeDl(resolvedUrl, { dumpSingleJson: true, flatPlaylist: true });
         } catch (ytdlError) {
             console.error(`[youtube-dl] Критическая ошибка (processUrlInBackground) для ${resolvedUrl}:`, ytdlError.stderr || ytdlError.message);
             throw new Error('Не удалось получить метаданные. Ссылка может быть недействительной или трек недоступен.');
@@ -1059,7 +1058,7 @@ async function processUrlInBackground(ctx, url) {
                 playlistId,
                 title: data.title,
                 tracks: data.entries,
-                originalUrl: cleanUrl, // Сохраняем полную ссылку
+                originalUrl: resolvedUrl, // Сохраняем полную ссылку
                 selected: new Set(),
                 currentPage: 0,
                 fullTracks: false
@@ -1070,8 +1069,7 @@ async function processUrlInBackground(ctx, url) {
         } else {
             const user = await getUser(ctx.from.id);
             if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-                // ... (код проверки лимитов, без изменений) ...
-                 const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+                const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
                 const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
                 const bonusText = bonusAvailable ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.` : '';
                 const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
@@ -1089,8 +1087,8 @@ async function processUrlInBackground(ctx, url) {
             addTaskToQueue({
                 userId: ctx.from.id,
                 source: 'soundcloud',
-                url: data.webpage_url || cleanUrl,
-                originalUrl: data.webpage_url || cleanUrl,
+                url: data.webpage_url || resolvedUrl,
+                originalUrl: data.webpage_url || resolvedUrl,
                 metadata: { id: data.id, title: data.title, uploader: data.uploader, duration: data.duration, thumbnail: data.thumbnail },
                 ctx: null
             });
@@ -1105,32 +1103,48 @@ async function processUrlInBackground(ctx, url) {
         }
     }
 }
+
 async function handleSoundCloudUrl(ctx, url) {
     let loadingMessage;
     try {
         loadingMessage = await ctx.reply('🔍 Анализирую ссылку...');
         
-        // 1. Превращаем короткую ссылку в длинную
+        // 1. Превращаем короткую ссылку в длинную (БЕЗ отпиливания ?)
         const resolvedUrl = await resolveSoundCloudLink(url);
-        const cleanUrl = resolvedUrl.split('?')[0];
-        const youtubeDl = getYoutubeDl();
         
+        // 🔥 УЛУЧШЕНИЕ: Мгновенная проверка кэша (БЕЗ ЗАПРОСОВ В ИНТЕРНЕТ)
+        const cachedTrack = await findCachedTrack(resolvedUrl, { source: 'soundcloud' });
+        
+        if (cachedTrack && cachedTrack.fileId) {
+            console.log(`[Fast-Track] Трек найден в SQL, обход yt-dlp: ${resolvedUrl}`);
+            await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
+            
+            await ctx.replyWithAudio(cachedTrack.fileId, { 
+                title: cachedTrack.title, 
+                performer: cachedTrack.artist || 'Unknown' 
+            });
+            
+            // Записываем скачивание в статистику
+            await incrementDownloadsAndSaveTrack(ctx.from.id, cachedTrack.title, cachedTrack.fileId, resolvedUrl, 'soundcloud');
+            return;
+        }
+
+        // Если в кэше нет — лезем в интернет через yt-dlp
+        const youtubeDl = getYoutubeDl();
         let data;
         try {
-            // Используем расшифрованную ссылку
-            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true });
+            data = await youtubeDl(resolvedUrl, { dumpSingleJson: true, flatPlaylist: true });
         } catch (ytdlError) {
-            // ВАЖНОЕ ИЗМЕНЕНИЕ: Логируем ПОЛНЫЙ текст ошибки от youtube-dl
             console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${resolvedUrl}:`);
             console.error(ytdlError.stderr || ytdlError.message || ytdlError);
-            
             throw new Error('Ошибка при запросе к SoundCloud (см. логи)');
         }
         
         if (!data) {
-    console.error('[yt-dlp] data пустой:', cleanUrl);
-    throw new Error('Пустой ответ от yt-dlp.');
+            console.error('[yt-dlp] data пустой:', resolvedUrl);
+            throw new Error('Пустой ответ от yt-dlp.');
         }
+        
         if (data.entries && data.entries.length > 1) {
             // Плейлист
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
@@ -1140,7 +1154,7 @@ async function handleSoundCloudUrl(ctx, url) {
                 playlistId,
                 title: data.title,
                 tracks: data.entries,
-                originalUrl: cleanUrl, 
+                originalUrl: resolvedUrl, 
                 selected: new Set(),
                 currentPage: 0,
                 fullTracks: false
@@ -1152,8 +1166,8 @@ async function handleSoundCloudUrl(ctx, url) {
         } else {
             // Одиночный трек
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
-            // Важно передать resolvedUrl дальше
-            enqueue(ctx, ctx.from.id, cleanUrl, { isSingleTrack: true, metadata: data });
+            // Передаем полную ссылку дальше
+            enqueue(ctx, ctx.from.id, resolvedUrl, { isSingleTrack: true, metadata: data });
         }
         
     } catch (error) {
