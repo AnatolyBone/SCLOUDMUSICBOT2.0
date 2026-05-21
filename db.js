@@ -699,18 +699,19 @@ export async function cacheTrack({
 /**
  * Ищет трек в кэше (с учётом качества для Spotify)
  */
+/**
+ * Ищет трек в кэше (переписано на прямые SQL-запросы для надежности и скорости)
+ */
 export async function findCachedTrack(key, options = {}) {
   const { source, quality } = options;
   
   try {
-    // 1. Прямой поиск по ключу
-    let { data, error } = await supabase
-      .from('track_cache')
-      .select('*')
-      .eq('url', key)
-      .single();
+    // 1. Прямой поиск по ключу (SQL вместо Supabase Client)
+    const exactSql = `SELECT * FROM track_cache WHERE url = $1 LIMIT 1`;
+    const { rows: exactRows } = await query(exactSql, [key]);
 
-    if (data) {
+    if (exactRows.length > 0) {
+      const data = exactRows[0];
       console.log(`[✓ Cache HIT] ${data.title} (прямое совпадение)`);
       return { fileId: data.file_id, ...data };
     }
@@ -719,26 +720,24 @@ export async function findCachedTrack(key, options = {}) {
     if (key.includes('spotify.com/track/')) {
       const spotifyId = key.match(/track\/([a-zA-Z0-9]+)/)?.[1];
       if (spotifyId && quality) {
-        const { data: spotifyData } = await supabase
-          .from('track_cache')
-          .select('*')
-          .eq('spotify_id', spotifyId)
-          .eq('quality', quality)
-          .single();
+        const spotSql = `SELECT * FROM track_cache WHERE spotify_id = $1 AND quality = $2 LIMIT 1`;
+        const { rows: spotRows } = await query(spotSql, [spotifyId, quality]);
 
-        if (spotifyData) {
+        if (spotRows.length > 0) {
+          const spotifyData = spotRows[0];
           console.log(`[✓ Cache HIT] ${spotifyData.title} (spotify_id + quality)`);
           return { fileId: spotifyData.file_id, ...spotifyData };
         }
       }
     }
 
-    // 3. Нечёткий поиск
-    const { data: similarData } = await supabase
-      .rpc('find_similar_track', { search_key: key });
+    // 3. Нечёткий поиск (Вызов RPC функции напрямую через SQL)
+    // В Supabase RPC - это обычные Postgres-функции, их можно вызывать селектом
+    const rpcSql = `SELECT * FROM find_similar_track($1) LIMIT 1`;
+    const { rows: similarRows } = await query(rpcSql, [key]);
 
-    if (similarData && similarData.length > 0) {
-      const match = similarData[0];
+    if (similarRows.length > 0) {
+      const match = similarRows[0];
       console.log(`[✓ Cache HIT] ${match.title} (похожее совпадение)`);
       return { fileId: match.file_id, ...match };
     }
@@ -747,7 +746,7 @@ export async function findCachedTrack(key, options = {}) {
     return null;
 
   } catch (e) {
-    console.error('[Cache] Ошибка поиска:', e.message);
+    console.error('[Cache] Ошибка поиска (SQL):', e.message);
     return null;
   }
 }
