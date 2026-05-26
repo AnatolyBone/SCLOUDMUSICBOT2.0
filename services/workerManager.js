@@ -2,13 +2,15 @@
 
 import cron from 'node-cron';
 import { Mutex } from 'async-mutex';
+import { ADMIN_ID } from '../config.js'; 
 import {
   pool,
   getAndStartPendingBroadcastTask,
   updateBroadcastStatus,
   getUsersForBroadcastBatch,
   findAndInterruptActiveBroadcast,
-  resetExpiredPremiumsBulk
+  resetExpiredPremiumsBulk,
+  getBroadcastProgress
 } from '../db.js';
 import {
   checkAndSendExpirationNotifications,
@@ -116,35 +118,45 @@ function startPremiumAutoResetWorker() {
 /**
  * Воркер массовых рассылок
  */
+function drawProgressBar(current, total) {
+  const size = 10;
+  const progress = total > 0 ? Math.round((current / total) * size) : 0;
+  const empty = size - progress;
+  return `<code>[${'■'.repeat(progress)}${'□'.repeat(empty)}]</code>`;
+}
 function startBroadcastWorker() {
   createCronTask(
     '* * * * *',
     'Broadcast',
     async () => {
-      // Если уже идёт рассылка — пропускаем
       if (isBroadcasting()) return;
       
-      // Получаем задачу из очереди
       const task = await getAndStartPendingBroadcastTask();
       if (!task) return;
       
-      console.log(`[Broadcast] Начинаю рассылку #${task.id}. Приостанавливаю очередь скачивания.`);
+      console.log(`[Broadcast] Начинаю рассылку #${task.id}.`);
       setBroadcasting(true);
       downloadQueue.pause();
       
       const startTime = Date.now();
       let isDone = false;
-      
+      let reportMsgId = null; // ID сообщения для обновления прогресса
+
       try {
+        // 1. Отправляем начальное сообщение админу
+        const initialReport = await botInstance.telegram.sendMessage(
+          ADMIN_ID, 
+          `⏳ <b>Подготовка рассылки #${task.id}...</b>`, 
+          { parse_mode: 'HTML' }
+        );
+        reportMsgId = initialReport.message_id;
+
         while (!isDone && !isShuttingDown()) {
-          // Проверка таймаута
           if (Date.now() - startTime > BROADCAST_MAX_DURATION) {
-            console.warn(`[Broadcast] Превышено максимальное время выполнения (${BROADCAST_MAX_DURATION / 60000} мин)`);
-            await updateBroadcastStatus(task.id, 'pending'); // Возвращаем в очередь
+            await updateBroadcastStatus(task.id, 'pending');
             break;
           }
           
-          // Получаем батч пользователей
           const users = await getUsersForBroadcastBatch(
             task.id,
             task.target_audience,
@@ -156,32 +168,60 @@ function startBroadcastWorker() {
             continue;
           }
           
-          // Отправляем батч
+          // 2. Отправляем пачку
           await runBroadcastBatch(botInstance, task, users);
+
+          // 3. ОБНОВЛЯЕМ ПРОГРЕСС-БАР
+          const { total, sent } = await getBroadcastProgress(task.id, task.target_audience);
+          const percent = total > 0 ? ((sent / total) * 100).toFixed(1) : '0';
+          const bar = drawProgressBar(sent, total);
+
+          try {
+            await botInstance.telegram.editMessageText(
+              ADMIN_ID,
+              reportMsgId,
+              null,
+              `⏳ <b>Выполнение рассылки #${task.id}</b>\n\n` +
+              `${bar} <b>${percent}%</b>\n\n` +
+              `📦 Отправлено: <b>${sent} / ${total}</b>\n` +
+              `👤 Аудитория: <code>${task.target_audience}</code>`,
+              { parse_mode: 'HTML' }
+            );
+          } catch (editErr) {
+            // Игнорируем ошибки редактирования (например, если текст не изменился)
+          }
           
-          // Пауза между батчами
           await new Promise(resolve => setTimeout(resolve, BROADCAST_BATCH_DELAY));
         }
         
-        // Если завершилось штатно — помечаем как completed
         if (!isShuttingDown() && isDone) {
           await updateBroadcastStatus(task.id, 'completed');
-          await sendAdminReport(botInstance, task.id, task);
-          console.log(`[Broadcast] Рассылка #${task.id} успешно завершена`);
+          
+          // 4. Финальный отчет (редактируем то же сообщение)
+          const { total, sent } = await getBroadcastProgress(task.id, task.target_audience);
+          await botInstance.telegram.editMessageText(
+            ADMIN_ID,
+            reportMsgId,
+            null,
+            `✅ <b>Рассылка #${task.id} завершена!</b>\n\n` +
+            `${drawProgressBar(sent, total)} <b>100%</b>\n\n` +
+            `📦 Всего отправлено: <b>${sent}</b>\n` +
+            `⏱ Время выполнения: <b>${Math.round((Date.now() - startTime) / 1000)} сек.</b>`,
+            { parse_mode: 'HTML' }
+          );
         }
       } catch (error) {
-        console.error(`[Broadcast] Критическая ошибка при выполнении задачи #${task.id}:`, error);
+        console.error(`[Broadcast] Ошибка:`, error);
         await updateBroadcastStatus(task.id, 'failed', error.message);
-      } finally {
-        // Всегда возобновляем очередь скачивания
-        if (isBroadcasting()) {
-          setBroadcasting(false);
-          downloadQueue.start();
-          console.log('[Broadcast] Очередь скачивания возобновлена');
+        if (reportMsgId) {
+          await botInstance.telegram.sendMessage(ADMIN_ID, `❌ Ошибка рассылки #${task.id}: ${error.message}`);
         }
+      } finally {
+        setBroadcasting(false);
+        downloadQueue.start();
       }
     },
-    { watchdogMs: 35 * 60 * 1000 } // Watchdog на 35 минут (больше чем BROADCAST_MAX_DURATION)
+    { watchdogMs: 35 * 60 * 1000 }
   );
 }
 
