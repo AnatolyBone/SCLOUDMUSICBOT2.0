@@ -1308,19 +1308,42 @@ export async function logBroadcastSent(broadcastId, userId) {
 }
 
 export async function getBroadcastProgress(broadcastId, audience) {
+  // 1. Считаем, сколько реально отправлено (из логов)
   const sentResult = await query(`SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = $1`, [broadcastId]);
   const sent = parseInt(sentResult.rows[0].count, 10);
 
-  let audienceFilter = 'WHERE active = TRUE';
-  if (audience === 'free_users') {
-    audienceFilter += ' AND premium_limit <= 5';
-  } else if (audience === 'premium_users') {
-    audienceFilter += ' AND premium_limit > 5 AND (premium_until IS NULL OR premium_until >= NOW())';
-  }
+  // 2. Определяем фильтр аудитории
+  // Используем can_receive_broadcasts, так как именно её обновляет воркер при блокировке
+  let audienceFilter = 'WHERE can_receive_broadcasts = TRUE';
 
-  const totalResult = await query(`SELECT COUNT(*) FROM users ${audienceFilter}`);
-  const total = parseInt(totalResult.rows[0].count, 10);
-  return { total, sent };
+  const target = String(audience).toLowerCase();
+
+  if (target === 'free_users' || target === 'free') {
+    audienceFilter += ' AND premium_limit <= 5';
+  } 
+  else if (target === 'premium_users' || target.includes('premium')) {
+    // Условие для премиум: либо лимит > 5, либо дата подписки еще не истекла
+    audienceFilter += ' AND (premium_limit > 5 OR (premium_until IS NOT NULL AND premium_until >= NOW()))';
+  }
+  // Если target === 'all', фильтр остается просто 'WHERE can_receive_broadcasts = TRUE'
+
+  try {
+    const totalResult = await query(`SELECT COUNT(*) FROM users ${audienceFilter}`);
+    let total = parseInt(totalResult.rows[0].count, 10);
+
+    // Защита: если в логах уже больше людей, чем мы насчитали фильтром, 
+    // значит total был посчитан неверно (например, база изменилась). 
+    // Выводим sent как total, чтобы было 100%.
+    if (total < sent) {
+      total = sent;
+    }
+
+    return { total: total || 0, sent };
+  } catch (err) {
+    console.error('[DB] Ошибка подсчета прогресса:', err);
+    // В случае ошибки возвращаем хотя бы прогресс по отправленным
+    return { total: sent, sent };
+  }
 }
 
 export async function updateBroadcastStatus(taskId, status, errorMessage = null) {
