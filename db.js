@@ -1308,44 +1308,36 @@ export async function logBroadcastSent(broadcastId, userId) {
 }
 
 export async function getBroadcastProgress(broadcastId, audience) {
-  // 1. Считаем, сколько реально отправлено (из логов)
-  const sentResult = await query(`SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = $1`, [broadcastId]);
-  const sent = parseInt(sentResult.rows[0].count, 10);
-
-  // 2. Определяем фильтр аудитории
-  // Используем can_receive_broadcasts, так как именно её обновляет воркер при блокировке
-  let audienceFilter = 'WHERE can_receive_broadcasts = TRUE';
-
-  const target = String(audience).toLowerCase();
-
-  if (target === 'free_users' || target === 'free') {
-    audienceFilter += ' AND premium_limit <= 5';
-  } 
-  else if (target === 'premium_users' || target.includes('premium')) {
-    // Условие для премиум: либо лимит > 5, либо дата подписки еще не истекла
-    audienceFilter += ' AND (premium_limit > 5 OR (premium_until IS NOT NULL AND premium_until >= NOW()))';
-  }
-  // Если target === 'all', фильтр остается просто 'WHERE can_receive_broadcasts = TRUE'
-
   try {
-    const totalResult = await query(`SELECT COUNT(*) FROM users ${audienceFilter}`);
-    let total = parseInt(totalResult.rows[0].count, 10);
+    // 1. Сколько уже РЕАЛЬНО отправлено (из логов)
+    const sentResult = await query(
+      `SELECT COUNT(*) as count FROM broadcast_log WHERE broadcast_id = $1`, 
+      [broadcastId]
+    );
+    const sent = parseInt(sentResult.rows[0]?.count || 0, 10);
 
-    // Защита: если в логах уже больше людей, чем мы насчитали фильтром, 
-    // значит total был посчитан неверно (например, база изменилась). 
-    // Выводим sent как total, чтобы было 100%.
-    if (total < sent) {
-      total = sent;
+    // 2. Считаем Total точно так же, как выбираем юзеров
+    let sql = `SELECT COUNT(*) as count FROM users WHERE active = TRUE AND can_receive_broadcasts = TRUE`;
+    
+    // ВАЖНО: сопоставляем ключи с теми, что используются в getUsersForBroadcastBatch
+    if (audience === 'free_users') {
+      sql += ` AND premium_limit <= 5`;
+    } else if (audience === 'premium_users') {
+      sql += ` AND (premium_limit > 5 AND (premium_until IS NULL OR premium_until >= NOW()))`;
     }
 
-    return { total: total || 0, sent };
+    const totalResult = await query(sql);
+    let total = parseInt(totalResult.rows[0]?.count || 0, 10);
+
+    // Защита: общее количество не может быть меньше отправленного
+    if (total < sent) total = sent;
+
+    return { total, sent };
   } catch (err) {
-    console.error('[DB] Ошибка подсчета прогресса:', err);
-    // В случае ошибки возвращаем хотя бы прогресс по отправленным
-    return { total: sent, sent };
+    console.error('[DB] Ошибка в getBroadcastProgress:', err);
+    return { total: 0, sent: 0 };
   }
 }
-
 export async function updateBroadcastStatus(taskId, status, errorMessage = null) {
   const report = status === 'failed' ? JSON.stringify({ error: errorMessage }) : null;
   const completedAt = status === 'completed' ? 'NOW()' : 'NULL';
