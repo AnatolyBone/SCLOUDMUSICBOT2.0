@@ -122,18 +122,32 @@ export async function runBroadcastBatch(bot, task, users) {
 /**
  * Отправляет финальный отчёт администратору
  */
-export async function sendAdminReport(bot, taskId, task) {
+// Вспомогательная функция для рисования полоски
+function drawProgressBar(current, total) {
+  const size = 12; // Длина полоски
+  const progress = total > 0 ? Math.round((current / total) * size) : 0;
+  const empty = size - progress;
+  
+  // Используем спецсимволы: закрашенные и пустые квадраты
+  return `<code>[${'■'.repeat(progress)}${'□'.repeat(empty)}]</code>`;
+}
+
+export async function sendAdminReport(bot, taskId, task, isFinal = true) {
   try {
     const { total, sent } = await getBroadcastProgress(taskId, task.target_audience);
     
-    // Защита от деления на ноль
     const percent = total > 0 ? ((sent / total) * 100).toFixed(1) : '0.0';
+    const progressBar = drawProgressBar(sent, total);
     
+    const statusEmoji = isFinal ? '✅' : '⏳';
+    const statusText = isFinal ? 'завершена' : 'в процессе';
+
     const reportMessage = 
-      `✅ <b>Рассылка #${taskId} завершена!</b>\n\n` +
-      `✉️ Отправлено: <b>${sent}</b>\n` +
-      `👥 Всего в базе (аудитория): <b>${total}</b>\n` +
-      `📊 Охват: <b>${percent}%</b>`;
+      `${statusEmoji} <b>Рассылка #${taskId} ${statusText}</b>\n\n` +
+      `${progressBar} <b>${percent}%</b>\n\n` +
+      `📦 Отправлено: <b>${sent}</b>\n` +
+      `👥 Всего: <b>${total}</b>\n` +
+      `👤 Аудитория: <code>${task.target_audience}</code>`;
     
     await bot.telegram.sendMessage(ADMIN_ID, reportMessage, { parse_mode: 'HTML' });
   } catch (e) {
