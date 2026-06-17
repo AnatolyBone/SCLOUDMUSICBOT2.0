@@ -843,6 +843,20 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
   );
   if (res.rowCount > 0) {
     await logDownload(userId, trackName, url, source);
+    // Инкрементируем прогресс для всех активных кастомных РК
+    try {
+      await query(
+        `INSERT INTO user_promo_progress (user_id, campaign_id, progress, shown)
+         SELECT $1, id, 1, false FROM promo_campaigns
+         WHERE id > 2 AND is_active = true
+         ON CONFLICT (user_id, campaign_id) DO UPDATE
+         SET progress = user_promo_progress.progress + 1
+         WHERE user_promo_progress.shown = false`,
+        [userId]
+      );
+    } catch (e) {
+      console.error('[DB] Ошибка инкремента кастомных промо:', e.message);
+    }
   }
   return res.rowCount > 0 ? res.rows[0] : null;
 }
@@ -1378,6 +1392,7 @@ export async function getAllBroadcastTasks() {
         FROM users u 
         WHERE u.active = TRUE AND u.can_receive_broadcasts = TRUE
           AND (
+            t.target_audience = 'all' OR
             t.target_audience = 'all_users' OR
             (t.target_audience = 'free_users' AND u.premium_limit <= 5) OR
             (t.target_audience = 'premium_users' AND u.premium_limit > 5 AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
@@ -2067,3 +2082,93 @@ export async function fixBadCacheForUser(userId, dateLimit) {
     return 0;
   }
 }
+
+/* ========================= РЕКЛАМНЫЕ КАМПАНИИ (PROMOS) ========================= */
+
+export async function markYandexMusicPromoShown(userId) {
+  const res = await query(
+    `UPDATE users SET yandex_music_promo_shown = true
+     WHERE id = $1 AND COALESCE(yandex_music_promo_shown, false) = false
+     RETURNING id`,
+    [userId]
+  );
+  return res.rowCount > 0;
+}
+
+export async function getPromoCampaigns() {
+  const { rows } = await query('SELECT * FROM promo_campaigns ORDER BY id ASC');
+  return rows;
+}
+
+export async function createPromoCampaign(data) {
+  const { name, trigger_downloads, message_text, button_text, url, is_active } = data;
+  const { rows } = await query(
+    `INSERT INTO promo_campaigns (name, trigger_downloads, message_text, button_text, url, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING *`,
+    [name, trigger_downloads, message_text, button_text, url, is_active ?? true]
+  );
+  return rows[0];
+}
+
+export async function updatePromoCampaign(id, data) {
+  const { name, trigger_downloads, message_text, button_text, url, is_active } = data;
+  const { rows } = await query(
+    `UPDATE promo_campaigns
+     SET name = $1, trigger_downloads = $2, message_text = $3, button_text = $4, url = $5, is_active = $6
+     WHERE id = $7
+     RETURNING *`,
+    [name, trigger_downloads, message_text, button_text, url, is_active, id]
+  );
+  return rows[0];
+}
+
+export async function deletePromoCampaign(id) {
+  if (Number(id) === 1 || Number(id) === 2) {
+    throw new Error('Нельзя удалить системную кампанию');
+  }
+  await query('DELETE FROM promo_campaigns WHERE id = $1', [id]);
+}
+
+export async function markCustomPromoShown(userId, campaignId) {
+  const res = await query(
+    `INSERT INTO user_promo_progress (user_id, campaign_id, progress, shown)
+     VALUES ($1, $2, 0, true)
+     ON CONFLICT (user_id, campaign_id) DO UPDATE SET shown = true
+     WHERE user_promo_progress.shown = false
+     RETURNING user_id`,
+    [userId, campaignId]
+  );
+  return res.rowCount > 0;
+}
+
+export async function getPromoStats() {
+  const stats = {};
+  
+  const res1 = await query('SELECT COUNT(*)::int as count FROM users WHERE yandex_promo_shown = true');
+  stats[1] = res1.rows[0]?.count || 0;
+  
+  const res2 = await query('SELECT COUNT(*)::int as count FROM users WHERE yandex_music_promo_shown = true');
+  stats[2] = res2.rows[0]?.count || 0;
+  
+  const resCustom = await query(
+    'SELECT campaign_id, COUNT(*)::int as count FROM user_promo_progress WHERE shown = true GROUP BY campaign_id'
+  );
+  for (const row of resCustom.rows) {
+    stats[row.campaign_id] = row.count;
+  }
+  
+  return stats;
+}
+
+export async function getCustomPromoProgressForUser(userId) {
+  const { rows } = await query(
+    `SELECT p.*, c.trigger_downloads 
+     FROM user_promo_progress p
+     JOIN promo_campaigns c ON p.campaign_id = c.id
+     WHERE p.user_id = $1`,
+    [userId]
+  );
+  return rows;
+}
+

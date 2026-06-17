@@ -1,0 +1,251 @@
+<%- contentFor('body') %>
+
+<div class="d-flex justify-content-between align-items-center pt-3 pb-2 mb-4 border-bottom">
+  <h1 class="h2"><i class="bi bi-megaphone-fill me-2 text-primary"></i>Управление рекламой</h1>
+  <button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#createCampaignCollapse">
+    <i class="bi bi-plus-circle me-1"></i> Создать кампанию
+  </button>
+</div>
+
+<% if (locals.success) { %>
+  <div class="alert alert-success alert-dismissible fade show shadow-sm" role="alert">
+    <i class="bi bi-check-circle-fill me-2"></i>Изменения успешно сохранены!
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  </div>
+<% } %>
+
+<% if (locals.error) { %>
+  <div class="alert alert-danger alert-dismissible fade show shadow-sm" role="alert">
+    <i class="bi bi-exclamation-triangle-fill me-2"></i><strong>Ошибка:</strong> <%= error %>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  </div>
+<% } %>
+
+<!-- Скрытая форма создания кампании -->
+<div class="collapse mb-4" id="createCampaignCollapse">
+  <div class="card card-body shadow-sm border-primary-subtle">
+    <h5 class="card-title text-primary mb-3"><i class="bi bi-megaphone-fill me-2"></i>Новая рекламная кампания</h5>
+    <form action="/promos/save" method="POST">
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Название кампании</label>
+          <input type="text" class="form-control" name="name" placeholder="Например: Спецвыпуск Подкаста" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Триггер (кол-во скачиваний)</label>
+          <input type="number" class="form-control" name="trigger_downloads" value="3" min="1" required>
+        </div>
+        <div class="col-12">
+          <label class="form-label fw-semibold">Текст сообщения (HTML поддерживается)</label>
+          <textarea class="form-control" name="message_text" rows="3" placeholder="Введите текст рекламного сообщения..." required></textarea>
+          <div class="form-text">Поддерживаются стандартные теги Telegram: <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;code&gt;</code>, <code>&lt;a href=&quot;...&quot;&gt;</code>.</div>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Текст кнопки</label>
+          <input type="text" class="form-control" name="button_text" value="🔗 Перейти" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Ссылка (URL)</label>
+          <input type="url" class="form-control" name="url" placeholder="https://..." required>
+        </div>
+        <div class="col-12 text-end">
+          <button type="button" class="btn btn-outline-secondary me-2" data-bs-toggle="collapse" data-bs-target="#createCampaignCollapse">Отмена</button>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>Создать</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="row g-4">
+  <!-- Системные рекламные кампании -->
+  <div class="col-12">
+    <h4 class="mb-3 text-secondary fw-semibold"><i class="bi bi-cpu me-2"></i>Системные кампании</h4>
+  </div>
+
+  <% campaigns.filter(c => c.id <= 2).forEach(c => { %>
+    <div class="col-lg-6">
+      <div class="card shadow-sm h-100 border-light-subtle">
+        <div class="card-header d-flex justify-content-between align-items-center bg-body-tertiary border-bottom-0 py-3">
+          <div>
+            <span class="badge bg-secondary me-2">Системная #<%= c.id %></span>
+            <h5 class="card-title d-inline-block mb-0 fw-bold"><%= c.name %></h5>
+          </div>
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input toggle-active-btn" type="checkbox" role="switch" 
+                   data-id="<%= c.id %>" <%= c.is_active ? 'checked' : '' %> style="width: 2.5rem; height: 1.25rem;">
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="row mb-3">
+            <div class="col-6 border-end text-center">
+              <div class="text-muted small">Показов рекламы</div>
+              <h3 class="fw-bold mb-0 text-primary"><%= stats[c.id] || 0 %></h3>
+            </div>
+            <div class="col-6 text-center">
+              <div class="text-muted small">Порог скачиваний</div>
+              <h3 class="fw-bold mb-0 text-dark"><%= c.trigger_downloads %></h3>
+            </div>
+          </div>
+
+          <form action="/promos/save" method="POST" class="needs-validation" novalidate>
+            <input type="hidden" name="id" value="<%= c.id %>">
+            <input type="hidden" name="name" value="<%= c.name %>">
+            
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">Порог скачиваний (число)</label>
+              <input type="number" class="form-control form-control-sm" name="trigger_downloads" value="<%= c.trigger_downloads %>" required>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">Текст сообщения</label>
+              <textarea class="form-control form-control-sm" name="message_text" rows="3" required><%= c.message_text %></textarea>
+            </div>
+            
+            <div class="row g-2 mb-3">
+              <div class="col-md-6">
+                <label class="form-label fw-semibold small">Текст кнопки</label>
+                <input type="text" class="form-control form-control-sm" name="button_text" value="<%= c.button_text %>" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-semibold small">Ссылка кнопки</label>
+                <input type="url" class="form-control form-control-sm" name="url" value="<%= c.url %>" required>
+              </div>
+            </div>
+            
+            <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-save me-1"></i> Сохранить настройки</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  <% }) %>
+
+  <!-- Динамические (кастомные) рекламные кампании -->
+  <div class="col-12 mt-5">
+    <h4 class="mb-3 text-secondary fw-semibold"><i class="bi bi-sliders me-2"></i>Кастомные (динамические) кампании</h4>
+  </div>
+
+  <% const customCampaigns = campaigns.filter(c => c.id > 2); %>
+  <% if (customCampaigns.length === 0) { %>
+    <div class="col-12">
+      <div class="card text-center p-5 border-dashed bg-body-tertiary">
+        <div class="card-body">
+          <i class="bi bi-megaphone text-muted" style="font-size: 3rem;"></i>
+          <h5 class="mt-3 text-secondary">Нет кастомных кампаний</h5>
+          <p class="text-muted small">Вы можете создать рекламную кампанию с индивидуальным триггером скачиваний, текстом и кнопкой.</p>
+          <button class="btn btn-sm btn-primary mt-2" type="button" data-bs-toggle="collapse" data-bs-target="#createCampaignCollapse">
+            <i class="bi bi-plus-circle me-1"></i>Создать первую кампанию
+          </button>
+        </div>
+      </div>
+    </div>
+  <% } else { %>
+    <% customCampaigns.forEach(c => { %>
+      <div class="col-lg-6">
+        <div class="card shadow-sm h-100 border-primary-subtle">
+          <div class="card-header d-flex justify-content-between align-items-center bg-primary-subtle border-bottom-0 py-3">
+            <div>
+              <span class="badge bg-primary me-2">ID #<%= c.id %></span>
+              <h5 class="card-title d-inline-block mb-0 fw-bold text-primary-emphasis"><%= c.name %></h5>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <div class="form-check form-switch m-0 me-2">
+                <input class="form-check-input toggle-active-btn" type="checkbox" role="switch" 
+                       data-id="<%= c.id %>" <%= c.is_active ? 'checked' : '' %> style="width: 2.5rem; height: 1.25rem;">
+              </div>
+              <form action="/promos/delete" method="POST" onsubmit="return confirm('Удалить эту рекламную кампанию?');" class="m-0">
+                <input type="hidden" name="id" value="<%= c.id %>">
+                <button type="submit" class="btn btn-sm btn-outline-danger py-1 px-2" title="Удалить кампанию">
+                  <i class="bi bi-trash3"></i>
+                </button>
+              </form>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="row mb-3">
+              <div class="col-6 border-end text-center">
+                <div class="text-muted small">Показов рекламы</div>
+                <h3 class="fw-bold mb-0 text-success"><%= stats[c.id] || 0 %></h3>
+              </div>
+              <div class="col-6 text-center">
+                <div class="text-muted small">Порог скачиваний</div>
+                <h3 class="fw-bold mb-0 text-dark"><%= c.trigger_downloads %></h3>
+              </div>
+            </div>
+
+            <form action="/promos/save" method="POST">
+              <input type="hidden" name="id" value="<%= c.id %>">
+              
+              <div class="mb-3">
+                <label class="form-label fw-semibold small">Название кампании</label>
+                <input type="text" class="form-control form-control-sm" name="name" value="<%= c.name %>" required>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label fw-semibold small">Порог скачиваний (число)</label>
+                <input type="number" class="form-control form-control-sm" name="trigger_downloads" value="<%= c.trigger_downloads %>" required>
+              </div>
+              
+              <div class="mb-3">
+                <label class="form-label fw-semibold small">Текст сообщения</label>
+                <textarea class="form-control form-control-sm" name="message_text" rows="3" required><%= c.message_text %></textarea>
+              </div>
+              
+              <div class="row g-2 mb-3">
+                <div class="col-md-6">
+                  <label class="form-label fw-semibold small">Текст кнопки</label>
+                  <input type="text" class="form-control form-control-sm" name="button_text" value="<%= c.button_text %>" required>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label fw-semibold small">Ссылка кнопки</label>
+                  <input type="url" class="form-control form-control-sm" name="url" value="<%= c.url %>" required>
+                </div>
+              </div>
+              
+              <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-save me-1"></i> Сохранить настройки</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    <% }) %>
+  <% } %>
+</div>
+
+<style>
+  .border-dashed {
+    border-style: dashed !important;
+    border-width: 2px !important;
+  }
+</style>
+
+<script>
+  window.initializePage = function() {
+    // Находим все чекбоксы переключателей
+    document.querySelectorAll('.toggle-active-btn').forEach(checkbox => {
+      checkbox.addEventListener('change', async (e) => {
+        const id = e.target.getAttribute('data-id');
+        const is_active = e.target.checked;
+        
+        try {
+          const response = await fetch('/promos/toggle', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ id, is_active })
+          });
+          
+          const result = await response.json();
+          if (!result.success) {
+            alert('Не удалось изменить статус кампании: ' + (result.error || 'Неизвестная ошибка'));
+            e.target.checked = !is_active; // откатываем переключатель
+          }
+        } catch (err) {
+          console.error(err);
+          alert('Ошибка при выполнении запроса');
+          e.target.checked = !is_active;
+        }
+      });
+    });
+  };
+</script>

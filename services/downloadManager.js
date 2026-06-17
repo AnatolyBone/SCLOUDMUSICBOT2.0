@@ -418,48 +418,144 @@ async function safeSendMessage(userId, text, extra = {}) {
   }
 }
 
-async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null) {
-  const updatedUser = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
-  if (updatedUser) {
-    checkAndSendYandexPromo(userId, updatedUser);
-  }
-  return updatedUser;
-}
+// Порог скачиваний для рекламы Яндекс Музыки
+const YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD = 3;
 
 /** Запасной URL, если в админке очистили yandex_promo_url */
 const YANDEX_PROMO_URL_FALLBACK =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
+async function checkAndSendGenericPromo(
+  userId,
+  user,
+  shownFlag,
+  targetDownloads,
+  markShownCallback,
+  messageKey,
+  buttonKey,
+  urlKey,
+  fallbackUrl,
+  delayMs = 2500,
+  labelLog = 'Promo'
+) {
+  try {
+    const wasSet = await markShownCallback(userId);
+    if (!wasSet) return;
+
+    setTimeout(async () => {
+      try {
+        const promoBody = T(messageKey);
+        const btnLabel = (T(buttonKey) || '🔗 Перейти').trim();
+        const promoUrl = (T(urlKey) || '').trim() || fallbackUrl;
+        
+        if (!promoBody) {
+          console.warn(`[${labelLog}] ⚠️ Пустой текст промо для ключа ${messageKey}, отправка отменена`);
+          return;
+        }
+
+        await bot.telegram.sendMessage(userId, promoBody, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
+        });
+        console.log(`[${labelLog}] ✅ Промо отправлено пользователю ${userId}`);
+      } catch (e) {
+        console.error(`[${labelLog}] Ошибка отправки для ${userId}:`, e.message);
+      }
+    }, delayMs);
+  } catch (e) {
+    console.error(`[${labelLog}] Ошибка проверки для ${userId}:`, e.message);
+  }
+}
+
 function checkAndSendYandexPromo(userId, user) {
-  // Отдельный счётчик с момента старта акции (см. yandex_promo_progress в БД)
   const progress = Number(user?.yandex_promo_progress);
   const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
   if (!user || progress !== 3 || promoAlready) return;
 
-  (async () => {
-    try {
-      const wasSet = await db.markYandexPromoShown(userId);
-      if (!wasSet) return;
+  checkAndSendGenericPromo(
+    userId,
+    user,
+    'yandex_promo_shown',
+    3,
+    db.markYandexPromoShown,
+    'yandex_promo_message',
+    'yandex_promo_button',
+    'yandex_promo_url',
+    YANDEX_PROMO_URL_FALLBACK,
+    2500,
+    'YandexPromo'
+  );
+}
 
-      setTimeout(async () => {
-        try {
-          const promoBody = T('yandex_promo_message');
-          const btnLabel = (T('yandex_promo_button') || '💰 Забрать 300₽ на телефон').trim();
-          const promoUrl = (T('yandex_promo_url') || '').trim() || YANDEX_PROMO_URL_FALLBACK;
-          await bot.telegram.sendMessage(userId, promoBody, {
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-            ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
-          });
-          console.log(`[YandexPromo] ✅ Промо отправлено пользователю ${userId}`);
-        } catch (e) {
-          console.error(`[YandexPromo] Ошибка отправки для ${userId}:`, e.message);
-        }
-      }, 2500);
-    } catch (e) {
-      console.error(`[YandexPromo] Ошибка проверки для ${userId}:`, e.message);
+function checkAndSendYandexMusicPromo(userId, user) {
+  const downloads = Number(user?.total_downloads);
+  const promoAlready = user?.yandex_music_promo_shown === true || user?.yandex_music_promo_shown === 'true';
+  if (!user || downloads < YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD || promoAlready) return;
+
+  checkAndSendGenericPromo(
+    userId,
+    user,
+    'yandex_music_promo_shown',
+    YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD,
+    db.markYandexMusicPromoShown,
+    'yandex_music_promo_message',
+    'yandex_music_promo_button',
+    'yandex_music_promo_url',
+    'https://music.yandex.ru',
+    3000,
+    'YandexMusicPromo'
+  );
+}
+
+// Проверка и отправка кастомных промо-кампаний (динамические)
+async function checkAndSendCustomPromos(userId) {
+  try {
+    const campaigns = await db.getPromoCampaigns();
+    const activeCustomCampaigns = campaigns.filter(c => c.id > 2 && c.is_active === true);
+    if (activeCustomCampaigns.length === 0) return;
+
+    const userProgressList = await db.getCustomPromoProgressForUser(userId);
+
+    for (const campaign of activeCustomCampaigns) {
+      const userProgress = userProgressList.find(p => p.campaign_id === campaign.id);
+      const progressValue = Number(userProgress?.progress || 0);
+      const isShown = userProgress?.shown === true || userProgress?.shown === 'true';
+
+      if (progressValue >= campaign.trigger_downloads && !isShown) {
+        // Атомарно помечаем в БД
+        const wasSet = await db.markCustomPromoShown(userId, campaign.id);
+        if (!wasSet) continue;
+
+        // Отправляем
+        setTimeout(async () => {
+          try {
+            const btnLabel = (campaign.button_text || '🔗 Перейти').trim();
+            await bot.telegram.sendMessage(userId, campaign.message_text, {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, campaign.url)]])
+            });
+            console.log(`[CustomPromo #${campaign.id}] ✅ Промо отправлено пользователю ${userId}`);
+          } catch (e) {
+            console.error(`[CustomPromo #${campaign.id}] Ошибка отправки для ${userId}:`, e.message);
+          }
+        }, 3000);
+      }
     }
-  })();
+  } catch (err) {
+    console.error('[CustomPromo] Ошибка проверки кастомных промо:', err.message);
+  }
+}
+
+async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null) {
+  const updatedUser = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
+  if (updatedUser) {
+    checkAndSendYandexPromo(userId, updatedUser);
+    checkAndSendYandexMusicPromo(userId, updatedUser);
+    checkAndSendCustomPromos(userId);
+  }
+  return updatedUser;
 }
 
 async function getUserUsage(userId) {

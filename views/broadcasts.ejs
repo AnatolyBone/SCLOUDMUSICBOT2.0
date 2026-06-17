@@ -176,6 +176,7 @@
           const status = statusMap[task.status] || { name: task.status, class: 'bg-secondary' };
           
           const audienceMap = {
+            all: 'Все пользователи',
             all_users: 'Все пользователи',
             free_users: 'Free пользователи',
             premium_users: 'Premium пользователи'
@@ -215,7 +216,7 @@
                      style="height: 22px; font-size: 0.8rem;" 
                      data-bs-toggle="tooltip" 
                      title="Отправлено: <%= sent %> из <%= total %>">
-                  <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                  <div class="progress-bar <%= task.status === 'completed' ? 'bg-success' : 'progress-bar-striped progress-bar-animated' %>" 
                        role="progressbar" 
                        data-progress="<%= progress %>" 
                        aria-valuenow="<%= progress %>" 
@@ -297,7 +298,13 @@ function filterTable() {
     
     let show = true;
     if (status && rowStatus !== status) show = false;
-    if (audience && rowAudience !== audience) show = false;
+    if (audience) {
+      if (audience === 'all' || audience === 'all_users') {
+        if (rowAudience !== 'all' && rowAudience !== 'all_users') show = false;
+      } else {
+        if (rowAudience !== audience) show = false;
+      }
+    }
     if (search && !rowMsg.includes(search) && !idText.includes(search)) show = false;
     
     row.style.display = show ? '' : 'none';

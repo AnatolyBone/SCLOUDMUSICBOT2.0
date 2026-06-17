@@ -58,7 +58,12 @@ import {
   deleteBrokenTracksBulk,
   incrementBrokenTrackRetry,
   setAppSetting,
-  getNewUsersCount
+  getNewUsersCount,
+  getPromoCampaigns,
+  createPromoCampaign,
+  updatePromoCampaign,
+  deletePromoCampaign,
+  getPromoStats
 } from './db.js';
 import { initializeWorkers } from './services/workerManager.js';
 import { runBroadcastBatch } from './services/broadcastManager.js';
@@ -755,7 +760,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         SELECT
           COUNT(*) FILTER (WHERE yandex_promo_shown = true)::int AS promo_shown,
           COUNT(*) FILTER (WHERE COALESCE(yandex_promo_progress, 0) >= 3)::int AS eligible_campaign,
-          COUNT(*) FILTER (WHERE COALESCE(downloads_count, 0) >= 3)::int AS lifetime_3plus
+          COUNT(*) FILTER (WHERE COALESCE(downloads_count, 0) >= 3)::int AS lifetime_3plus,
+          COUNT(*) FILTER (WHERE yandex_music_promo_shown = true)::int AS music_promo_shown
         FROM users
       `)
     ]);
@@ -767,7 +773,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     const promoStats = {
       shown: Number(promoRow.promo_shown ?? 0),
       eligibleCampaign: Number(promoRow.eligible_campaign ?? 0),
-      lifetime3plus: Number(promoRow.lifetime_3plus ?? 0)
+      lifetime3plus: Number(promoRow.lifetime_3plus ?? 0),
+      musicPromoShown: Number(promoRow.music_promo_shown ?? 0)
     };
 
     const usersByTariff = {
@@ -902,7 +909,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       topTracks,
       topUsers,
       expiredCount,
-      promoStats
+      promoStats,
+      promoStatsByid: { 2: promoStats.musicPromoShown }
     });
 
   } catch (error) {
@@ -1231,6 +1239,148 @@ res.redirect('/dashboard?resetExpired=err');
     res.redirect(`/texts?error=${encodeURIComponent(error.message)}`);
   }
 });
+
+  // --- УПРАВЛЕНИЕ РЕКЛАМНЫМИ КАМПАНИЯМИ (PROMO CAMPAIGNS) ---
+
+  app.get('/promos', requireAuth, async (req, res) => {
+    try {
+      const campaigns = await getPromoCampaigns();
+      const stats = await getPromoStats();
+      const editableTexts = getEditableTexts();
+      
+      const preparedCampaigns = campaigns.map(c => {
+        if (c.id === 1) {
+          return {
+            ...c,
+            message_text: editableTexts.yandex_promo_message || '',
+            button_text: editableTexts.yandex_promo_button || '💰 Забрать 300₽ на телефон',
+            url: editableTexts.yandex_promo_url || ''
+          };
+        } else if (c.id === 2) {
+          return {
+            ...c,
+            message_text: editableTexts.yandex_music_promo_message || '',
+            button_text: editableTexts.yandex_music_promo_button || '🎵 Попробовать Яндекс Музыку',
+            url: editableTexts.yandex_music_promo_url || ''
+          };
+        }
+        return c;
+      });
+
+      res.render('promo-campaigns', {
+        title: 'Управление рекламой',
+        page: 'promos',
+        campaigns: preparedCampaigns,
+        stats,
+        success: req.query.success,
+        error: req.query.error
+      });
+    } catch (e) {
+      console.error('[Admin Promos] Error:', e);
+      res.status(500).send('Ошибка сервера');
+    }
+  });
+
+  app.post('/promos/save', requireAuth, async (req, res) => {
+    const { id, name, trigger_downloads, message_text, button_text, url } = req.body;
+    try {
+      if (!name || !message_text || !url) {
+        throw new Error('Название, текст сообщения и ссылка не могут быть пустыми.');
+      }
+      
+      const campaignId = parseInt(id, 10);
+      
+      if (campaignId === 1) {
+        await setText('yandex_promo_message', message_text);
+        await setText('yandex_promo_button', button_text || '💰 Забрать 300₽ на телефон');
+        await setText('yandex_promo_url', url);
+        await updatePromoCampaign(1, {
+          name,
+          trigger_downloads: parseInt(trigger_downloads, 10) || 3,
+          message_text: '',
+          button_text: '',
+          url: '',
+          is_active: true
+        });
+      } else if (campaignId === 2) {
+        await setText('yandex_music_promo_message', message_text);
+        await setText('yandex_music_promo_button', button_text || '🎵 Попробовать Яндекс Музыку');
+        await setText('yandex_music_promo_url', url);
+        await updatePromoCampaign(2, {
+          name,
+          trigger_downloads: parseInt(trigger_downloads, 10) || 3,
+          message_text: '',
+          button_text: '',
+          url: '',
+          is_active: true
+        });
+      } else if (campaignId) {
+        await updatePromoCampaign(campaignId, {
+          name,
+          trigger_downloads: parseInt(trigger_downloads, 10) || 1,
+          message_text,
+          button_text: button_text || '🔗 Перейти',
+          url,
+          is_active: req.body.is_active === 'true' || req.body.is_active === true
+        });
+      } else {
+        await createPromoCampaign({
+          name,
+          trigger_downloads: parseInt(trigger_downloads, 10) || 1,
+          message_text,
+          button_text: button_text || '🔗 Перейти',
+          url,
+          is_active: true
+        });
+      }
+      
+      res.redirect('/promos?success=true');
+    } catch (e) {
+      console.error('[Admin Promos Save] Error:', e);
+      res.redirect(`/promos?error=${encodeURIComponent(e.message)}`);
+    }
+  });
+
+  app.post('/promos/toggle', requireAuth, async (req, res) => {
+    const { id, is_active } = req.body;
+    try {
+      const campaignId = parseInt(id, 10);
+      const active = is_active === 'true' || is_active === true || is_active === '1';
+      const campaigns = await getPromoCampaigns();
+      const current = campaigns.find(c => c.id === campaignId);
+      
+      if (!current) {
+        throw new Error('Кампания не найдена');
+      }
+      
+      await updatePromoCampaign(campaignId, {
+        name: current.name,
+        trigger_downloads: current.trigger_downloads,
+        message_text: current.message_text,
+        button_text: current.button_text,
+        url: current.url,
+        is_active: active
+      });
+      
+      res.json({ success: true });
+    } catch (e) {
+      console.error('[Admin Promos Toggle] Error:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.post('/promos/delete', requireAuth, async (req, res) => {
+    const { id } = req.body;
+    try {
+      const campaignId = parseInt(id, 10);
+      await deletePromoCampaign(campaignId);
+      res.redirect('/promos?success=true');
+    } catch (e) {
+      console.error('[Admin Promos Delete] Error:', e);
+      res.redirect(`/promos?error=${encodeURIComponent(e.message)}`);
+    }
+  });
+
   app.get('/expiring-users', requireAuth, async (req, res) => {
     try {
       const users = await getExpiringUsers();

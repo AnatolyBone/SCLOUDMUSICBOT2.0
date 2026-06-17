@@ -19,34 +19,34 @@
 <% if (tracks && tracks.length > 0) { %>
 <div class="row mb-4">
   <div class="col-md-3 col-6 mb-2">
-    <div class="card bg-danger text-white">
+    <div class="card border-danger h-100 shadow-sm">
       <div class="card-body text-center py-3">
-        <h3 class="mb-0"><%= totalTracks || 0 %></h3>
-        <small>Всего проблем</small>
+        <div class="text-danger small fw-semibold text-uppercase mb-1" style="font-size: 0.75rem; letter-spacing: 0.5px;">Всего проблем</div>
+        <h3 class="mb-0 text-danger fw-bold"><%= totalTracks || 0 %></h3>
       </div>
     </div>
   </div>
   <div class="col-md-3 col-6 mb-2">
-    <div class="card bg-warning text-dark">
+    <div class="card border-warning h-100 shadow-sm">
       <div class="card-body text-center py-3">
-        <h3 class="mb-0"><%= tracks.filter(t => t.reason === 'download_failed').length %></h3>
-        <small>Ошибки загрузки</small>
+        <div class="text-warning-emphasis small fw-semibold text-uppercase mb-1" style="font-size: 0.75rem; letter-spacing: 0.5px;">Ошибки загрузки</div>
+        <h3 class="mb-0 text-warning-emphasis fw-bold"><%= tracks.filter(t => t.reason === 'download_failed').length %></h3>
       </div>
     </div>
   </div>
   <div class="col-md-3 col-6 mb-2">
-    <div class="card bg-info text-white">
+    <div class="card border-info h-100 shadow-sm">
       <div class="card-body text-center py-3">
-        <h3 class="mb-0"><%= tracks.filter(t => t.reason === 'not_found').length %></h3>
-        <small>Не найдено</small>
+        <div class="text-info small fw-semibold text-uppercase mb-1" style="font-size: 0.75rem; letter-spacing: 0.5px;">Не найдено</div>
+        <h3 class="mb-0 text-info fw-bold"><%= tracks.filter(t => t.reason === 'not_found').length %></h3>
       </div>
     </div>
   </div>
   <div class="col-md-3 col-6 mb-2">
-    <div class="card bg-secondary text-white">
+    <div class="card border-secondary h-100 shadow-sm">
       <div class="card-body text-center py-3">
-        <h3 class="mb-0"><%= [...new Set(tracks.map(t => t.user_id))].length %></h3>
-        <small>Пользователей</small>
+        <div class="text-secondary small fw-semibold text-uppercase mb-1" style="font-size: 0.75rem; letter-spacing: 0.5px;">Пользователей</div>
+        <h3 class="mb-0 text-secondary fw-bold"><%= [...new Set(tracks.map(t => t.user_id))].length %></h3>
       </div>
     </div>
   </div>
@@ -117,13 +117,13 @@
       <tbody>
         <% 
         const reasonBadges = {
-          'PREVIEW_ONLY': 'bg-warning text-dark',
-          'PREVIEW_ONLY_YTDL': 'bg-warning text-dark',
-          'FILE_TOO_LARGE': 'bg-danger',
-          '403_FORBIDDEN': 'bg-info',
-          'RATE_LIMIT': 'bg-secondary',
-          'DOWNLOAD_ERROR': 'bg-danger',
-          'UNKNOWN_ERROR': 'bg-dark'
+          'PREVIEW_ONLY': 'bg-warning-subtle text-warning-emphasis border border-warning-subtle',
+          'PREVIEW_ONLY_YTDL': 'bg-warning-subtle text-warning-emphasis border border-warning-subtle',
+          'FILE_TOO_LARGE': 'bg-danger-subtle text-danger-emphasis border border-danger-subtle',
+          '403_FORBIDDEN': 'bg-info-subtle text-info-emphasis border border-info-subtle',
+          'RATE_LIMIT': 'bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle',
+          'DOWNLOAD_ERROR': 'bg-danger-subtle text-danger-emphasis border border-danger-subtle',
+          'UNKNOWN_ERROR': 'bg-dark-subtle text-dark-emphasis border border-dark-subtle'
         };
         const reasonLabels = {
           'PREVIEW_ONLY': '🎧 Только превью (SC)',
@@ -172,7 +172,7 @@
               </strong>
             </td>
             <td>
-              <span class="badge <%= reasonBadges[track.reason] || 'bg-dark' %>" 
+              <span class="badge <%= reasonBadges[track.reason] || 'bg-dark-subtle text-dark-emphasis border border-dark-subtle' %>" 
                     title="<%= track.error_message || '' %>">
                 <%= reasonLabels[track.reason] || track.reason || 'Неизвестно' %>
               </span>

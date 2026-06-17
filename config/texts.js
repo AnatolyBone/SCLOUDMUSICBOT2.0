@@ -65,6 +65,11 @@ const editableTexts = {
   yandex_promo_button: '💰 Забрать 300₽ на телефон',
   yandex_promo_url:
     'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911',
+  yandex_music_promo_message:
+    '🔥 Слушай любимую музыку на Яндекс Музыке!\n\n' +
+    'Получи подписку Яндекс Плюс и наслаждайся миллионами треков в высоком качестве.',
+  yandex_music_promo_button: '🎵 Попробовать Яндекс Музыку',
+  yandex_music_promo_url: 'https://music.yandex.ru',
 };
 
 // --- Внутренняя логика (остается без изменений) ---
@@ -73,9 +78,11 @@ const defaults = { ...systemKeys, ...editableTexts };
 
 export function getEditableTexts() {
   const currentTexts = allTextsSync();
-  const result = {};
-  for (const key in editableTexts) {
-    result[key] = currentTexts[key] ?? editableTexts[key];
+  const result = { ...editableTexts };
+  for (const key in currentTexts) {
+    if (!systemKeys.hasOwnProperty(key)) {
+      result[key] = currentTexts[key];
+    }
   }
   return result;
 }

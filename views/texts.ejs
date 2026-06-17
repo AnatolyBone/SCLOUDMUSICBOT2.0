@@ -75,6 +75,9 @@
       'yandex_promo_message': 'promo', 
       'yandex_promo_button': 'promo', 
       'yandex_promo_url': 'promo',
+      'yandex_music_promo_message': 'promo', 
+      'yandex_music_promo_button': 'promo', 
+      'yandex_music_promo_url': 'promo',
       'exp_3d': 'expirations', 
       'exp_1d': 'expirations', 
       'exp_0d': 'expirations',
@@ -103,11 +106,52 @@
   </div>
 </div>
 
+<!-- Добавление нового ключа -->
+<div class="mb-4">
+  <button class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="collapse" data-bs-target="#addKeyCollapse">
+    <i class="bi bi-plus-circle me-1"></i> Добавить новый текст
+  </button>
+  
+  <div class="collapse mt-3" id="addKeyCollapse">
+    <div class="card card-body shadow-sm border-success-subtle">
+      <h5 class="card-title text-success mb-2"><i class="bi bi-file-earmark-plus me-1"></i>Новый текстовый ключ</h5>
+      <p class="text-muted small mb-3">После добавления вы сможете использовать его в коде бота как <code>T('ключ')</code>.</p>
+      
+      <form action="/texts/update" method="POST" id="newKeyForm">
+        <div class="mb-3">
+          <label for="newKeyInput" class="form-label fw-semibold">Ключ (только латинские буквы, цифры и подчеркивания)</label>
+          <input type="text" class="form-control" id="newKeyInput" name="key" required 
+                 pattern="^[a-zA-Z0-9_]+$" 
+                 placeholder="Пример: promo_bonus_text"
+                 oninput="this.value = this.value.replace(/[^a-zA-Z0-9_]/g, '')">
+          <div class="form-text">Автоматические категории: <code>error</code>, <code>promo</code>, <code>ref</code>/<code>bonus</code>, <code>exp</code>, <code>tariff</code>.</div>
+        </div>
+        <div class="mb-3">
+          <label for="newValueInput" class="form-label fw-semibold">Значение (HTML разметка разрешена)</label>
+          <textarea class="form-control" id="newValueInput" name="value" rows="4" required placeholder="Введите текст..."></textarea>
+        </div>
+        <button type="submit" class="btn btn-success"><i class="bi bi-check-lg me-1"></i> Создать и сохранить</button>
+      </form>
+    </div>
+  </div>
+</div>
+
 <div class="accordion" id="textsAccordion">
   <% Object.entries(texts).forEach(([key, value]) => { 
     const safeKey = escapeHtml(key);
     const safeValue = escapeHtml(value);
-    const cat = categoriesMap[key] || 'other';
+    
+    let cat = categoriesMap[key];
+    if (!cat) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes('error') || lowerKey.includes('err') || lowerKey.includes('maintenance')) cat = 'errors';
+      else if (lowerKey.includes('referral') || lowerKey.includes('ref') || lowerKey.includes('bonus')) cat = 'referrals';
+      else if (lowerKey.includes('promo')) cat = 'promo';
+      else if (lowerKey.includes('exp') || lowerKey.includes('sub')) cat = 'expirations';
+      else if (lowerKey.includes('tariff') || lowerKey.includes('limit') || lowerKey.includes('upgrade')) cat = 'tariffs';
+      else if (lowerKey.includes('menu') || lowerKey.includes('start') || lowerKey.includes('help') || lowerKey.includes('welcome')) cat = 'general';
+      else cat = 'other';
+    }
   %>
     <div class="accordion-item" data-category="<%- cat %>" data-search-text="<%- safeKey.toLowerCase() %> <%- safeValue.toLowerCase().replace(/\n/g, ' ') %>">
       <h2 class="accordion-header" id="heading-<%- safeKey %>">
@@ -222,8 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
         .replace(/__(.*?)__/g, '<em>$1</em>')         // __italic__
         .replace(/_(.*?)_/g, '<em>$1</em>')           // _italic_
         .replace(/`(.*?)`/g, '<code>$1</code>')       // `code`
-        .replace(/```math
-(.*?)```KATEX_INLINE_OPEN(.*?)KATEX_INLINE_CLOSE/g, '<a href="$2" target="_blank">$1</a>') // [link](url)
+        .replace(new RegExp('\\[(.*?)\\]\\((.*?)\\)', 'g'), '<a href="$2" target="_blank">$1</a>') // [link](url)
         .replace(/\n/g, '<br>'); // Newlines
       
       preview.innerHTML = html;
