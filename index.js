@@ -56,6 +56,7 @@ import {
   getBrokenTracksWithPagination,
   deleteBrokenTrack,
   deleteBrokenTracksBulk,
+  deleteAllBrokenTracks,
   incrementBrokenTrackRetry,
   setAppSetting,
   getNewUsersCount,
@@ -63,7 +64,8 @@ import {
   createPromoCampaign,
   updatePromoCampaign,
   deletePromoCampaign,
-  getPromoStats
+  getPromoStats,
+  resetPromoCampaign
 } from './db.js';
 import { initializeWorkers } from './services/workerManager.js';
 import { runBroadcastBatch } from './services/broadcastManager.js';
@@ -475,6 +477,17 @@ app.post('/api/broken-tracks/bulk-delete', requireAuth, async (req, res) => {
     res.json({ success: true, deleted: count });
   } catch (e) {
     console.error('[API BrokenTracks] bulk-delete error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// API: Удалить ВСЕ записи
+app.post('/api/broken-tracks/delete-all', requireAuth, async (req, res) => {
+  try {
+    const count = await deleteAllBrokenTracks();
+    res.json({ success: true, deleted: count });
+  } catch (e) {
+    console.error('[API BrokenTracks] delete-all error:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -1290,6 +1303,16 @@ res.redirect('/dashboard?resetExpired=err');
       
       const campaignId = parseInt(id, 10);
       
+      // Вытягиваем текущий статус активности, чтобы не сбрасывать его при сохранении настроек
+      let currentIsActive = true;
+      if (campaignId) {
+        const campaigns = await getPromoCampaigns();
+        const current = campaigns.find(c => c.id === campaignId);
+        if (current) {
+          currentIsActive = current.is_active;
+        }
+      }
+      
       if (campaignId === 1) {
         await setText('yandex_promo_message', message_text);
         await setText('yandex_promo_button', button_text || '💰 Забрать 300₽ на телефон');
@@ -1300,7 +1323,7 @@ res.redirect('/dashboard?resetExpired=err');
           message_text: '',
           button_text: '',
           url: '',
-          is_active: true
+          is_active: currentIsActive
         });
       } else if (campaignId === 2) {
         await setText('yandex_music_promo_message', message_text);
@@ -1312,7 +1335,7 @@ res.redirect('/dashboard?resetExpired=err');
           message_text: '',
           button_text: '',
           url: '',
-          is_active: true
+          is_active: currentIsActive
         });
       } else if (campaignId) {
         await updatePromoCampaign(campaignId, {
@@ -1321,7 +1344,7 @@ res.redirect('/dashboard?resetExpired=err');
           message_text,
           button_text: button_text || '🔗 Перейти',
           url,
-          is_active: req.body.is_active === 'true' || req.body.is_active === true
+          is_active: currentIsActive
         });
       } else {
         await createPromoCampaign({
@@ -1337,6 +1360,18 @@ res.redirect('/dashboard?resetExpired=err');
       res.redirect('/promos?success=true');
     } catch (e) {
       console.error('[Admin Promos Save] Error:', e);
+      res.redirect(`/promos?error=${encodeURIComponent(e.message)}`);
+    }
+  });
+
+  app.post('/promos/reset', requireAuth, async (req, res) => {
+    const { id } = req.body;
+    try {
+      const campaignId = parseInt(id, 10);
+      await resetPromoCampaign(campaignId);
+      res.redirect('/promos?success=true');
+    } catch (e) {
+      console.error('[Admin Promos Reset] Error:', e);
       res.redirect(`/promos?error=${encodeURIComponent(e.message)}`);
     }
   });

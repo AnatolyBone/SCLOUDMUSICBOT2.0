@@ -6,6 +6,9 @@
     <button type="button" class="btn btn-sm btn-outline-danger" id="deleteSelectedBtn" disabled onclick="deleteSelected()">
       🗑️ Удалить выбранные (<span id="selectedCount">0</span>)
     </button>
+    <button type="button" class="btn btn-sm btn-danger" onclick="deleteAllTracks()" <%= (totalTracks || 0) === 0 ? 'disabled' : '' %>>
+      🗑️ Удалить все
+    </button>
     <button type="button" class="btn btn-sm btn-outline-primary" onclick="exportCSV()">
       📥 Экспорт CSV
     </button>
@@ -509,6 +512,28 @@ async function deleteSelected() {
       updateSelectedCount();
     } else {
       showToast('❌ Ошибка', 'Не удалось удалить', 'danger');
+    }
+  } catch (err) {
+    showToast('❌ Ошибка', 'Ошибка сервера', 'danger');
+  }
+}
+
+async function deleteAllTracks() {
+  if (!confirm('Вы уверены, что хотите удалить ВСЕ проблемные треки из базы данных? Это действие нельзя отменить.')) return;
+  
+  try {
+    const response = await fetch('/api/broken-tracks/delete-all', {
+      method: 'POST'
+    });
+    
+    const result = await response.json();
+    if (result.success) {
+      showToast('🗑️ Удалено', 'Все проблемные треки удалены', 'warning');
+      setTimeout(function() {
+        location.reload();
+      }, 1000);
+    } else {
+      showToast('❌ Ошибка', result.error || 'Не удалось выполнить удаление', 'danger');
     }
   } catch (err) {
     showToast('❌ Ошибка', 'Ошибка сервера', 'danger');

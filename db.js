@@ -2028,6 +2028,16 @@ export async function deleteBrokenTracksBulk(ids) {
   }
 }
 
+export async function deleteAllBrokenTracks() {
+  try {
+    const { rowCount } = await query('DELETE FROM failed_tracks');
+    return rowCount || 0;
+  } catch (e) {
+    console.error('[DB] deleteAllBrokenTracks error:', e.message);
+    return 0;
+  }
+}
+
 /**
  * Увеличить счетчик попыток для трека
  */
@@ -2171,4 +2181,17 @@ export async function getCustomPromoProgressForUser(userId) {
   );
   return rows;
 }
+
+export async function resetPromoCampaign(id) {
+  const campaignId = Number(id);
+  if (campaignId === 1) {
+    await query('UPDATE users SET yandex_promo_shown = false, yandex_promo_progress = 0');
+  } else if (campaignId === 2) {
+    await query('UPDATE users SET yandex_music_promo_shown = false');
+  } else {
+    // Для кастомных кампаний сбрасываем как статус shown, так и прогресс, чтобы отсчет пошел заново
+    await query('UPDATE user_promo_progress SET shown = false, progress = 0 WHERE campaign_id = $1', [campaignId]);
+  }
+}
+
 

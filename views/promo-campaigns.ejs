@@ -77,14 +77,20 @@
           </div>
         </div>
         <div class="card-body">
-          <div class="row mb-3">
-            <div class="col-6 border-end text-center">
+          <div class="row mb-3 align-items-center">
+            <div class="col-4 border-end text-center">
               <div class="text-muted small">Показов рекламы</div>
               <h3 class="fw-bold mb-0 text-primary"><%= stats[c.id] || 0 %></h3>
             </div>
-            <div class="col-6 text-center">
+            <div class="col-4 border-end text-center">
               <div class="text-muted small">Порог скачиваний</div>
               <h3 class="fw-bold mb-0 text-dark"><%= c.trigger_downloads %></h3>
+            </div>
+            <div class="col-4 text-center">
+              <form action="/promos/reset" method="POST" onsubmit="return confirm('Вы уверены, что хотите сбросить показы этой кампании? Все пользователи смогут увидеть её повторно.');" class="m-0">
+                <input type="hidden" name="id" value="<%= c.id %>">
+                <button type="submit" class="btn btn-sm btn-outline-warning w-100 py-1" style="font-size: 0.75rem;"><i class="bi bi-arrow-counterclockwise"></i> Сбросить</button>
+              </form>
             </div>
           </div>
 
@@ -162,14 +168,20 @@
             </div>
           </div>
           <div class="card-body">
-            <div class="row mb-3">
-              <div class="col-6 border-end text-center">
+            <div class="row mb-3 align-items-center">
+              <div class="col-4 border-end text-center">
                 <div class="text-muted small">Показов рекламы</div>
                 <h3 class="fw-bold mb-0 text-success"><%= stats[c.id] || 0 %></h3>
               </div>
-              <div class="col-6 text-center">
+              <div class="col-4 border-end text-center">
                 <div class="text-muted small">Порог скачиваний</div>
                 <h3 class="fw-bold mb-0 text-dark"><%= c.trigger_downloads %></h3>
+              </div>
+              <div class="col-4 text-center">
+                <form action="/promos/reset" method="POST" onsubmit="return confirm('Вы уверены, что хотите сбросить показы этой кампании? Все пользователи смогут увидеть её повторно.');" class="m-0">
+                  <input type="hidden" name="id" value="<%= c.id %>">
+                  <button type="submit" class="btn btn-sm btn-outline-warning w-100 py-1" style="font-size: 0.75rem;"><i class="bi bi-arrow-counterclockwise"></i> Сбросить</button>
+                </form>
               </div>
             </div>
 
