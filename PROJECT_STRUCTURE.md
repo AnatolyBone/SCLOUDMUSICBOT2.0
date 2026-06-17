@@ -18,6 +18,10 @@ SCLOUDMUSICBOT2.0-main/
 ├── 📄 ARCHITECTURE.md             # Архитектура проекта
 ├── 📄 PROJECT_STRUCTURE.md        # Этот файл
 │
+├── 📂 migrations/                 # Миграции базы данных PostgreSQL
+│   ├── 001_yandex_promo_progress.sql
+│   └── 002_yandex_music_promo.sql
+│
 ├── 📂 config/                     # Конфигурационные файлы
 │   ├── texts.js                   # Тексты бота (мультиязычность)
 │   └── 0.txt                      # (служебный файл)
@@ -69,6 +73,7 @@ SCLOUDMUSICBOT2.0-main/
 │   ├── expiring-users.ejs        # Пользователи с истекающим Premium
 │   ├── settings.ejs              # Настройки приложения
 │   ├── texts.ejs                 # Управление текстами
+│   ├── promo-campaigns.ejs       # Управление рекламой (новое)
 │   ├── admin.ejs                 # (legacy)
 │   ├── partials/                 # Частичные шаблоны
 │   │   └── users-table.ejs       # Таблица пользователей
@@ -124,9 +129,13 @@ SCLOUDMUSICBOT2.0-main/
 - Скачивает через yt-dlp, загружает в Telegram
 
 ### 📊 **routes/** + **views/** - Админ-панель
-- Express роуты для веб-интерфейса
+- Express роуты для веб-интерфейса (динамически вынесены в `index.js`, исходные файлы в `routes/` сохранены как legacy)
 - EJS шаблоны для отображения
-- Управление пользователями, статистика, рассылки
+- Управление пользователями, статистика, рассылки, управление рекламными кампаниями (`promo-campaigns.ejs`)
+
+### 📂 **migrations/** - Миграции базы данных
+- `001_yandex_promo_progress.sql` — структуры для системной РК «Баланс телефона»
+- `002_yandex_music_promo.sql` — структуры для новой системы рекламы (кампания Яндекс Музыки + кастомные РК)
 
 ### 🛠 **lib/** - Утилиты
 - `TaskQueue.js` - Очередь задач с приоритетами

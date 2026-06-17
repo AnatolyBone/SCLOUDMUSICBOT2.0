@@ -468,44 +468,60 @@ async function checkAndSendGenericPromo(
   }
 }
 
-function checkAndSendYandexPromo(userId, user) {
-  const progress = Number(user?.yandex_promo_progress);
-  const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
-  if (!user || progress !== 3 || promoAlready) return;
+async function checkAndSendYandexPromo(userId, user) {
+  try {
+    const campaigns = await db.getPromoCampaigns();
+    const campaign = campaigns.find(c => c.id === 1);
+    if (!campaign || !campaign.is_active) return;
 
-  checkAndSendGenericPromo(
-    userId,
-    user,
-    'yandex_promo_shown',
-    3,
-    db.markYandexPromoShown,
-    'yandex_promo_message',
-    'yandex_promo_button',
-    'yandex_promo_url',
-    YANDEX_PROMO_URL_FALLBACK,
-    2500,
-    'YandexPromo'
-  );
+    const progress = Number(user?.yandex_promo_progress);
+    const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
+    if (!user || progress !== 3 || promoAlready) return;
+
+    checkAndSendGenericPromo(
+      userId,
+      user,
+      'yandex_promo_shown',
+      3,
+      db.markYandexPromoShown,
+      'yandex_promo_message',
+      'yandex_promo_button',
+      'yandex_promo_url',
+      YANDEX_PROMO_URL_FALLBACK,
+      2500,
+      'YandexPromo'
+    );
+  } catch (e) {
+    console.error('[YandexPromo] Ошибка проверки активности:', e.message);
+  }
 }
 
-function checkAndSendYandexMusicPromo(userId, user) {
-  const downloads = Number(user?.total_downloads);
-  const promoAlready = user?.yandex_music_promo_shown === true || user?.yandex_music_promo_shown === 'true';
-  if (!user || downloads < YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD || promoAlready) return;
+async function checkAndSendYandexMusicPromo(userId, user) {
+  try {
+    const campaigns = await db.getPromoCampaigns();
+    const campaign = campaigns.find(c => c.id === 2);
+    if (!campaign || !campaign.is_active) return;
 
-  checkAndSendGenericPromo(
-    userId,
-    user,
-    'yandex_music_promo_shown',
-    YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD,
-    db.markYandexMusicPromoShown,
-    'yandex_music_promo_message',
-    'yandex_music_promo_button',
-    'yandex_music_promo_url',
-    'https://music.yandex.ru',
-    3000,
-    'YandexMusicPromo'
-  );
+    const downloads = Number(user?.total_downloads);
+    const promoAlready = user?.yandex_music_promo_shown === true || user?.yandex_music_promo_shown === 'true';
+    if (!user || downloads < YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD || promoAlready) return;
+
+    checkAndSendGenericPromo(
+      userId,
+      user,
+      'yandex_music_promo_shown',
+      YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD,
+      db.markYandexMusicPromoShown,
+      'yandex_music_promo_message',
+      'yandex_music_promo_button',
+      'yandex_music_promo_url',
+      'https://music.yandex.ru',
+      3000,
+      'YandexMusicPromo'
+    );
+  } catch (e) {
+    console.error('[YandexMusicPromo] Ошибка проверки активности:', e.message);
+  }
 }
 
 // Проверка и отправка кастомных промо-кампаний (динамические)
