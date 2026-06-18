@@ -288,6 +288,14 @@
 - `progress` (integer, default 0) — количество скачиваний пользователем в рамках данной РК.
 - `shown` (boolean, default false) — флаг показа этой РК пользователю.
 
+### 4. Таблица `user_actions_log`
+Хранит логи действий пользователей и административных изменений тарифов.
+- `id` (serial, primary key) — уникальный идентификатор лога.
+- `user_id` (bigint) — Telegram ID пользователя.
+- `action_type` (varchar) — тип действия (например, `tariff_changed_by_admin`, `bonus_received`, `banned_by_admin`).
+- `details` (jsonb) — параметры действия (при изменении тарифа содержит `new_limit`, `days`, `mode`).
+- `created_at` (timestamp with time zone) — дата и время действия.
+
 ---
 
 ## 🔄 **СХЕМА ПОТОКА ДАННЫХ**
