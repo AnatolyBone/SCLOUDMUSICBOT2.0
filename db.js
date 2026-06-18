@@ -1439,6 +1439,8 @@ export async function resetStaleBroadcasts() {
 
 /* ========================= Прочее ========================= */
 
+export async function resetOtherTariffsToFree() {
+  console.log('[DB-Admin] Начинаю сброс нестандартных тарифов...');
   const sql = `
     UPDATE users
     SET
