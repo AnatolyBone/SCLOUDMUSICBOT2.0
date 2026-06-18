@@ -210,7 +210,28 @@ export async function createUser(id, firstName, username, referrerId = null, ref
   await query(sql, [id, firstName, username, referrerId, safeSource]);
 }
 
+const userCache = new Map();
+const USER_CACHE_TTL = 1500;
+
+function cleanUserCache() {
+  const now = Date.now();
+  for (const [key, val] of userCache.entries()) {
+    if (now - val.timestamp > USER_CACHE_TTL) {
+      userCache.delete(key);
+    }
+  }
+}
+
 export async function getUser(id, firstName = '', username = '', startPayload = null) {
+  const cacheKey = String(id);
+  const now = Date.now();
+  if (!startPayload && userCache.has(cacheKey)) {
+    const cached = userCache.get(cacheKey);
+    if (now - cached.timestamp < USER_CACHE_TTL) {
+      return cached.data;
+    }
+  }
+
   const sqlSelect = `
     SELECT 
       *, 
@@ -240,6 +261,8 @@ export async function getUser(id, firstName = '', username = '', startPayload = 
         }
       }
     }
+    cleanUserCache();
+    userCache.set(cacheKey, { timestamp: Date.now(), data: user });
     return user;
   } else {
     // === НОВЫЙ ПОЛЬЗОВАТЕЛЬ ===
@@ -297,6 +320,7 @@ export async function updateUserField(id, updates) {
   const sql = `UPDATE users SET ${setClauses} WHERE id = $1`;
   try {
     await query(sql, [id, ...values]);
+    userCache.delete(String(id));
   } catch (err) {
     console.error(`[DB] Ошибка при обновлении пользователя ${id} через SQL:`, err.message);
     throw new Error('Не удалось обновить пользователя.');
@@ -376,27 +400,24 @@ export async function getPaginatedUsers(options) {
     const now = "NOW()"; 
 
     if (tariff === 'Plus') {
-      // Лимит 30 И активная подписка
-      whereClauses.push(`premium_limit = 30 AND premium_until > ${now}`);
+      whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30) AND premium_until > ${now}`);
     } 
     else if (tariff === 'Pro') {
-      // Лимит 100 И активная подписка
-      whereClauses.push(`premium_limit = 100 AND premium_until > ${now}`);
+      whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) AND premium_until > ${now}`);
     } 
     else if (tariff === 'Unlimited') {
-      // Лимит 10000 (обычно дается навсегда или надолго)
-      whereClauses.push(`premium_limit >= 10000`);
+      whereClauses.push(`premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)`);
     } 
     else if (tariff === 'Free') {
-      // Сюда попадают:
-      // 1. Те, у кого лимит 5 (новый стандарт)
-      // 2. Те, у кого лимит 10 (старый стандарт, чтобы они не пропали)
-      // 3. Те, у кого подписка (любая) закончилась или её нет
-      whereClauses.push(`(premium_limit <= 10 OR premium_until IS NULL OR premium_until <= ${now})`);
+      whereClauses.push(`(premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until <= ${now})`);
     } 
     else if (tariff === 'Other') {
-      // На всякий случай, если появятся какие-то нестандартные лимиты (например, 50)
-      whereClauses.push(`(premium_limit NOT IN (5, 10, 30, 100) AND premium_limit < 10000 AND premium_until > ${now})`);
+      whereClauses.push(`(premium_limit NOT IN (
+        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
+        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
+        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
+      ) AND premium_limit < 10000 AND premium_until > ${now})`);
     }
   }
 
@@ -506,23 +527,31 @@ export async function getUsersAsCsv(options = {}) {
 
   // тариф
   if (tariff) {
-    if (tariff === 'Free') whereClauses.push('premium_limit <= 5');
-    else if (tariff === 'Plus') whereClauses.push('premium_limit = 30');
-    else if (tariff === 'Pro') whereClauses.push('premium_limit = 100');
-    else if (tariff === 'Unlimited') whereClauses.push('premium_limit >= 10000');
+    if (tariff === 'Free') whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`);
+    else if (tariff === 'Plus') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)`);
+    else if (tariff === 'Pro') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100)`);
+    else if (tariff === 'Unlimited') whereClauses.push(`premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)`);
     else if (tariff === 'Other') {
-      whereClauses.push('(premium_limit IS NULL OR (premium_limit NOT IN (5,30,100) AND premium_limit < 10000))');
+      whereClauses.push(`(premium_limit IS NULL OR (
+        premium_limit NOT IN (
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
+        )
+        AND premium_limit < 10000
+      ))`);
     }
   }
 
   // состояние премиума
   if (premium) {
     if (premium === 'active') {
-      whereClauses.push('premium_limit > 5 AND (premium_until IS NULL OR premium_until >= NOW())');
+      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (premium_until IS NULL OR premium_until >= NOW())`);
     } else if (premium === 'expired') {
-      whereClauses.push('premium_limit > 5 AND premium_until IS NOT NULL AND premium_until < NOW()');
+      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND premium_until IS NOT NULL AND premium_until < NOW()`);
     } else if (premium === 'free') {
-      whereClauses.push('premium_limit <= 5');
+      whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`);
     }
   }
 
@@ -1310,9 +1339,9 @@ export async function getUsersForBroadcastBatch(broadcastId, audience, limit) {
       AND id NOT IN (SELECT user_id FROM broadcast_log WHERE broadcast_id = $1)
   `;
   if (audience === 'free_users') {
-    sql += ` AND premium_limit <= 5`;
+    sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`;
   } else if (audience === 'premium_users') {
-    sql += ` AND premium_limit > 5 AND (premium_until IS NULL OR premium_until >= NOW())`;
+    sql += ` AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (premium_until IS NULL OR premium_until >= NOW())`;
   }
   sql += ` LIMIT $2`;
   const { rows } = await query(sql, [broadcastId, limit]);
@@ -1342,9 +1371,9 @@ export async function getBroadcastProgress(broadcastId, audience) {
     
     // ВАЖНО: сопоставляем ключи с теми, что используются в getUsersForBroadcastBatch
     if (audience === 'free_users') {
-      sql += ` AND premium_limit <= 5`;
+      sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`;
     } else if (audience === 'premium_users') {
-      sql += ` AND (premium_limit > 5 AND (premium_until IS NULL OR premium_until >= NOW()))`;
+      sql += ` AND (premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (premium_until IS NULL OR premium_until >= NOW()))`;
     }
 
     const totalResult = await query(sql);

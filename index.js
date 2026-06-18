@@ -756,10 +756,22 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       // Активные тарифы
       pool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE premium_limit IN (5, 10) OR (premium_until IS NOT NULL AND premium_until < NOW())) AS free,
-          COUNT(*) FILTER (WHERE premium_limit BETWEEN 6 AND 30 AND premium_limit <> 10 AND (premium_until IS NULL OR premium_until >= NOW())) AS plus,
-          COUNT(*) FILTER (WHERE premium_limit BETWEEN 31 AND 100 AND (premium_until IS NULL OR premium_until >= NOW())) AS pro,
-          COUNT(*) FILTER (WHERE premium_limit > 100 AND (premium_until IS NULL OR premium_until >= NOW())) AS unlimited
+          COUNT(*) FILTER (
+            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+               OR (premium_until IS NOT NULL AND premium_until < NOW())
+          ) AS free,
+          COUNT(*) FILTER (
+            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)
+              AND (premium_until IS NULL OR premium_until >= NOW())
+          ) AS plus,
+          COUNT(*) FILTER (
+            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100)
+              AND (premium_until IS NULL OR premium_until >= NOW())
+          ) AS pro,
+          COUNT(*) FILTER (
+            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
+              AND (premium_until IS NULL OR premium_until >= NOW())
+          ) AS unlimited
         FROM users
       `),
       // Другие
@@ -768,7 +780,12 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         FROM users
         WHERE premium_limit IS NULL
            OR (
-             premium_limit NOT IN (5, 10, 30, 100, 10000)
+             premium_limit NOT IN (
+               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
+               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
+               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
+             )
              AND (premium_until IS NULL OR premium_until >= NOW())
            )
       `),
@@ -778,7 +795,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         FROM users
         WHERE premium_until IS NOT NULL
           AND premium_until < NOW()
-          AND premium_limit NOT IN (5, 10)
+          AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
       `),
       // Статистика промо Яндекс (воронка акции по yandex_promo_progress; lifetime отдельно)
       pool.query(`
