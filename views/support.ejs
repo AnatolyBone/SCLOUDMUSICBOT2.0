@@ -1,0 +1,238 @@
+<%# views/support.ejs %>
+
+<%- contentFor('styles') %>
+<style>
+  .support-container {
+    height: calc(100vh - 120px);
+    min-height: 500px;
+  }
+  .tickets-list {
+    overflow-y: auto;
+    height: 100%;
+    border-right: 1px solid var(--bs-border-color);
+  }
+  .chat-area {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .chat-history {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 1.5rem;
+    background-color: var(--bs-tertiary-bg);
+    border-bottom: 1px solid var(--bs-border-color);
+  }
+  .message-bubble {
+    max-width: 70%;
+    padding: 0.75rem 1rem;
+    border-radius: 1rem;
+    margin-bottom: 1rem;
+    position: relative;
+    word-wrap: break-word;
+  }
+  .message-user {
+    background-color: var(--bs-secondary-bg);
+    color: var(--bs-body-color);
+    align-self: flex-start;
+    border-bottom-left-radius: 0.25rem;
+    border: 1px solid var(--bs-border-color);
+  }
+  .message-admin {
+    background-color: #0d6efd;
+    color: #fff;
+    align-self: flex-end;
+    border-bottom-right-radius: 0.25rem;
+  }
+  .message-time {
+    font-size: 0.75rem;
+    opacity: 0.7;
+    margin-top: 0.25rem;
+    display: block;
+    text-align: right;
+  }
+  .ticket-item.active {
+    background-color: var(--bs-secondary-bg);
+    border-left: 4px solid #0d6efd;
+  }
+  .ticket-item {
+    transition: background-color 0.2s;
+    border-bottom: 1px solid var(--bs-border-color-translucent);
+  }
+  .ticket-item:hover {
+    background-color: var(--bs-tertiary-bg);
+  }
+</style>
+
+<%- contentFor('body') %>
+
+<% 
+  const formatDate = (s) => {
+    if (!s) return '';
+    try {
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) + ' ' + d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+    } catch {
+      return '';
+    }
+  };
+
+  const escapeHtml = (str) => {
+    if (str === undefined || str === null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  };
+%>
+
+<div class="card shadow-sm support-container">
+  <div class="row g-0 h-100">
+    
+    <%# --- Левая колонка: список тикетов --- %>
+    <div class="col-md-4 col-lg-3 d-flex flex-column h-100 tickets-list">
+      <div class="p-3 border-bottom bg-light d-flex justify-content-between align-items-center">
+        <h5 class="m-0 fw-bold"><i class="bi bi-chat-dots-fill me-2 text-primary"></i>Диалоги</h5>
+        <span class="badge bg-primary rounded-pill">Всего: <%= tickets.length %></span>
+      </div>
+      
+      <div class="list-group list-group-flush flex-grow-1 overflow-auto">
+        <% if (tickets.length === 0) { %>
+          <div class="p-4 text-center text-muted">
+            <i class="bi bi-chat-left-quote fs-2 mb-2 d-block opacity-50"></i>
+            <small>Нет активных обращений</small>
+          </div>
+        <% } else { %>
+          <% tickets.forEach(ticket => { %>
+            <a href="/support/<%= ticket.user_id %>" 
+               class="list-group-item list-group-item-action ticket-item p-3 <%= activeUserId == ticket.user_id ? 'active' : '' %>">
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <span class="fw-bold text-truncate" style="max-width: 70%;">
+                  <%- escapeHtml(ticket.first_name) || 'Пользователь' %>
+                </span>
+                <small class="text-muted" style="font-size: 0.75rem;">
+                  <%= formatDate(ticket.last_message_time) %>
+                </small>
+              </div>
+              <div class="d-flex justify-content-between align-items-center">
+                <span class="text-muted small text-truncate flex-grow-1 me-2" style="max-width: 80%;">
+                  <%= ticket.last_message %>
+                </span>
+                <% if (ticket.unread_count > 0) { %>
+                  <span class="badge bg-danger rounded-pill small"><%= ticket.unread_count %></span>
+                <% } %>
+              </div>
+              <div class="mt-1 d-flex justify-content-between align-items-center">
+                <span class="text-secondary" style="font-size: 0.75rem;">ID: <%= ticket.user_id %></span>
+                <% if (ticket.username) { %>
+                  <span class="text-primary" style="font-size: 0.75rem;">@<%= ticket.username %></span>
+                <% } %>
+              </div>
+            </a>
+          <% }); %>
+        <% } %>
+      </div>
+    </div>
+
+    <%# --- Правая колонка: чат --- %>
+    <div class="col-md-8 col-lg-9 h-100">
+      <% if (activeUserId) { %>
+        <% 
+          const activeTicket = tickets.find(t => t.user_id == activeUserId) || {};
+          const activeName = activeTicket.first_name || `ID ${activeUserId}`;
+        %>
+        <div class="chat-area h-100">
+          
+          <%# Шапка чата %>
+          <div class="p-3 border-bottom bg-light d-flex justify-content-between align-items-center">
+            <div>
+              <h5 class="m-0 fw-bold">
+                <%- escapeHtml(activeName) %>
+              </h5>
+              <small class="text-muted">
+                ID: <%= activeUserId %> 
+                <% if (activeTicket.username) { %>
+                  | <a href="https://t.me/<%= activeTicket.username %>" target="_blank">@<%= activeTicket.username %></a>
+                <% } %>
+                | <a href="/user/<%= activeUserId %>" target="_blank" class="text-decoration-none"><i class="bi bi-person-badge me-1"></i>Профиль в админке</a>
+              </small>
+            </div>
+            <div>
+              <a href="/support" class="btn btn-sm btn-outline-secondary d-md-none"><i class="bi bi-chevron-left me-1"></i>Назад</a>
+            </div>
+          </div>
+
+          <%# История сообщений %>
+          <div class="chat-history d-flex flex-column" id="chatHistory">
+            <% if (messages.length === 0) { %>
+              <div class="text-center text-muted my-auto">
+                <i class="bi bi-chat-square-text fs-1 mb-2 d-block opacity-50"></i>
+                Нет сообщений в истории
+              </div>
+            <% } else { %>
+              <% messages.forEach(msg => { %>
+                <div class="message-bubble <%= msg.sender === 'admin' ? 'message-admin' : 'message-user' %>">
+                  <span class="message-text"><%= msg.message_text %></span>
+                  <span class="message-time"><%= formatDate(msg.created_at) %></span>
+                </div>
+              <% }); %>
+            <% } %>
+          </div>
+
+          <%# Поле отправки ответа %>
+          <div class="p-3 border-top bg-light">
+            <form action="/support/<%= activeUserId %>/send" method="POST" id="replyForm" class="d-flex gap-2">
+              <textarea 
+                class="form-control" 
+                name="message" 
+                id="messageInput" 
+                rows="2" 
+                placeholder="Введите ваш ответ пользователю (Markdown поддерживается в боте)..."
+                required
+                autofocus
+              ></textarea>
+              <button type="submit" class="btn btn-primary d-flex align-items-center justify-content-center px-4">
+                <i class="bi bi-send-fill fs-5 me-1"></i> Отправить
+              </button>
+            </form>
+          </div>
+
+        </div>
+      <% } else { %>
+        <%# Пустой чат %>
+        <div class="h-100 d-flex flex-column justify-content-center align-items-center text-muted">
+          <i class="bi bi-chat-left-text fs-1 mb-3 text-secondary opacity-50"></i>
+          <h4>Чат техподдержки</h4>
+          <p class="small text-center opacity-75">
+            Выберите диалог из списка слева, чтобы начать переписку.<br>
+            Пользователи увидят ваши ответы непосредственно в боте.
+          </p>
+        </div>
+      <% } %>
+    </div>
+
+  </div>
+</div>
+
+<%- contentFor('scripts') %>
+<script>
+  // Прокрутка чата вниз при загрузке
+  const chatHistory = document.getElementById('chatHistory');
+  if (chatHistory) {
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+  }
+
+  // Отправка по Enter (без Shift)
+  const messageInput = document.getElementById('messageInput');
+  const replyForm = document.getElementById('replyForm');
+  if (messageInput && replyForm) {
+    messageInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (messageInput.value.trim()) {
+          replyForm.submit();
+        }
+      }
+    });
+  }
+</script>

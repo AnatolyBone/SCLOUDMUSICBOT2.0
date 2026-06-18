@@ -4,8 +4,8 @@ import { Telegraf, Markup, TelegramError } from 'telegraf';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
-import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,           // <--- ДОБАВИТЬ
-    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId} from './db.js';
+import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
+    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
 import { handleSpotifyUrl, handleQualitySelection as handleSpotifyQuality, registerSpotifyCallbacks } from './services/spotifyManager.js';
@@ -20,6 +20,7 @@ import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './service
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
+const adminReplySessions = new Map();
 const TRACKS_PER_PAGE = 5;
 
 function getYoutubeDl() {
@@ -614,6 +615,37 @@ bot.action('admin_refresh', async (ctx) => {
     await ctx.answerCbQuery('🔄 Статистика обновлена!');
     await updateAdminStatsMessage(ctx);
 });
+
+bot.action('support_enter', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        await updateUserField(ctx.from.id, 'support_mode', true);
+        await ctx.reply('✉️ Вы вошли в чат с поддержкой.\n\nНапишите ваш вопрос или проблему прямо сюда, и мы ответим вам в ближайшее время.', Markup.inlineKeyboard([
+            [Markup.button.callback('❌ Выйти из поддержки', 'support_exit')]
+        ]));
+    } catch (e) {
+        console.error('Ошибка в support_enter:', e.message);
+    }
+});
+
+bot.action('support_exit', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        await updateUserField(ctx.from.id, 'support_mode', false);
+        await ctx.reply('❌ Вы вышли из чата поддержки. Вы можете продолжать отправлять ссылки для скачивания треков.', getMainKeyboard());
+    } catch (e) {
+        console.error('Ошибка в support_exit:', e.message);
+    }
+});
+
+bot.action(/^reply_user:(.+)$/, async (ctx) => {
+    if (Number(ctx.from.id) !== Number(ADMIN_ID)) return ctx.answerCbQuery('Доступ запрещен ❌', { show_alert: true });
+    const targetUserId = ctx.match[1];
+    adminReplySessions.set(ctx.from.id, targetUserId);
+    await ctx.answerCbQuery();
+    await ctx.reply(`✍️ Введите ответ для пользователя (ID: ${targetUserId}):\n\n(Для отмены отправьте /cancel)`);
+});
+
 bot.command('referral', handleReferralCommand);
 // bot.js
 
@@ -721,10 +753,25 @@ const mytracksHandler = async (ctx) => {
     } catch (e) { console.error(`🔴 Ошибка в mytracks для ${ctx.from.id}:`, e.message); }
 };
 
+const supportCommandHandler = async (ctx) => {
+    try {
+        await updateUserField(ctx.from.id, 'support_mode', true);
+        await ctx.reply('✉️ Вы вошли в чат с поддержкой.\n\nНапишите ваш вопрос или проблему прямо сюда, и мы ответим вам в ближайшее время.', Markup.inlineKeyboard([
+            [Markup.button.callback('❌ Выйти из поддержки', 'support_exit')]
+        ]));
+    } catch (e) {
+        console.error('Ошибка при входе в поддержку:', e.message);
+        await ctx.reply('Не удалось войти в чат поддержки. Попробуйте еще раз.').catch(() => {});
+    }
+};
+
 const helpHandler = (ctx) => ctx.reply(T('helpInfo'), { 
     parse_mode: 'HTML', 
     disable_web_page_preview: true,
-    ...getMainKeyboard()
+    ...getMainKeyboard(),
+    ...Markup.inlineKeyboard([
+        [Markup.button.callback('✉️ Написать в поддержку', 'support_enter')]
+    ])
 });
 const upgradeHandler = (ctx) => ctx.reply(T('upgradeInfo'), { 
     parse_mode: 'HTML', 
@@ -742,6 +789,7 @@ bot.command('menu', menuHandler);
 bot.command('subs', menuHandler);
 bot.command('mytracks', mytracksHandler);
 bot.command('help', helpHandler);
+bot.command('support', supportCommandHandler);
 bot.command('upgrade', upgradeHandler);
 bot.command('tariffs', upgradeHandler);
 bot.command('shazam', recognizeHandler);
@@ -1314,6 +1362,63 @@ bot.on('text', async (ctx) => {
     if (ctx.chat.type !== 'private') return;
     
     const text = ctx.message.text;
+
+    // --- Обработка сессии ответа админа ---
+    const adminId = ctx.from.id;
+    if (Number(adminId) === Number(ADMIN_ID) && adminReplySessions.has(adminId)) {
+        const targetUserId = adminReplySessions.get(adminId);
+        const replyText = ctx.message.text;
+        
+        if (replyText === '/cancel') {
+            adminReplySessions.delete(adminId);
+            return await ctx.reply('❌ Отправка ответа отменена.', getMainKeyboard());
+        }
+        
+        try {
+            await bot.telegram.sendMessage(targetUserId, `✉️ <b>Ответ от поддержки:</b>\n\n${replyText}`, { parse_mode: 'HTML' });
+            await createSupportMessage(targetUserId, replyText, 'admin');
+            adminReplySessions.delete(adminId);
+            await ctx.reply('✅ Ответ успешно отправлен пользователю!', getMainKeyboard());
+        } catch (e) {
+            console.error(`Ошибка при отправке ответа пользователю ${targetUserId}:`, e.message);
+            await ctx.reply(`❌ Не удалось отправить ответ: ${e.message}`, getMainKeyboard());
+        }
+        return;
+    }
+
+    // --- Обработка режима поддержки для пользователя ---
+    const user = ctx.state.user;
+    if (user && user.support_mode) {
+        if (text === '/exit') {
+            await updateUserField(ctx.from.id, 'support_mode', false);
+            return await ctx.reply('❌ Вы вышли из чата поддержки.', getMainKeyboard());
+        }
+
+        try {
+            await createSupportMessage(ctx.from.id, text, 'user');
+            
+            const safeName = ctx.from.first_name ? ctx.from.first_name.replace(/</g, '&lt;').replace(/>/g, '&gt;') : 'Без имени';
+            const adminMessage = `✉️ <b>Новое обращение в поддержку!</b>\n` +
+                `<b>От:</b> ${safeName} (ID: <code>${ctx.from.id}</code>, @${ctx.from.username || ''})\n\n` +
+                `<i>"${text}"</i>`;
+
+            await bot.telegram.sendMessage(ADMIN_ID, adminMessage, {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('✍️ Ответить', `reply_user:${ctx.from.id}`)]
+                ])
+            });
+            
+            await ctx.reply('✅ Ваше сообщение отправлено в поддержку. Ожидайте ответа.', Markup.inlineKeyboard([
+                [Markup.button.callback('❌ Выйти из поддержки', 'support_exit')]
+            ]));
+        } catch (e) {
+            console.error('Ошибка при обработке сообщения поддержки:', e.message);
+            await ctx.reply('❌ Не удалось отправить сообщение. Попробуйте еще раз.').catch(() => {});
+        }
+        return;
+    }
+    
     if (text.startsWith('/')) return;
     if (Object.values(allTextsSync()).includes(text)) return;
     

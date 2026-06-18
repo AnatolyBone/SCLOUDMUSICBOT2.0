@@ -65,7 +65,12 @@ import {
   updatePromoCampaign,
   deletePromoCampaign,
   getPromoStats,
-  resetPromoCampaign
+  resetPromoCampaign,
+  runSupportSystemMigration,
+  createSupportMessage,
+  getSupportTickets,
+  getSupportMessages,
+  markSupportMessagesAsRead
 } from './db.js';
 import { initializeWorkers } from './services/workerManager.js';
 import { runBroadcastBatch } from './services/broadcastManager.js';
@@ -109,6 +114,7 @@ async function startApp() {
     // Запускаем сервер и настраиваем Express СРАЗУ, чтобы Render.com определил порт
     const server = app.listen(PORT, () => console.log(`✅ [App] Сервер запущен на порту ${PORT}.`));
     setupExpress();
+    await runSupportSystemMigration();
     
     // Остальная инициализация
     await loadTexts(true);
@@ -1446,6 +1452,65 @@ res.redirect('/dashboard?resetExpired=err');
     } catch (e) {
       console.error('[Expiring Users] Error:', e);
       res.status(500).send('Ошибка сервера');
+    }
+  });
+
+  // --- Роуты службы техподдержки ---
+
+  app.get('/support', requireAuth, async (req, res) => {
+    try {
+      const tickets = await getSupportTickets();
+      res.render('support', { 
+        title: 'Техподдержка', 
+        page: 'support', 
+        tickets, 
+        activeUserId: null, 
+        messages: [] 
+      });
+    } catch (e) {
+      console.error('[Support] Error:', e);
+      res.status(500).send('Ошибка сервера');
+    }
+  });
+
+  app.get('/support/:userId', requireAuth, async (req, res) => {
+    const { userId } = req.params;
+    try {
+      const tickets = await getSupportTickets();
+      const messages = await getSupportMessages(userId);
+      await markSupportMessagesAsRead(userId);
+      res.render('support', { 
+        title: `Чат с пользователем ID ${userId}`, 
+        page: 'support', 
+        tickets, 
+        activeUserId: userId, 
+        messages 
+      });
+    } catch (e) {
+      console.error('[Support Details] Error:', e);
+      res.status(500).send('Ошибка сервера');
+    }
+  });
+
+  app.post('/support/:userId/send', requireAuth, async (req, res) => {
+    const { userId } = req.params;
+    const { message } = req.body;
+    
+    if (!message || !message.trim()) {
+      return res.status(400).send('Сообщение не может быть пустым');
+    }
+
+    try {
+      // 1. Отправляем в Telegram
+      await bot.telegram.sendMessage(userId, `✉️ <b>Ответ от поддержки:</b>\n\n${message}`, { parse_mode: 'HTML' });
+      
+      // 2. Сохраняем в БД
+      await createSupportMessage(userId, message, 'admin');
+      
+      res.redirect(`/support/${userId}`);
+    } catch (e) {
+      console.error('[Support Send] Error:', e);
+      res.status(500).send('Ошибка при отправке сообщения: ' + e.message);
     }
   });
 

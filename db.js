@@ -274,7 +274,7 @@ const allowedFields = new Set([
   'active', 'referred_count', 'promo_1plus1_used', 'has_reviewed',
   'notified_about_expiration',
   'notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d',
-  'can_receive_broadcasts'
+  'can_receive_broadcasts', 'support_mode'
 ]);
 
 export async function updateUserField(id, updates) {
@@ -2199,6 +2199,88 @@ export async function resetPromoCampaign(id) {
     // Для кастомных кампаний сбрасываем как статус shown, так и прогресс, чтобы отсчет пошел заново
     await query('UPDATE user_promo_progress SET shown = false, progress = 0 WHERE campaign_id = $1', [campaignId]);
   }
+}
+
+/* ========================= Служба техподдержки (Тикеты) ========================= */
+
+export async function runSupportSystemMigration() {
+  const sql = `
+    -- 1. Добавление колонки режима поддержки для пользователей
+    ALTER TABLE users 
+    ADD COLUMN IF NOT EXISTS support_mode boolean DEFAULT false;
+
+    -- 2. Создание таблицы сообщений поддержки
+    CREATE TABLE IF NOT EXISTS support_messages (
+      id SERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      message_text TEXT NOT NULL,
+      sender VARCHAR(50) NOT NULL CHECK (sender IN ('user', 'admin')),
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      is_read BOOLEAN DEFAULT FALSE
+    );
+
+    -- Индекс для быстрого поиска сообщений конкретного пользователя
+    CREATE INDEX IF NOT EXISTS idx_support_messages_user ON support_messages(user_id);
+  `;
+  try {
+    await query(sql);
+    console.log('✅ [DB] Автоматическая миграция службы поддержки выполнена успешно.');
+  } catch (err) {
+    console.error('❌ [DB] Ошибка автоматической миграции службы поддержки:', err.message);
+  }
+}
+
+export async function createSupportMessage(userId, text, sender) {
+  const sql = `
+    INSERT INTO support_messages (user_id, message_text, sender, is_read)
+    VALUES ($1, $2, $3, $4)
+    RETURNING *
+  `;
+  // Если отправитель - админ, сообщение считается прочитанным по умолчанию
+  const isRead = sender === 'admin';
+  const { rows } = await query(sql, [userId, text, sender, isRead]);
+  return rows[0];
+}
+
+export async function getSupportTickets() {
+  const sql = `
+    SELECT 
+      u.id as user_id, 
+      u.first_name, 
+      u.username,
+      m.message_text as last_message,
+      m.created_at as last_message_time,
+      (SELECT COUNT(*)::int FROM support_messages WHERE user_id = u.id AND sender = 'user' AND is_read = false) as unread_count
+    FROM (
+      SELECT DISTINCT ON (user_id) user_id, message_text, created_at
+      FROM support_messages
+      ORDER BY user_id, created_at DESC
+    ) m
+    JOIN users u ON m.user_id = u.id
+    ORDER BY m.created_at DESC
+  `;
+  const { rows } = await query(sql);
+  return rows;
+}
+
+export async function getSupportMessages(userId) {
+  const sql = `
+    SELECT * 
+    FROM support_messages 
+    WHERE user_id = $1 
+    ORDER BY created_at ASC
+  `;
+  const { rows } = await query(sql, [userId]);
+  return rows;
+}
+
+export async function markSupportMessagesAsRead(userId) {
+  const sql = `
+    UPDATE support_messages 
+    SET is_read = true 
+    WHERE user_id = $1 AND sender = 'user' AND is_read = false
+  `;
+  await query(sql, [userId]);
 }
 
 
