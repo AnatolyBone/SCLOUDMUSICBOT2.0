@@ -159,6 +159,18 @@ const telegrafOptions = { handlerTimeout: 300_000 };
 // }
 export const bot = new Telegraf(BOT_TOKEN, telegrafOptions);
 
+// --- Режим обслуживания (Глобальный Middleware) ---
+bot.use(async (ctx, next) => {
+    if (isShuttingDown()) return;
+    if (isMaintenanceMode() && ctx.from && Number(ctx.from.id) !== Number(ADMIN_ID)) {
+        if (ctx.callbackQuery) {
+            return await ctx.answerCbQuery('⏳ Бот на плановом обслуживании.', { show_alert: true });
+        }
+        return await ctx.reply('⏳ Бот на плановом обслуживании.');
+    }
+    return await next();
+});
+
 // Регистрируем Spotify callbacks
 registerSpotifyCallbacks(bot);
 
@@ -896,15 +908,7 @@ function generateSelectionMenu(userId) {
 bot.action('pl_nop', (ctx) => ctx.answerCbQuery());
 
 async function processPlaylistDownload(ctx, session, isAll, userId) {
-    if (!session.fullTracks) {
-        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько минут.');
-        
-        const youtubeDl = getYoutubeDl();
-        const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
-        session.tracks = fullData.entries.filter(track => track && track.url);
-        session.fullTracks = true;
-    }
-
+    // 1. Проверяем лимиты ДО загрузки полных данных плейлиста
     const user = await getUser(userId);
     const remainingLimit = user.premium_limit - (user.downloads_today || 0);
 
@@ -923,6 +927,15 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
         playlistSessions.delete(userId);
         return;
+    }
+
+    if (!session.fullTracks) {
+        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько минут.');
+        
+        const youtubeDl = getYoutubeDl();
+        const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+        session.tracks = fullData.entries.filter(track => track && track.url);
+        session.fullTracks = true;
     }
 
     const playlistLimit = await getPlaylistLimitForUser(userId);
@@ -985,6 +998,24 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         return await ctx.answerCbQuery('❗️ Сессия выбора истекла.', { show_alert: true });
     }
     
+    // 1. Проверяем лимиты ДО загрузки названий!
+    const user = await getUser(userId);
+    const remainingLimit = user.premium_limit - (user.downloads_today || 0);
+    if (remainingLimit <= 0) {
+        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+        const bonusText = bonusAvailable
+            ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+            : '';
+        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+        if (bonusAvailable) {
+            extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
+        }
+        await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
+        playlistSessions.delete(userId);
+        return await ctx.answerCbQuery('Лимит исчерпан');
+    }
+
     // Проверяем, есть ли у нас уже полные данные с названиями
     if (!session.fullTracks) {
         // ==========================================================
@@ -1399,9 +1430,6 @@ bot.on(['voice', 'video_note', 'audio', 'video'], handleMediaForShazam);
 
 bot.on('text', async (ctx) => {
     if (isShuttingDown()) return;
-    if (isMaintenanceMode() && ctx.from.id !== ADMIN_ID) {
-        return await ctx.reply('⏳ Бот на плановом обслуживании.');
-    }
     
     if (ctx.chat.type !== 'private') return;
     
