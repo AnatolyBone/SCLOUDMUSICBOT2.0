@@ -264,6 +264,54 @@
     </div>
   </div>
 
+  <!-- Управление кнопкой VPN -->
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-header fw-semibold bg-light">
+        <i class="bi bi-shield-fill-check me-2"></i>Управление VPN в боте
+      </div>
+      <div class="card-body">
+        <form action="/settings/update" method="POST" id="vpnSettingsForm"
+              onsubmit="document.getElementById('useVpnValue').value = document.getElementById('useVpn').checked ? 'true' : 'false';">
+          <input type="hidden" id="useVpnValue" name="use_vpn" value="<%= settings.use_vpn || 'true' %>">
+          
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" id="useVpn"
+                   <%= settings.use_vpn !== 'false' ? 'checked' : '' %> style="width: 2.5rem; height: 1.25rem;">
+            <label class="form-check-label fw-semibold" for="useVpn">Отображать кнопку VPN в меню бота</label>
+          </div>
+
+          <div class="mb-3">
+            <label for="vpn-button-text" class="form-label small text-muted">Текст кнопки в меню</label>
+            <input type="text" class="form-control form-control-sm" id="vpn-button-text" name="vpn_button_text" 
+                   value="<%= settings.vpn_button_text || '🔐 VPN (YouTube 4K)' %>" required>
+          </div>
+
+          <div class="mb-3">
+            <label for="vpn-button-url-text" class="form-label small text-muted">Текст кнопки ссылки</label>
+            <input type="text" class="form-control form-control-sm" id="vpn-button-url-text" name="vpn_button_url_text" 
+                   value="<%= settings.vpn_button_url_text || '⚡️ Попробовать бесплатно' %>" required>
+          </div>
+
+          <div class="mb-3">
+            <label for="vpn-link" class="form-label small text-muted">Ссылка (URL или юзернейм бота)</label>
+            <input type="text" class="form-control form-control-sm" id="vpn-link" name="vpn_link" 
+                   value="<%= settings.vpn_link || 'https://t.me/southnetworksvpnbot?start=783629145' %>" required>
+          </div>
+
+          <div class="mb-3">
+            <label for="vpn-message-text" class="form-label small text-muted">Сообщение рекомендации (HTML)</label>
+            <textarea class="form-control form-control-sm" id="vpn-message-text" name="vpn_message_text" rows="4" required><%= settings.vpn_message_text || '' %></textarea>
+          </div>
+
+          <button type="submit" class="btn btn-sm btn-primary w-100 fw-semibold">
+            <i class="bi bi-check-lg me-1"></i>Сохранить настройки VPN
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Информация о системе -->
   <div class="col-lg-6">
     <div class="card shadow-sm">

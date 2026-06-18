@@ -19,6 +19,16 @@ const DEFAULTS = {
   use_youtube: 'true',        // Включен ли сервис YouTube
   use_soundcloud: 'true',     // Включен ли сервис SoundCloud
   maintenance_mode: 'false',  // Включен ли режим обслуживания
+  use_vpn: 'true',            // Отображать ли кнопку VPN
+  vpn_button_text: '🔐 VPN (YouTube 4K)',
+  vpn_message_text: '🚀 <b>YouTube тормозит, а Spotify не работает?</b>\n\n' +
+    'Рекомендую VPN, которым пользуюсь сам — <b>South Networks</b>.\n\n' +
+    '✅ YouTube в 4K без лагов\n' +
+    '✅ Instagram, Netflix, Spotify\n' +
+    '✅ Высокая скорость (приватные серверы)\n\n' +
+    '🎁 <b>Дают 2 дня бесплатного теста</b> всем новым пользователям. Попробуйте сами:',
+  vpn_button_url_text: '⚡️ Попробовать бесплатно',
+  vpn_link: 'https://t.me/southnetworksvpnbot?start=783629145',
 };
 
 /**

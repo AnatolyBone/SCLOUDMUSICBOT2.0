@@ -87,6 +87,10 @@ async function sendToUser(bot, task, user, retryCount = 0) {
       try {
         await updateUserField(user.id, { can_receive_broadcasts: false });
       } catch (err) {}
+      try {
+        if (task.id) await logBroadcastSent(task.id, user.id);
+      } catch (err) {}
+      return { status: 'blocked', userId: user.id };
     }
     
     // Логируем неудачу, чтобы не зацикливаться
@@ -112,10 +116,11 @@ export async function runBroadcastBatch(bot, task, users) {
   const stats = {
     total: results.length,
     success: results.filter(r => r.status === 'ok').length,
+    blocked: results.filter(r => r.status === 'blocked').length,
     errors: results.filter(r => r.status === 'error').length
   };
   
-  console.log(`[Broadcast] Batch finished: ${stats.success}/${stats.total} sent.`);
+  console.log(`[Broadcast] Batch finished: ${stats.success}/${stats.total} sent, ${stats.blocked} blocked, ${stats.errors} errors.`);
   return results;
 }
 

@@ -246,11 +246,17 @@ bot.use(async (ctx, next) => {
     await resetExpiredPremiumIfNeeded(ctx.from.id);
     return next();
 });
-const getMainKeyboard = () => Markup.keyboard([
-    [T('menu'), '🆔 Распознать', T('upgrade')],
-    [T('mytracks'), T('help')],
-    [T('vpn')]
-]).resize();
+const getMainKeyboard = () => {
+    const buttons = [
+        [T('menu'), '🆔 Распознать', T('upgrade')],
+        [T('mytracks'), T('help')]
+    ];
+    if (getSetting('use_vpn') !== 'false') {
+        const vpnText = getSetting('vpn_button_text') || '🔐 VPN (YouTube 4K)';
+        buttons.push([vpnText]);
+    }
+    return Markup.keyboard(buttons).resize();
+};
 
 bot.start(async (ctx) => {
   try {
@@ -808,23 +814,35 @@ bot.command('upgrade', upgradeHandler);
 bot.command('tariffs', upgradeHandler);
 bot.command('shazam', recognizeHandler);
 
-const VPN_MESSAGE =
-    '🚀 <b>YouTube тормозит, а Spotify не работает?</b>\n\n' +
-    'Рекомендую VPN, которым пользуюсь сам — <b>South Networks</b>.\n\n' +
-    '✅ YouTube в 4K без лагов\n' +
-    '✅ Instagram, Netflix, Spotify\n' +
-    '✅ Высокая скорость (приватные серверы)\n\n' +
-    '🎁 <b>Дают 2 дня бесплатного теста</b> всем новым пользователям. Попробуйте сами:';
+const vpnHandler = (ctx) => {
+    if (getSetting('use_vpn') === 'false') return;
 
-const vpnHandler = (ctx) => ctx.reply(VPN_MESSAGE, {
-    parse_mode: 'HTML',
-    disable_web_page_preview: true,
-    ...Markup.inlineKeyboard([
-        [Markup.button.url('⚡️ Попробовать бесплатно', 'https://t.me/southnetworksvpnbot?start=783629145')]
-    ])
-});
+    const message = getSetting('vpn_message_text') ||
+        '🚀 <b>YouTube тормозит, а Spotify не работает?</b>\n\n' +
+        'Рекомендую VPN, которым пользуюсь сам — <b>South Networks</b>.\n\n' +
+        '✅ YouTube в 4K без лагов\n' +
+        '✅ Instagram, Netflix, Spotify\n' +
+        '✅ Высокая скорость (приватные серверы)\n\n' +
+        '🎁 <b>Дают 2 дня бесплатного теста</b> всем новым пользователям. Попробуйте сами:';
 
-bot.hears(T('vpn'), vpnHandler);
+    const btnText = getSetting('vpn_button_url_text') || '⚡️ Попробовать бесплатно';
+    const btnLink = getSetting('vpn_link') || 'https://t.me/southnetworksvpnbot?start=783629145';
+
+    return ctx.reply(message, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([
+            [Markup.button.url(btnText, btnLink)]
+        ])
+    });
+};
+
+bot.hears((text) => {
+    if (getSetting('use_vpn') === 'false') return false;
+    const vpnText = getSetting('vpn_button_text') || '🔐 VPN (YouTube 4K)';
+    return text === vpnText || text === T('vpn');
+}, vpnHandler);
+
 bot.command('vpn', vpnHandler);
 
 bot.on('inline_query', async (ctx) => {

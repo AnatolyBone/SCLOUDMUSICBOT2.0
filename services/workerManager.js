@@ -142,6 +142,10 @@ function startBroadcastWorker() {
       let isDone = false;
       let reportMsgId = null; // ID сообщения для обновления прогресса
 
+      let successCount = 0;
+      let errorCount = 0;
+      let blockedCount = 0;
+
       try {
         // 1. Отправляем начальное сообщение админу
         const initialReport = await botInstance.telegram.sendMessage(
@@ -169,7 +173,12 @@ function startBroadcastWorker() {
           }
           
           // 2. Отправляем пачку
-          await runBroadcastBatch(botInstance, task, users);
+          const batchResults = await runBroadcastBatch(botInstance, task, users);
+          batchResults.forEach(r => {
+            if (r.status === 'ok') successCount++;
+            else if (r.status === 'blocked') blockedCount++;
+            else errorCount++;
+          });
 
           // 3. ОБНОВЛЯЕМ ПРОГРЕСС-БАР
           const { total, sent } = await getBroadcastProgress(task.id, task.target_audience);
@@ -199,14 +208,23 @@ function startBroadcastWorker() {
           
           // 4. Финальный отчет (редактируем то же сообщение)
           const { total, sent } = await getBroadcastProgress(task.id, task.target_audience);
+          const duration = Math.round((Date.now() - startTime) / 1000);
+          
+          const completedReport =
+            `✅ <b>Рассылка #${task.id} завершена!</b>\n` +
+            `──────────────────\n` +
+            `${drawProgressBar(sent, total)} <b>100%</b>\n\n` +
+            `👥 Всего обработано: <b>${total}</b>\n\n` +
+            `✅ Успешно: <b>${successCount}</b>\n` +
+            `🚫 Заблокировали бота: <b>${blockedCount}</b>\n` +
+            `❌ Ошибок: <b>${errorCount}</b>\n\n` +
+            `⏱ Время выполнения: <b>${duration} сек.</b>`;
+
           await botInstance.telegram.editMessageText(
             ADMIN_ID,
             reportMsgId,
             null,
-            `✅ <b>Рассылка #${task.id} завершена!</b>\n\n` +
-            `${drawProgressBar(sent, total)} <b>100%</b>\n\n` +
-            `📦 Всего отправлено: <b>${sent}</b>\n` +
-            `⏱ Время выполнения: <b>${Math.round((Date.now() - startTime) / 1000)} сек.</b>`,
+            completedReport,
             { parse_mode: 'HTML' }
           );
         }

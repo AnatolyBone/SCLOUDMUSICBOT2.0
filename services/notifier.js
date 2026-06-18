@@ -142,11 +142,12 @@ async function sendAdminReport(bot, stats) {
   if (!ADMIN_ID) return;
   
   const report = 
-    `📊 <b>Отчёт о рассылке уведомлений</b>\n\n` +
+    `📊 <b>Отчёт о рассылке уведомлений</b>\n` +
+    `──────────────────\n` +
+    `👥 Всего обработано: <b>${stats.total}</b>\n\n` +
     `✅ Успешно: <b>${stats.success}</b>\n` +
-    `❌ Ошибок: <b>${stats.errors}</b>\n` +
     `🚫 Заблокировали бота: <b>${stats.blocked}</b>\n` +
-    `👥 Всего обработано: <b>${stats.total}</b>\n` +
+    `❌ Ошибок: <b>${stats.errors}</b>\n\n` +
     `⏱ Длительность: <b>${stats.duration}с</b>`;
   
   try {
@@ -225,10 +226,8 @@ globalStats.duration = duration;
 
 console.log(`[Notifier] Завершено. Статистика:`, globalStats);
 
-// Отправляем отчёт админу
-if (globalStats.total > 0) {
-  await sendAdminReport(bot, globalStats);
-}
+// Отправляем отчёт админу всегда (чтобы админ видел исправность работы планировщика)
+await sendAdminReport(bot, globalStats);
 
 // Помечаем, что рассылка за сегодня выполнена
 await setLastNotificationDate(currentDate);
