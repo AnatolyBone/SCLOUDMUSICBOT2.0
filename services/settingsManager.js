@@ -18,6 +18,7 @@ const DEFAULTS = {
   use_spotify: 'true',        // Включен ли сервис Spotify
   use_youtube: 'true',        // Включен ли сервис YouTube
   use_soundcloud: 'true',     // Включен ли сервис SoundCloud
+  maintenance_mode: 'false',  // Включен ли режим обслуживания
 };
 
 /**

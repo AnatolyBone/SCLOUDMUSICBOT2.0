@@ -1,7 +1,7 @@
 // services/youtubeManager.js - YouTube/YouTube Music для Render Free Tier
 
 import ytdl from 'youtube-dl-exec';
-import { PROXY_URL } from '../config.js';
+import { PROXY_URL, ADMIN_ID } from '../config.js';
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
 
@@ -65,6 +65,16 @@ export async function handleYouTubeUrl(ctx, url) {
   let statusMessage = null;
   
   try {
+    // Ранняя проверка лимитов (для всех, кроме админа)
+    const isAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
+    if (!isAdmin) {
+      const user = await getUser(ctx.from.id);
+      const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
+      if (remainingLimit <= 0) {
+        return await ctx.reply('🚫 Дневной лимит загрузок исчерпан.');
+      }
+    }
+
     statusMessage = await ctx.reply('🔍 Анализирую YouTube ссылку...');
     
     const metadata = await getYouTubeMetadata(url);
@@ -77,7 +87,7 @@ export async function handleYouTubeUrl(ctx, url) {
     }
     
     const user = await getUser(ctx.from.id);
-    const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
+    const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
     
     if (remainingLimit <= 0) {
       return await ctx.telegram.editMessageText(
@@ -174,7 +184,12 @@ export async function handleYouTubeQualitySelection(ctx, sessionId, quality) {
   
   const { metadata, url, userId } = session;
   const user = await getUser(userId);
-  const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
+  const isAdmin = Number(userId) === Number(ADMIN_ID);
+  const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
+  
+  if (remainingLimit <= 0) {
+    return ctx.editMessageText('🚫 Дневной лимит загрузок исчерпан.');
+  }
   
   if (metadata.entries && metadata.entries.length > 0) {
     // Плейлист

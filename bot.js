@@ -603,7 +603,7 @@ bot.action('admin_toggle_maintenance', async (ctx) => {
         return ctx.answerCbQuery('Доступ запрещен ❌', { show_alert: true });
     }
     const current = isMaintenanceMode();
-    setMaintenanceMode(!current);
+    await setMaintenanceMode(!current);
     await ctx.answerCbQuery(`Режим обслуживания: ${!current ? 'ВКЛЮЧЕН 🛠️' : 'ВЫКЛЮЧЕН 🟢'}`);
     await updateAdminStatsMessage(ctx);
 });
@@ -669,10 +669,10 @@ bot.command('maintenance', async (ctx) => {
     const command = ctx.message.text.split(' ')[1]?.toLowerCase();
     
     if (command === 'on') {
-        setMaintenanceMode(true);
+        await setMaintenanceMode(true);
         await ctx.reply('✅ Режим обслуживания ВКЛЮЧЕН.');
     } else if (command === 'off') {
-        setMaintenanceMode(false);
+        await setMaintenanceMode(false);
         await ctx.reply('☑️ Режим обслуживания ВЫКЛЮЧЕН.');
     } else {
         await ctx.reply('ℹ️ Статус: ' + (isMaintenanceMode() ? 'ВКЛЮЧЕН' : 'ВЫКЛЮЧЕН') + '\n\nИспользуйте: `/maintenance on` или `/maintenance off`');
@@ -910,7 +910,8 @@ bot.action('pl_nop', (ctx) => ctx.answerCbQuery());
 async function processPlaylistDownload(ctx, session, isAll, userId) {
     // 1. Проверяем лимиты ДО загрузки полных данных плейлиста
     const user = await getUser(userId);
-    const remainingLimit = user.premium_limit - (user.downloads_today || 0);
+    const isAdmin = Number(userId) === Number(ADMIN_ID);
+    const remainingLimit = isAdmin ? 99999 : user.premium_limit - (user.downloads_today || 0);
 
     if (remainingLimit <= 0) {
         const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
@@ -1000,7 +1001,8 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
     
     // 1. Проверяем лимиты ДО загрузки названий!
     const user = await getUser(userId);
-    const remainingLimit = user.premium_limit - (user.downloads_today || 0);
+    const isAdmin = Number(userId) === Number(ADMIN_ID);
+    const remainingLimit = isAdmin ? 99999 : user.premium_limit - (user.downloads_today || 0);
     if (remainingLimit <= 0) {
         const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
         const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
@@ -1095,9 +1097,12 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     }
     
     // --- 0. Проверка лимитов на плейлист для тарифа ---
-    const playlistLimit = await getPlaylistLimitForUser(userId);
-    if (session.selected.size > playlistLimit) {
-        return await ctx.reply(`❌ Вы не можете выбрать более ${playlistLimit} треков за раз (лимит вашего тарифа на импорт плейлистов).`);
+    const isAdmin = Number(userId) === Number(ADMIN_ID);
+    if (!isAdmin) {
+        const playlistLimit = await getPlaylistLimitForUser(userId);
+        if (session.selected.size > playlistLimit) {
+            return await ctx.reply(`❌ Вы не можете выбрать более ${playlistLimit} треков за раз (лимит вашего тарифа на импорт плейлистов).`);
+        }
     }
     
     // Так как названия важны, оставляем проверку, что они были загружены
@@ -1107,7 +1112,7 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     
     // --- 1. Проверка лимитов пользователя ---
     const user = await getUser(userId);
-    const remainingLimit = user.premium_limit - (user.downloads_today || 0);
+    const remainingLimit = isAdmin ? 99999 : user.premium_limit - (user.downloads_today || 0);
     
     if (remainingLimit <= 0) {
   const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
@@ -1269,6 +1274,25 @@ async function processUrlInBackground(ctx, url) {
 async function handleSoundCloudUrl(ctx, url) {
     let loadingMessage;
     try {
+        // Ранняя проверка лимитов (для всех, кроме админа)
+        const isAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
+        if (!isAdmin) {
+            const user = await getUser(ctx.from.id);
+            if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
+                const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+                const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+                const bonusText = bonusAvailable
+                  ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+                  : '';
+                const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+                if (bonusAvailable) {
+                  extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
+                }
+                await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+                return;
+            }
+        }
+
         loadingMessage = await ctx.reply('🔍 Анализирую ссылку...');
         
         // 1. Расшифровываем и очищаем от рекламных меток

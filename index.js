@@ -107,7 +107,6 @@ const __dirname = path.dirname(__filename);
 // index.js -> startApp()
 
 async function startApp() {
-  setMaintenanceMode(false);
   console.log('[App] Запуск приложения...');
   const forcePolling = process.env.FORCE_POLLING === '1';
 
@@ -625,9 +624,9 @@ app.get('/settings', requireAuth, (req, res) => {
   });
 });
 
-app.post('/settings/maintenance', requireAuth, (req, res) => {
+app.post('/settings/maintenance', requireAuth, async (req, res) => {
   const enabled = req.body.enabled === 'on';
-  setMaintenanceMode(enabled);
+  await setMaintenanceMode(enabled);
   console.log(`[Settings] Режим обслуживания: ${enabled ? 'ВКЛЮЧЁН' : 'ВЫКЛЮЧЕН'}`);
   res.redirect('/settings?success=1');
 });

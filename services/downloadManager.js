@@ -6,7 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
-import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
+import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID } from '../config.js';
 
 // Логика определения пути к кукам:
 // 1. Сначала ищем в секретах Render (/etc/secrets/cookies.txt)
@@ -783,7 +783,8 @@ export async function trackDownloadProcessor(task) {
   try {
     // 1. Проверка лимитов
     const usage = await getUserUsage(userId);
-    if (!usage || usage.downloads_today >= usage.premium_limit) {
+    const isAdmin = Number(userId) === Number(ADMIN_ID);
+    if (!isAdmin && (!usage || usage.downloads_today >= usage.premium_limit)) {
       await safeSendMessage(userId, T('limitReached'));
       return;
     }
@@ -1524,7 +1525,8 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
     try {
       // Проверка бонусов/лимитов
       const user = await db.getUser(userId);
-      if ((user.downloads_today || 0) >= user.premium_limit) {
+      const isAdmin = Number(userId) === Number(ADMIN_ID);
+      if (!isAdmin && (user.downloads_today || 0) >= user.premium_limit) {
           const bonusAvailable = Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used);
           const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
           const bonusText = bonusAvailable ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.` : '';

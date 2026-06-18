@@ -1,5 +1,8 @@
 // services/appState.js (исправленная версия)
 
+import { getSetting, loadSettings } from './settingsManager.js';
+import { setAppSetting } from '../db.js';
+
 // ========================= STATE FLAGS =========================
 
 /**
@@ -7,12 +10,6 @@
  * @private
  */
 let shutdownFlag = false;
-
-/**
- * Флаг режима обслуживания (техническая пауза)
- * @private
- */
-let maintenanceFlag = false;
 
 /**
  * Флаг активной массовой рассылки
@@ -48,15 +45,16 @@ export function setShuttingDown(state = true) {
  * @returns {boolean}
  */
 export function isMaintenanceMode() {
-  return maintenanceFlag;
+  return getSetting('maintenance_mode') === 'true';
 }
 
 /**
  * Устанавливает режим обслуживания
  * @param {boolean} state - Новое состояние
  */
-export function setMaintenanceMode(state) {
-  maintenanceFlag = Boolean(state);
+export async function setMaintenanceMode(state) {
+  await setAppSetting('maintenance_mode', state ? 'true' : 'false');
+  await loadSettings();
   console.log(`[Maintenance] Режим обслуживания ${state ? 'ВКЛЮЧЕН' : 'ВЫКЛЮЧЕН'}.`);
 }
 
@@ -93,7 +91,7 @@ export function setBroadcasting(state) {
 export function getAppState() {
   return {
     isShuttingDown: shutdownFlag,
-    isMaintenanceMode: maintenanceFlag,
+    isMaintenanceMode: isMaintenanceMode(),
     isBroadcasting: broadcastingFlag,
     timestamp: new Date().toISOString()
   };
@@ -103,9 +101,9 @@ export function getAppState() {
  * Сбрасывает все флаги (для тестирования, НЕ использовать в production)
  * @private
  */
-export function resetAppState() {
+export async function resetAppState() {
   shutdownFlag = false;
-  maintenanceFlag = false;
+  await setMaintenanceMode(false);
   broadcastingFlag = false;
   console.warn('[AppState] ⚠️ Все флаги сброшены (используется только для тестов!)');
 }

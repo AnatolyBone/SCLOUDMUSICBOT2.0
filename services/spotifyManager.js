@@ -1,7 +1,7 @@
 // services/spotifyManager.js - Spotify с выбором треков и качества
 
 import { Markup } from 'telegraf';
-import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
+import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID } from '../config.js';
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
 
@@ -273,6 +273,16 @@ export async function handleSpotifyUrl(ctx, url) {
       return await ctx.reply('❌ Spotify API не настроен.');
     }
     
+    // Ранняя проверка лимитов (для всех, кроме админа)
+    const isAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
+    if (!isAdmin) {
+      const user = await getUser(ctx.from.id);
+      const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
+      if (remainingLimit <= 0) {
+        return await ctx.reply('🚫 Дневной лимит загрузок исчерпан.');
+      }
+    }
+    
     statusMessage = await ctx.reply('🔍 Получаю информацию из Spotify...');
     
     const data = await getSpotifyTrackInfo(url);
@@ -286,7 +296,7 @@ export async function handleSpotifyUrl(ctx, url) {
     
     // Проверяем лимиты
     const user = await getUser(ctx.from.id);
-    const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
+    const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
     
     if (remainingLimit <= 0) {
       return await ctx.telegram.editMessageText(
@@ -602,7 +612,13 @@ export function registerSpotifyCallbacks(bot) {
     
     // Проверяем лимиты
     const user = await getUser(session.userId);
-    const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
+    const isAdmin = Number(session.userId) === Number(ADMIN_ID);
+    const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
+    
+    if (remainingLimit <= 0) {
+      return ctx.editMessageText('🚫 Дневной лимит загрузок исчерпан.');
+    }
+    
     const tracksToProcess = tracksToDownload.slice(0, remainingLimit);
     
     if (tracksToProcess.length < tracksToDownload.length) {
