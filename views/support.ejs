@@ -259,4 +259,120 @@
       }
     });
   }
+
+  // --- Автообновление (Polling) чата поддержки ---
+  const activeUserId = '<%= activeUserId || "" %>';
+  let renderedMessagesCount = <%= messages ? messages.length : 0 %>;
+
+  // Функция для проигрывания синтезированного звукового сигнала
+  function playNotificationSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // Ре 5-й октавы (D5)
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12); // Ля 5-й октавы (A5)
+      
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+      
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      osc.start();
+      osc.stop(ctx.currentTime + 0.25);
+    } catch (e) {
+      console.error('AudioContext error:', e);
+    }
+  }
+
+  const clientEscapeHtml = (str) => {
+    if (str === undefined || str === null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  };
+
+  const clientLinkify = (text) => {
+    if (!text) return '';
+    const escaped = clientEscapeHtml(text);
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    return escaped.replace(urlRegex, (url) => {
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    });
+  };
+
+  const formatMessageTime = (dateStr) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) + ' ' + d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+  };
+
+  function appendMessage(msg) {
+    if (!chatHistory) return;
+    
+    // Удаляем заглушку "Нет сообщений", если она есть
+    const placeholder = chatHistory.querySelector('.my-auto');
+    if (placeholder) {
+      placeholder.remove();
+    }
+
+    const bubble = document.createElement('div');
+    bubble.className = `message-bubble ${msg.sender === 'admin' ? 'message-admin' : 'message-user'}`;
+    
+    const textSpan = document.createElement('span');
+    textSpan.className = 'message-text';
+    textSpan.innerHTML = clientLinkify(msg.message_text);
+    
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'message-time';
+    timeSpan.textContent = formatMessageTime(msg.created_at);
+    
+    bubble.appendChild(textSpan);
+    bubble.appendChild(timeSpan);
+    
+    chatHistory.appendChild(bubble);
+  }
+
+  // Запуск опроса при открытом диалоге
+  if (activeUserId && chatHistory) {
+    // На активной странице убираем бейдж непрочитанных у выбранного пользователя
+    const activeTicketBadge = document.querySelector('.ticket-item.active .badge');
+    if (activeTicketBadge) {
+      activeTicketBadge.remove();
+    }
+
+    setInterval(async () => {
+      try {
+        const response = await fetch(`/support/${activeUserId}/json`);
+        const data = await response.json();
+        
+        if (data.success && data.messages.length > renderedMessagesCount) {
+          const newMessages = data.messages.slice(renderedMessagesCount);
+          let shouldPlaySound = false;
+          
+          newMessages.forEach(msg => {
+            appendMessage(msg);
+            if (msg.sender === 'user') {
+              shouldPlaySound = true;
+            }
+          });
+          
+          renderedMessagesCount = data.messages.length;
+          
+          if (shouldPlaySound) {
+            playNotificationSound();
+          }
+          
+          // Прокручиваем чат к последнему сообщению
+          chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+      } catch (err) {
+        console.error('[Support Polling] Error:', err);
+      }
+    }, 4000); // опрос каждые 4 секунды
+  }
 </script>

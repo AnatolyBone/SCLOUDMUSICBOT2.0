@@ -2328,4 +2328,19 @@ export async function deleteSupportMessages(userId) {
   await query(sql, [userId]);
 }
 
+export async function getUnreadSupportTicketsCount() {
+  const sql = `
+    SELECT COUNT(DISTINCT user_id)::int as count 
+    FROM support_messages 
+    WHERE sender = 'user' AND is_read = false
+  `;
+  try {
+    const { rows } = await query(sql);
+    return rows[0]?.count || 0;
+  } catch (e) {
+    console.error('[DB] getUnreadSupportTicketsCount error:', e.message);
+    return 0;
+  }
+}
+
 

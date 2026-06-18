@@ -71,7 +71,8 @@ import {
   getSupportTickets,
   getSupportMessages,
   markSupportMessagesAsRead,
-  deleteSupportMessages
+  deleteSupportMessages,
+  getUnreadSupportTicketsCount
 } from './db.js';
 import { initializeWorkers } from './services/workerManager.js';
 import { runBroadcastBatch } from './services/broadcastManager.js';
@@ -338,8 +339,12 @@ function setupExpress() {
   app.use(async (req, res, next) => {
     res.locals.user = null;
     res.locals.page = '';
+    res.locals.unreadSupportCount = 0;
     if (req.session.authenticated && req.session.userId === ADMIN_ID) {
-      try { res.locals.user = await getUserById(req.session.userId); } catch {}
+      try { 
+        res.locals.user = await getUserById(req.session.userId); 
+        res.locals.unreadSupportCount = await getUnreadSupportTicketsCount();
+      } catch {}
     }
     next();
   });
@@ -1512,6 +1517,17 @@ res.redirect('/dashboard?resetExpired=err');
     } catch (e) {
       console.error('[Support Details] Error:', e);
       res.status(500).send('Ошибка сервера');
+    }
+  });
+
+  app.get('/support/:userId/json', requireAuth, async (req, res) => {
+    const { userId } = req.params;
+    try {
+      const messages = await getSupportMessages(userId);
+      await markSupportMessagesAsRead(userId);
+      res.json({ success: true, messages });
+    } catch (e) {
+      res.status(500).json({ success: false, error: e.message });
     }
   });
 
