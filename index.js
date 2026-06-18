@@ -70,7 +70,8 @@ import {
   createSupportMessage,
   getSupportTickets,
   getSupportMessages,
-  markSupportMessagesAsRead
+  markSupportMessagesAsRead,
+  deleteSupportMessages
 } from './db.js';
 import { initializeWorkers } from './services/workerManager.js';
 import { runBroadcastBatch } from './services/broadcastManager.js';
@@ -1514,6 +1515,23 @@ res.redirect('/dashboard?resetExpired=err');
     }
   });
 
+  app.post('/support/:userId/close', requireAuth, async (req, res) => {
+    const { userId } = req.params;
+    try {
+      // 1. Удаляем сообщения из БД
+      await deleteSupportMessages(userId);
+      // 2. Отключаем режим поддержки
+      await updateUserField(userId, 'support_mode', false);
+      // 3. Уведомляем пользователя
+      await bot.telegram.sendMessage(userId, `✅ <b>Ваше обращение в поддержку закрыто.</b>\n\nЕсли у вас возникнут новые вопросы, вы можете начать новый диалог с помощью команды /support или кнопки в разделе помощи.`, { parse_mode: 'HTML' }).catch(() => {});
+      
+      res.redirect('/support');
+    } catch (e) {
+      console.error('[Support Close] Error:', e);
+      res.status(500).send('Ошибка при закрытии обращения: ' + e.message);
+    }
+  });
+
 app.post('/set-tariff', requireAuth, async (req, res) => {
   const { userId, limit, days, applyMode } = req.body;
   try {
@@ -1530,12 +1548,12 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
     });
 
     let tariffName = '';
-    if (newLimit <= 5) tariffName = 'Free';
+    if (newLimit <= 3) tariffName = 'Free';
     else if (newLimit <= 30) tariffName = 'Plus';
     else if (newLimit <= 100) tariffName = 'Pro';
     else tariffName = 'Unlimited';
 
-    const untilText = newLimit <= 5
+    const untilText = newLimit <= 3
       ? 'бессрочно (Free)'
       : new Date(updated.premium_until).toLocaleString('ru-RU', {
           day: '2-digit', month: '2-digit', year: 'numeric',

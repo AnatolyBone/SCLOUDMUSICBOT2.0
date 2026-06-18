@@ -176,7 +176,12 @@
                 | <a href="/user/<%= activeUserId %>" target="_blank" class="text-decoration-none"><i class="bi bi-person-badge me-1"></i>Профиль в админке</a>
               </small>
             </div>
-            <div>
+            <div class="d-flex align-items-center gap-2">
+              <form action="/support/<%= activeUserId %>/close" method="POST" onsubmit="return confirm('Вы действительно хотите закрыть обращение пользователя и удалить всю переписку?')" class="m-0">
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                  <i class="bi bi-check2-circle me-1"></i>Закрыть тикет
+                </button>
+              </form>
               <a href="/support" class="btn btn-sm btn-outline-secondary d-md-none"><i class="bi bi-chevron-left me-1"></i>Назад</a>
             </div>
           </div>

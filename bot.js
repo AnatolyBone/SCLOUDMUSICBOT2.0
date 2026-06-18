@@ -49,7 +49,7 @@ async function addTaskToQueue(task) {
         
         // Получаем приоритет из тарифа пользователя
         const user = await getUser(task.userId);
-        const priority = user ? (user.premium_limit || 5) : 5;
+        const priority = user ? (user.premium_limit || 3) : 3;
         
         // Новый, правильный лог
         console.log('[Queue] Добавляю задачу', {
@@ -826,10 +826,32 @@ bot.on('inline_query', async (ctx) => {
 });
 
 // --- Логика обработки плейлистов ---
-function generateInitialPlaylistMenu(playlistId, trackCount) {
+async function getPlaylistLimitForUser(userId) {
+    try {
+        const { getSetting } = await import('./services/settingsManager.js');
+        const user = await getUser(userId);
+        if (!user) return 3;
+        const limit = user.premium_limit || 3;
+        if (limit <= 3) {
+            return parseInt(getSetting('playlist_limit_free') || '3', 10);
+        } else if (limit <= 30) {
+            return parseInt(getSetting('playlist_limit_plus') || '30', 10);
+        } else if (limit <= 100) {
+            return parseInt(getSetting('playlist_limit_pro') || '100', 10);
+        } else {
+            return parseInt(getSetting('playlist_limit_unlim') || '10000', 10);
+        }
+    } catch (e) {
+        console.error('Ошибка в getPlaylistLimitForUser:', e.message);
+        return 3;
+    }
+}
+
+function generateInitialPlaylistMenu(playlistId, trackCount, playlistLimit) {
+    const downloadLimit = Math.min(trackCount, playlistLimit);
     return Markup.inlineKeyboard([
         [Markup.button.callback(`📥 Скачать все (${trackCount})`, `pl_download_all:${playlistId}`)],
-        [Markup.button.callback('📥 Скачать первые 10', `pl_download_10:${playlistId}`)],
+        [Markup.button.callback(`📥 Скачать первые ${downloadLimit}`, `pl_download_limit:${playlistId}`)],
         [Markup.button.callback('📝 Выбрать треки вручную', `pl_select_manual:${playlistId}`)],
         [Markup.button.callback('❌ Отмена', `pl_cancel:${playlistId}`)]
     ]);
@@ -898,9 +920,16 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         return;
     }
 
+    const playlistLimit = await getPlaylistLimitForUser(userId);
+    const tracksToTake = isAll ? Math.min(session.tracks.length, playlistLimit) : playlistLimit;
+    
+    let limitMessage = '';
+    if (session.tracks.length > playlistLimit) {
+        limitMessage = `⚠️ Внимание: согласно лимитам вашего тарифа, вы можете загрузить максимум <b>${playlistLimit}</b> трек(ов) из одного плейлиста.\n\n`;
+    }
+
     await ctx.editMessageText('✅ Отлично! Добавляю треки в очередь...');
 
-    const tracksToTake = isAll ? session.tracks.length : 10;
     const numberOfTracksToQueue = Math.min(tracksToTake, remainingLimit);
     const tracksToProcess = session.tracks.slice(0, numberOfTracksToQueue);
 
@@ -914,15 +943,15 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         });
     }
 
-    let reportMessage = `⏳ ${tracksToProcess.length} трек(ов) добавлено в очередь.`;
+    let reportMessage = `${limitMessage}⏳ ${tracksToProcess.length} трек(ов) добавлено в очередь.`;
     if (numberOfTracksToQueue < tracksToTake) {
         reportMessage += '\n\nℹ️ Ваш дневной лимит будет исчерпан. Остальные треки из плейлиста не были добавлены.';
     }
-    await bot.telegram.sendMessage(userId, reportMessage);
+    await bot.telegram.sendMessage(userId, reportMessage, { parse_mode: 'HTML' });
     playlistSessions.delete(userId);
 }
 
-bot.action(/pl_download_all:|pl_download_10:/, async (ctx) => {
+bot.action(/pl_download_all:|pl_download_limit:/, async (ctx) => {
     const isAll = ctx.callbackQuery.data.includes('pl_download_all');
     const playlistId = ctx.callbackQuery.data.split(':')[1];
     const userId = ctx.from.id;
@@ -1028,6 +1057,13 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     if (session.selected.size === 0) {
         return await ctx.reply('Вы не выбрали ни одного трека.');
     }
+    
+    // --- 0. Проверка лимитов на плейлист для тарифа ---
+    const playlistLimit = await getPlaylistLimitForUser(userId);
+    if (session.selected.size > playlistLimit) {
+        return await ctx.reply(`❌ Вы не можете выбрать более ${playlistLimit} треков за раз (лимит вашего тарифа на импорт плейлистов).`);
+    }
+    
     // Так как названия важны, оставляем проверку, что они были загружены
     if (!session.fullTracks) {
         return await ctx.answerCbQuery('❌ Произошла ошибка: данные плейлиста не были загружены. Попробуйте заново.', { show_alert: true });
@@ -1097,8 +1133,9 @@ bot.action(/pl_cancel:(.+)/, async (ctx) => {
     }
     
     // Восстанавливаем текст и кнопки первоначального меню
+    const playlistLimit = await getPlaylistLimitForUser(userId);
     const message = `🎶 В плейлисте <b>"${session.title}"</b> найдено <b>${session.tracks.length}</b> треков.\n\nЧто делаем?`;
-    const initialMenu = generateInitialPlaylistMenu(session.playlistId, session.tracks.length);
+    const initialMenu = generateInitialPlaylistMenu(session.playlistId, session.tracks.length, playlistLimit);
     
     // Редактируем текущее сообщение, возвращая его к исходному виду
     try {
@@ -1171,8 +1208,9 @@ async function processUrlInBackground(ctx, url) {
                 currentPage: 0,
                 fullTracks: false
             });
+            const playlistLimit = await getPlaylistLimitForUser(ctx.from.id);
             const message = `🎶 В плейлисте <b>"${escapeHtml(data.title)}"</b> найдено <b>${data.entries.length}</b> треков.\n\nЧто делаем?`;
-            await ctx.reply(message, { parse_mode: 'HTML', ...generateInitialPlaylistMenu(playlistId, data.entries.length) });
+            await ctx.reply(message, { parse_mode: 'HTML', ...generateInitialPlaylistMenu(playlistId, data.entries.length, playlistLimit) });
             
         } else {
             // Лимиты пропускаю для краткости, они у тебя правильные
@@ -1250,8 +1288,9 @@ async function handleSoundCloudUrl(ctx, url) {
                 fullTracks: false
             });
             
+            const playlistLimit = await getPlaylistLimitForUser(ctx.from.id);
             const message = `🎶 В плейлисте <b>"${escapeHtml(data.title)}"</b> найдено <b>${data.entries.length}</b> треков.\n\nЧто делаем?`;
-            await ctx.reply(message, { parse_mode: 'HTML', ...generateInitialPlaylistMenu(playlistId, data.entries.length) });
+            await ctx.reply(message, { parse_mode: 'HTML', ...generateInitialPlaylistMenu(playlistId, data.entries.length, playlistLimit) });
             
         } else {
             // Одиночный трек
