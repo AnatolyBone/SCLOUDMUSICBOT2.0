@@ -231,6 +231,12 @@ bot.use(async (ctx, next) => {
     await resetExpiredPremiumIfNeeded(ctx.from.id);
     return next();
 });
+const getMainKeyboard = () => Markup.keyboard([
+    [T('menu'), '🆔 Распознать', T('upgrade')],
+    [T('mytracks'), T('help')],
+    [T('vpn')]
+]).resize();
+
 bot.start(async (ctx) => {
   try {
     console.log('[START] got start for', ctx.from.id, 'payload=', ctx.startPayload);
@@ -249,11 +255,7 @@ bot.start(async (ctx) => {
     await ctx.reply(startMessage, {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
-        ...Markup.keyboard([
-            [T('menu'), '🆔 Распознать', T('upgrade')],
-            [T('mytracks'), T('help')],
-            [T('vpn')]
-        ]).resize()
+        ...getMainKeyboard()
     });
   } catch (err) {
     console.error(`[bot.start] Ошибка для userId=${ctx.from?.id}:`, err.message);
@@ -475,74 +477,142 @@ bot.command('fix', async (ctx) => {
     }
   }
 });
+async function getAdminStatsData() {
+    const [
+        users,
+        cachedTracksCount,
+        topFailed,
+        topRecent,
+        newUsersToday,
+        newUsersWeek,
+        refStats
+    ] = await Promise.all([
+        getAllUsers(true),
+        getCachedTracksCount(),
+        getTopFailedSearches(5),
+        getTopRecentSearches(5),
+        getNewUsersCount(1),
+        getNewUsersCount(7),
+        getReferralStats().catch(() => ({ totalReferred: 0 }))
+    ]);
+    
+    const totalUsers = users.length;
+    const activeUsers = users.filter(u => u.active).length;
+    const activeToday = users.filter(u => u.last_active && new Date(u.last_active).toDateString() === new Date().toDateString()).length;
+    const totalDownloads = users.reduce((sum, u) => sum + (u.total_downloads || 0), 0);
+    const storageStatusText = STORAGE_CHANNEL_ID ? '✅ Доступен' : '⚠️ Не настроен';
+    const maintenanceText = isMaintenanceMode() ? '🛠️ ВКЛЮЧЕН' : '🟢 Выключен';
+    
+    let statsMessage = `<b>📊 Статистика Бота</b>\n\n` +
+        `<b>👤 Пользователи:</b>\n` +
+        `   - Всего: <i>${totalUsers}</i>\n` +
+        `   - Активных: <i>${activeUsers}</i>\n` +
+        `   - <b>Новых за 24ч: <i>${newUsersToday}</i></b>\n` +
+        `   - <b>Новых за 7 дней: <i>${newUsersWeek}</i></b>\n` +
+        `   - Активных сегодня: <i>${activeToday}</i>\n\n` +
+        `<b>📥 Загрузки:</b>\n   - Всего за все время: <i>${totalDownloads}</i>\n\n` +
+        `<b>👥 Рефералы:</b>\n   - Всего приглашено: <i>${refStats.totalReferred}</i>\n\n`;
+    
+    if (topFailed.length > 0) {
+        statsMessage += `---\n\n<b>🔥 Топ-5 неудачных запросов (всего):</b>\n`;
+        topFailed.forEach((item, index) => {
+            statsMessage += `${index + 1}. <code>${item.query.slice(0, 30)}</code> (искали <i>${item.search_count}</i> раз)\n`;
+        });
+        statsMessage += `\n`;
+    }
+    
+    if (topRecent.length > 0) {
+        statsMessage += `<b>📈 Топ-5 запросов (за 24 часа):</b>\n`;
+        topRecent.forEach((item, index) => {
+            statsMessage += `${index + 1}. <code>${item.query.slice(0, 30)}</code> (искали <i>${item.total}</i> раз)\n`;
+        });
+        statsMessage += `\n`;
+    }
+    
+    statsMessage += `---\n\n<b>⚙️ Система:</b>\n` +
+        `   - Очередь: <i>${downloadQueue.size}</i> в ож. / <i>${downloadQueue.pending}</i> в раб.\n` +
+        `   - Канал-хранилище: <i>${storageStatusText}</i>\n` +
+        `   - Режим обслуживания: <i>${maintenanceText}</i>\n` +
+        `   - Треков в кэше: <i>${cachedTracksCount}</i>\n\n` +
+        `<b>🔗 Админ-панель:</b>\n<a href="${WEBHOOK_URL.replace(/\/$/, '')}/dashboard">Открыть дашборд</a>`;
+    
+    const markup = Markup.inlineKeyboard([
+        [
+            Markup.button.callback(isMaintenanceMode() ? '🟢 Выключить тех. работы' : '🛠️ Включить тех. работы', 'admin_toggle_maintenance'),
+            Markup.button.callback('🧹 Очистить кэш', 'admin_clean_trash')
+        ],
+        [
+            Markup.button.callback('🔄 Обновить статистику', 'admin_refresh')
+        ]
+    ]);
+    
+    return { text: statsMessage, markup };
+}
+
 bot.command('admin', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+    if (Number(ctx.from.id) !== Number(ADMIN_ID)) return;
+    let loaderMsg;
     try {
-        await ctx.reply('⏳ Собираю статистику...');
-        
-        // Запускаем все запросы к базе параллельно для скорости
-        const [
-            users,
-            cachedTracksCount,
-            topFailed,
-            topRecent,
-            newUsersToday, // <-- Новый запрос
-            newUsersWeek // <-- Новый запрос
-        ] = await Promise.all([
-            getAllUsers(true),
-            getCachedTracksCount(),
-            getTopFailedSearches(5),
-            getTopRecentSearches(5),
-            getNewUsersCount(1), // Получаем новых за 1 день
-            getNewUsersCount(7) // Получаем новых за 7 дней
-        ]);
-        
-        // --- Формируем статистику пользователей ---
-        const totalUsers = users.length;
-        const activeUsers = users.filter(u => u.active).length;
-        const activeToday = users.filter(u => u.last_active && new Date(u.last_active).toDateString() === new Date().toDateString()).length;
-        const totalDownloads = users.reduce((sum, u) => sum + (u.total_downloads || 0), 0);
-        let storageStatusText = STORAGE_CHANNEL_ID ? '✅ Доступен' : '⚠️ Не настроен';
-        
-        // --- Собираем сообщение ---
-        let statsMessage = `<b>📊 Статистика Бота</b>\n\n` +
-            `<b>👤 Пользователи:</b>\n` +
-            `   - Всего: <i>${totalUsers}</i>\n` +
-            `   - Активных: <i>${activeUsers}</i>\n` +
-            `   - <b>Новых за 24ч: <i>${newUsersToday}</i></b>\n` + // <-- Новая строка
-            `   - <b>Новых за 7 дней: <i>${newUsersWeek}</i></b>\n` + // <-- Новая строка
-            `   - Активных сегодня: <i>${activeToday}</i>\n\n` +
-            `<b>📥 Загрузки:</b>\n   - Всего за все время: <i>${totalDownloads}</i>\n\n`;
-        
-        // Блок неудачных запросов
-        if (topFailed.length > 0) {
-            statsMessage += `---\n\n<b>🔥 Топ-5 неудачных запросов (всего):</b>\n`;
-            topFailed.forEach((item, index) => {
-                statsMessage += `${index + 1}. <code>${item.query.slice(0, 30)}</code> (искали <i>${item.search_count}</i> раз)\n`;
-            });
-            statsMessage += `\n`;
-        }
-        
-        // Блок популярных запросов
-        if (topRecent.length > 0) {
-            statsMessage += `<b>📈 Топ-5 запросов (за 24 часа):</b>\n`;
-            topRecent.forEach((item, index) => {
-                statsMessage += `${index + 1}. <code>${item.query.slice(0, 30)}</code> (искали <i>${item.total}</i> раз)\n`;
-            });
-            statsMessage += `\n`;
-        }
-        
-        // Системный блок
-        statsMessage += `---\n\n<b>⚙️ Система:</b>\n` +
-            `   - Очередь: <i>${downloadQueue.size}</i> в ож. / <i>${downloadQueue.pending}</i> в раб.\n` +
-            `   - Канал-хранилище: <i>${storageStatusText}</i>\n   - Треков в кэше: <i>${cachedTracksCount}</i>\n\n` +
-            `<b>🔗 Админ-панель:</b>\n<a href="${WEBHOOK_URL.replace(/\/$/, '')}/dashboard">Открыть дашборд</a>`;
-        
-        await ctx.reply(statsMessage, { parse_mode: 'HTML', disable_web_page_preview: true });
+        loaderMsg = await ctx.reply('⏳ Собираю статистику...');
+        const { text, markup } = await getAdminStatsData();
+        await ctx.telegram.editMessageText(ctx.chat.id, loaderMsg.message_id, undefined, text, {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            ...markup
+        });
     } catch (e) {
         console.error('❌ Ошибка в команде /admin:', e);
-        await ctx.reply('❌ Не удалось собрать статистику.');
+        if (loaderMsg) {
+            await ctx.telegram.editMessageText(ctx.chat.id, loaderMsg.message_id, undefined, '❌ Не удалось собрать статистику.').catch(() => {});
+        } else {
+            await ctx.reply('❌ Не удалось собрать статистику.').catch(() => {});
+        }
     }
+});
+
+async function updateAdminStatsMessage(ctx) {
+    try {
+        const { text, markup } = await getAdminStatsData();
+        await ctx.editMessageText(text, {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            ...markup
+        });
+    } catch (e) {
+        console.error('❌ Ошибка при обновлении статистики:', e.message);
+    }
+}
+
+bot.action('admin_toggle_maintenance', async (ctx) => {
+    if (Number(ctx.from.id) !== Number(ADMIN_ID)) {
+        return ctx.answerCbQuery('Доступ запрещен ❌', { show_alert: true });
+    }
+    const current = isMaintenanceMode();
+    setMaintenanceMode(!current);
+    await ctx.answerCbQuery(`Режим обслуживания: ${!current ? 'ВКЛЮЧЕН 🛠️' : 'ВЫКЛЮЧЕН 🟢'}`);
+    await updateAdminStatsMessage(ctx);
+});
+
+bot.action('admin_clean_trash', async (ctx) => {
+    if (Number(ctx.from.id) !== Number(ADMIN_ID)) {
+        return ctx.answerCbQuery('Доступ запрещен ❌', { show_alert: true });
+    }
+    await ctx.answerCbQuery('🧹 Начинаю очистку...', { show_alert: false });
+    const success = await cleanUpDatabase();
+    if (success) {
+        await ctx.reply('✅ База успешно очищена от битых треков.');
+    } else {
+        await ctx.reply('❌ Произошла ошибка при очистке базы.');
+    }
+    await updateAdminStatsMessage(ctx);
+});
+
+bot.action('admin_refresh', async (ctx) => {
+    if (Number(ctx.from.id) !== Number(ADMIN_ID)) {
+        return ctx.answerCbQuery('Доступ запрещен ❌', { show_alert: true });
+    }
+    await ctx.answerCbQuery('🔄 Статистика обновлена!');
+    await updateAdminStatsMessage(ctx);
 });
 bot.command('referral', handleReferralCommand);
 // bot.js
@@ -632,16 +702,18 @@ const menuHandler = async (ctx) => {
         extraOptions.reply_markup = { 
             inline_keyboard: [[ Markup.button.callback('✅ Я подписался и хочу бонус!', 'check_subscription') ]] 
         };
+    } else {
+        Object.assign(extraOptions, getMainKeyboard());
     }
     await ctx.reply(message, extraOptions);
 };
 
-const recognizeHandler = (ctx) => ctx.reply('Просто отправьте или перешлите мне:\n🎤 Голосовое сообщение\n📹 Видео-кружок\n🎧 Аудиофайл\n\n...и я скажу, что это за трек!');
+const recognizeHandler = (ctx) => ctx.reply('Просто отправьте или перешлите мне:\n🎤 Голосовое сообщение\n📹 Видео-кружок\n🎧 Аудиофайл\n\n...и я скажу, что это за трек!', getMainKeyboard());
 
 const mytracksHandler = async (ctx) => {
     try {
         const user = await getUser(ctx.from.id);
-        if (!user.tracks_today || user.tracks_today.length === 0) return await ctx.reply(T('noTracks'));
+        if (!user.tracks_today || user.tracks_today.length === 0) return await ctx.reply(T('noTracks'), getMainKeyboard());
         for (let i = 0; i < user.tracks_today.length; i += 10) {
             const chunk = user.tracks_today.slice(i, i + 10).filter(t => t && t.fileId);
             if (chunk.length > 0) await ctx.replyWithMediaGroup(chunk.map(t => ({ type: 'audio', media: t.fileId })));
@@ -649,8 +721,16 @@ const mytracksHandler = async (ctx) => {
     } catch (e) { console.error(`🔴 Ошибка в mytracks для ${ctx.from.id}:`, e.message); }
 };
 
-const helpHandler = (ctx) => ctx.reply(T('helpInfo'), { parse_mode: 'HTML', disable_web_page_preview: true });
-const upgradeHandler = (ctx) => ctx.reply(T('upgradeInfo'), { parse_mode: 'HTML', disable_web_page_preview: true });
+const helpHandler = (ctx) => ctx.reply(T('helpInfo'), { 
+    parse_mode: 'HTML', 
+    disable_web_page_preview: true,
+    ...getMainKeyboard()
+});
+const upgradeHandler = (ctx) => ctx.reply(T('upgradeInfo'), { 
+    parse_mode: 'HTML', 
+    disable_web_page_preview: true,
+    ...getMainKeyboard()
+});
 
 bot.hears(T('menu'), menuHandler);
 bot.hears('🆔 Распознать', recognizeHandler);
@@ -659,9 +739,11 @@ bot.hears(T('help'), helpHandler);
 bot.hears(T('upgrade'), upgradeHandler);
 
 bot.command('menu', menuHandler);
+bot.command('subs', menuHandler);
 bot.command('mytracks', mytracksHandler);
 bot.command('help', helpHandler);
 bot.command('upgrade', upgradeHandler);
+bot.command('tariffs', upgradeHandler);
 bot.command('shazam', recognizeHandler);
 
 const VPN_MESSAGE =
