@@ -912,15 +912,21 @@ export async function markYandexPromoShown(userId) {
 
 export async function logEvent(userId, event) {
   try {
-    await supabase.from('events').insert([{ user_id: userId, event_type: event }]);
+    await query(
+      'INSERT INTO events (user_id, event_type) VALUES ($1, $2)',
+      [userId, event]
+    );
   } catch (e) {
-    console.error('❌ Ошибка Supabase при logEvent:', e.message);
+    console.error('❌ Ошибка при logEvent:', e.message);
   }
 }
 
 export async function logUserAction(userId, actionType, details = null) {
   try {
-    await supabase.from('user_actions_log').insert([{ user_id: userId, action_type: actionType, details }]);
+    await query(
+      'INSERT INTO user_actions_log (user_id, action_type, details) VALUES ($1, $2, $3)',
+      [userId, actionType, details ? JSON.stringify(details) : null]
+    );
   } catch (e) {
     console.error(`❌ Ошибка логирования действия для пользователя ${userId}:`, e.message);
   }
@@ -928,14 +934,11 @@ export async function logUserAction(userId, actionType, details = null) {
 
 export async function getUserActions(userId, limit = 20) {
   try {
-    const { data, error } = await supabase
-      .from('user_actions_log')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    if (error) throw error;
-    return data;
+    const { rows } = await query(
+      'SELECT * FROM user_actions_log WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+      [userId, limit]
+    );
+    return rows;
   } catch (e) {
     console.error(`❌ Ошибка получения лога действий для ${userId}:`, e.message);
     return [];
