@@ -4,6 +4,7 @@ import { Telegraf, Markup, TelegramError } from 'telegraf';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
+import { getSetting } from './services/settingsManager.js';
 import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
@@ -49,7 +50,8 @@ async function addTaskToQueue(task) {
         
         // Получаем приоритет из тарифа пользователя
         const user = await getUser(task.userId);
-        const priority = user ? (user.premium_limit || 3) : 3;
+        const dailyLimitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+        const priority = user ? (user.premium_limit || dailyLimitFree) : dailyLimitFree;
         
         // Новый, правильный лог
         console.log('[Queue] Добавляю задачу', {
@@ -828,15 +830,18 @@ bot.on('inline_query', async (ctx) => {
 // --- Логика обработки плейлистов ---
 async function getPlaylistLimitForUser(userId) {
     try {
-        const { getSetting } = await import('./services/settingsManager.js');
         const user = await getUser(userId);
-        if (!user) return 3;
-        const limit = user.premium_limit || 3;
-        if (limit <= 3) {
+        const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+        const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
+        const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
+        
+        const userLimit = user ? (user.premium_limit || limitFree) : limitFree;
+        
+        if (userLimit <= limitFree) {
             return parseInt(getSetting('playlist_limit_free') || '3', 10);
-        } else if (limit <= 30) {
+        } else if (userLimit <= limitPlus) {
             return parseInt(getSetting('playlist_limit_plus') || '30', 10);
-        } else if (limit <= 100) {
+        } else if (userLimit <= limitPro) {
             return parseInt(getSetting('playlist_limit_pro') || '100', 10);
         } else {
             return parseInt(getSetting('playlist_limit_unlim') || '10000', 10);
@@ -1505,8 +1510,6 @@ bot.on('text', async (ctx) => {
     }
 
     // Определяем источник и обрабатываем
-    // Импортируем getSetting для проверки включенных сервисов
-    const { getSetting } = await import('./services/settingsManager.js');
     
     if (url.includes('soundcloud.com')) {
         // SoundCloud

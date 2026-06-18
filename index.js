@@ -13,7 +13,7 @@ import fs from 'fs';
 import os from 'os';
 import mime from 'mime-types';
 import { checkAndSendExpirationNotifications, notifyExpiringTodayHourly } from './services/notifier.js';
-import { loadSettings,getAllSettings} from './services/settingsManager.js';
+import { loadSettings,getAllSettings,getSetting} from './services/settingsManager.js';
 import {
   pool,
   getUserById,
@@ -636,7 +636,12 @@ app.post('/settings/update', requireAuth, async (req, res) => {
   try {
     console.log('[Settings/Update] Получены данные:', JSON.stringify(req.body, null, 2));
     
-    // 1. Сохраняем настройки
+    // Получаем старые суточные лимиты до обновления
+    const oldFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const oldPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
+    const oldPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
+
+    // 1. Сохраняем новые настройки
     for (const [key, value] of Object.entries(req.body)) {
       console.log(`[Settings/Update] Сохраняю: ${key} = ${value}`);
       await setAppSetting(key, value);
@@ -646,7 +651,7 @@ app.post('/settings/update', requireAuth, async (req, res) => {
     console.log('[Settings/Update] ✅ Настройки сохранены и кеш обновлён');
 
     // 2. Запускаем фоновое обновление (без await, чтобы не ждать)
-    applyLimitsToUsers(req.body).catch(err => {
+    applyLimitsToUsers(req.body, { oldFree, oldPlus, oldPro }).catch(err => {
         console.error('❌ Ошибка в фоновом обновлении лимитов:', err);
     });
 
@@ -658,44 +663,45 @@ app.post('/settings/update', requireAuth, async (req, res) => {
 });
 
 // === ОТДЕЛЬНАЯ ФУНКЦИЯ ДЛЯ МАССОВОГО ОБНОВЛЕНИЯ ===
-async function applyLimitsToUsers(body) {
-    const { playlist_limit_free, playlist_limit_plus, playlist_limit_pro } = body;
+async function applyLimitsToUsers(body, oldLimits) {
+    const { daily_limit_free, daily_limit_plus, daily_limit_pro } = body;
+    const { oldFree, oldPlus, oldPro } = oldLimits;
 
-    console.log('🔄 Начинаю фоновое обновление лимитов...');
+    console.log('🔄 Начинаю фоновое обновление суточных лимитов...');
     const start = Date.now();
 
-    // ВАЖНО: Используем pool.query, а не db.query
-
     // 1. Free
-    if (playlist_limit_free) {
-        const newLimit = parseInt(playlist_limit_free, 10);
+    if (daily_limit_free) {
+        const newLimit = parseInt(daily_limit_free, 10);
         await pool.query(`ALTER TABLE users ALTER COLUMN premium_limit SET DEFAULT ${newLimit}`);
         await pool.query(`
             UPDATE users 
             SET premium_limit = $1 
-            WHERE (premium_limit <= 10 OR premium_limit IS NULL) 
+            WHERE (premium_limit = $2 OR premium_limit IS NULL) 
               AND (premium_until IS NULL OR premium_until < NOW())
-        `, [newLimit]);
+        `, [newLimit, oldFree]);
     }
 
     // 2. Plus
-    if (playlist_limit_plus) {
+    if (daily_limit_plus) {
+        const newLimit = parseInt(daily_limit_plus, 10);
         await pool.query(`
             UPDATE users SET premium_limit = $1 
-            WHERE premium_limit = 30 AND premium_until > NOW()
-        `, [parseInt(playlist_limit_plus, 10)]);
+            WHERE premium_limit = $2 AND premium_until > NOW()
+        `, [newLimit, oldPlus]);
     }
 
     // 3. Pro
-    if (playlist_limit_pro) {
+    if (daily_limit_pro) {
+        const newLimit = parseInt(daily_limit_pro, 10);
         await pool.query(`
             UPDATE users SET premium_limit = $1 
-            WHERE premium_limit = 100 AND premium_until > NOW()
-        `, [parseInt(playlist_limit_pro, 10)]);
+            WHERE premium_limit = $2 AND premium_until > NOW()
+        `, [newLimit, oldPro]);
     }
 
     const duration = (Date.now() - start) / 1000;
-    console.log(`✅ Лимиты обновлены. Заняло: ${duration} сек.`);
+    console.log(`✅ Суточные лимиты обновлены. Заняло: ${duration} сек.`);
 }
 
 // ==================================================================
@@ -1547,13 +1553,17 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
       mode
     });
 
+    const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
+    const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
+
     let tariffName = '';
-    if (newLimit <= 3) tariffName = 'Free';
-    else if (newLimit <= 30) tariffName = 'Plus';
-    else if (newLimit <= 100) tariffName = 'Pro';
+    if (newLimit <= limitFree) tariffName = 'Free';
+    else if (newLimit <= limitPlus) tariffName = 'Plus';
+    else if (newLimit <= limitPro) tariffName = 'Pro';
     else tariffName = 'Unlimited';
 
-    const untilText = newLimit <= 3
+    const untilText = newLimit <= limitFree
       ? 'бессрочно (Free)'
       : new Date(updated.premium_until).toLocaleString('ru-RU', {
           day: '2-digit', month: '2-digit', year: 'numeric',

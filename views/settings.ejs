@@ -187,38 +187,77 @@
     </div>
   </div>
 
-  <!-- Лимиты для плейлистов -->
-  <div class="col-lg-6">
+  <!-- Лимиты и ограничения -->
+  <div class="col-lg-12">
     <div class="card shadow-sm">
       <div class="card-header fw-semibold bg-light">
-        <i class="bi bi-music-note-list me-2"></i>Лимиты для плейлистов
+        <i class="bi bi-sliders me-2"></i>Управление лимитами тарифов
       </div>
       <div class="card-body">
-        <form action="/settings/update" method="POST">
-          <div class="row g-3">
-            <div class="col-6">
-              <label for="limit-free" class="form-label small text-muted">🆓 Free</label>
-              <input type="number" class="form-control" id="limit-free" name="playlist_limit_free" 
-                     value="<%= settings.playlist_limit_free %>" min="1" max="100">
+        <form action="/settings/update" method="POST" id="limitsForm" onsubmit="return validateLimits()">
+          <div class="row g-4">
+            <!-- Колонна 1: Суточные лимиты -->
+            <div class="col-md-6 border-end">
+              <h5 class="fw-bold mb-3 text-primary"><i class="bi bi-calendar-event me-2"></i>Суточные лимиты скачиваний (в день)</h5>
+              <div class="row g-3">
+                <div class="col-6">
+                  <label for="daily-free" class="form-label small text-muted">🆓 Free</label>
+                  <input type="number" class="form-control" id="daily-free" name="daily_limit_free" 
+                         value="<%= settings.daily_limit_free || '3' %>" min="1" max="100" required>
+                </div>
+                <div class="col-6">
+                  <label for="daily-plus" class="form-label small text-muted">🎯 Plus</label>
+                  <input type="number" class="form-control" id="daily-plus" name="daily_limit_plus" 
+                         value="<%= settings.daily_limit_plus || '30' %>" min="1" max="500" required>
+                </div>
+                <div class="col-6">
+                  <label for="daily-pro" class="form-label small text-muted">💪 Pro</label>
+                  <input type="number" class="form-control" id="daily-pro" name="daily_limit_pro" 
+                         value="<%= settings.daily_limit_pro || '100' %>" min="1" max="1000" required>
+                </div>
+                <div class="col-6">
+                  <label for="daily-unlim" class="form-label small text-muted">💎 Unlimited</label>
+                  <input type="number" class="form-control" id="daily-unlim" name="daily_limit_unlim" 
+                         value="<%= settings.daily_limit_unlim || '10000' %>" min="1" max="50000" required>
+                </div>
+              </div>
             </div>
-            <div class="col-6">
-              <label for="limit-plus" class="form-label small text-muted">🎯 Plus</label>
-              <input type="number" class="form-control" id="limit-plus" name="playlist_limit_plus" 
-                     value="<%= settings.playlist_limit_plus %>" min="1" max="500">
-            </div>
-            <div class="col-6">
-              <label for="limit-pro" class="form-label small text-muted">💪 Pro</label>
-              <input type="number" class="form-control" id="limit-pro" name="playlist_limit_pro" 
-                     value="<%= settings.playlist_limit_pro %>" min="1" max="1000">
-            </div>
-            <div class="col-6">
-              <label for="limit-unlim" class="form-label small text-muted">💎 Unlimited</label>
-              <input type="number" class="form-control" id="limit-unlim" name="playlist_limit_unlim" 
-                     value="<%= settings.playlist_limit_unlim %>" min="1" max="50000">
+
+            <!-- Колонна 2: Лимиты на плейлисты -->
+            <div class="col-md-6">
+              <h5 class="fw-bold mb-3 text-success"><i class="bi bi-music-note-list me-2"></i>Лимит треков из плейлистов (за раз)</h5>
+              <div class="row g-3">
+                <div class="col-6">
+                  <label for="playlist-free" class="form-label small text-muted">🆓 Free</label>
+                  <input type="number" class="form-control" id="playlist-free" name="playlist_limit_free" 
+                         value="<%= settings.playlist_limit_free || '3' %>" min="1" max="100" required>
+                </div>
+                <div class="col-6">
+                  <label for="playlist-plus" class="form-label small text-muted">🎯 Plus</label>
+                  <input type="number" class="form-control" id="playlist-plus" name="playlist_limit_plus" 
+                         value="<%= settings.playlist_limit_plus || '30' %>" min="1" max="500" required>
+                </div>
+                <div class="col-6">
+                  <label for="playlist-pro" class="form-label small text-muted">💪 Pro</label>
+                  <input type="number" class="form-control" id="playlist-pro" name="playlist_limit_pro" 
+                         value="<%= settings.playlist_limit_pro || '100' %>" min="1" max="1000" required>
+                </div>
+                <div class="col-6">
+                  <label for="playlist-unlim" class="form-label small text-muted">💎 Unlimited</label>
+                  <input type="number" class="form-control" id="playlist-unlim" name="playlist_limit_unlim" 
+                         value="<%= settings.playlist_limit_unlim || '10000' %>" min="1" max="50000" required>
+                </div>
+              </div>
             </div>
           </div>
-          <button type="submit" class="btn btn-primary w-100 mt-3">
-            <i class="bi bi-check-lg me-2"></i>Сохранить лимиты
+
+          <div class="alert alert-info mt-4 mb-0 small">
+            <i class="bi bi-info-circle me-1"></i>
+            <strong>Правило валидации:</strong> Лимит плейлистов для каждого тарифа не может превышать его суточный лимит (но может быть равен или меньше).
+          </div>
+
+          <button type="submit" class="btn btn-primary w-100 mt-3 py-2 fw-semibold">
+            <i class="bi bi-check-lg me-2"></i>Сохранить все лимиты
           </button>
         </form>
       </div>
@@ -254,3 +293,39 @@
     </div>
   </div>
 </div>
+
+<%- contentFor('scripts') %>
+<script>
+  function validateLimits() {
+    const dailyFree = parseInt(document.getElementById('daily-free').value, 10);
+    const dailyPlus = parseInt(document.getElementById('daily-plus').value, 10);
+    const dailyPro = parseInt(document.getElementById('daily-pro').value, 10);
+    const dailyUnlim = parseInt(document.getElementById('daily-unlim').value, 10);
+
+    const playlistFree = parseInt(document.getElementById('playlist-free').value, 10);
+    const playlistPlus = parseInt(document.getElementById('playlist-plus').value, 10);
+    const playlistPro = parseInt(document.getElementById('playlist-pro').value, 10);
+    const playlistUnlim = parseInt(document.getElementById('playlist-unlim').value, 10);
+
+    let errors = [];
+
+    if (playlistFree > dailyFree) {
+      errors.push("🆓 Тариф Free: Лимит плейлистов не может превышать суточный лимит.");
+    }
+    if (playlistPlus > dailyPlus) {
+      errors.push("🎯 Тариф Plus: Лимит плейлистов не может превышать суточный лимит.");
+    }
+    if (playlistPro > dailyPro) {
+      errors.push("💪 Тариф Pro: Лимит плейлистов не может превышать суточный лимит.");
+    }
+    if (playlistUnlim > dailyUnlim) {
+      errors.push("💎 Тариф Unlimited: Лимит плейлистов не может превышать суточный лимит.");
+    }
+
+    if (errors.length > 0) {
+      alert("Ошибка валидации лимитов:\n\n" + errors.join("\n"));
+      return false;
+    }
+    return true;
+  }
+</script>

@@ -114,7 +114,7 @@ export async function resetExpiredPremiumIfNeeded(userId) {
   const sql = `
     UPDATE users
     SET
-      premium_limit = 3,
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -123,7 +123,7 @@ export async function resetExpiredPremiumIfNeeded(userId) {
     WHERE id = $1
       AND premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> 3
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
     RETURNING id
   `;
   try {
@@ -140,7 +140,7 @@ export async function resetExpiredPremiumsBulk() {
   const sql = `
     UPDATE users
     SET
-      premium_limit = 3,
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -148,7 +148,7 @@ export async function resetExpiredPremiumsBulk() {
       notified_exp_0d = FALSE
     WHERE premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> 3
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
   `;
   try {
     const { rowCount } = await query(sql);
@@ -1022,10 +1022,10 @@ export async function getReferralsByUserId(userId) {
 export async function getUsersCountByTariff() {
   const { rows } = await query(`
     SELECT CASE 
-        WHEN premium_limit <= 3 THEN 'Free'
-        WHEN premium_limit = 30 THEN 'Plus'
-        WHEN premium_limit = 100 THEN 'Pro'
-        WHEN premium_limit >= 10000 THEN 'Unlimited'
+        WHEN premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) THEN 'Free'
+        WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30) THEN 'Plus'
+        WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) THEN 'Pro'
+        WHEN premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) THEN 'Unlimited'
         ELSE 'Other'
       END as tariff,
       COUNT(id) as count
@@ -1401,8 +1401,8 @@ export async function getAllBroadcastTasks() {
           AND (
             t.target_audience = 'all' OR
             t.target_audience = 'all_users' OR
-            (t.target_audience = 'free_users' AND u.premium_limit <= 3) OR
-            (t.target_audience = 'premium_users' AND u.premium_limit > 3 AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
+            (t.target_audience = 'free_users' AND u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)) OR
+            (t.target_audience = 'premium_users' AND u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
           )
       )::int AS total_count
       
@@ -1439,16 +1439,19 @@ export async function resetStaleBroadcasts() {
 
 /* ========================= Прочее ========================= */
 
-export async function resetOtherTariffsToFree() {
-  console.log('[DB-Admin] Начинаю сброс нестандартных тарифов...');
   const sql = `
     UPDATE users
     SET
-      premium_limit = 3,
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
       premium_until = NULL,
       notified_about_expiration = FALSE
     WHERE premium_limit IS NULL
-       OR premium_limit NOT IN (3, 10, 30, 100, 10000)
+       OR premium_limit NOT IN (
+            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
+            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
+            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
+          )
   `;
   const { rowCount } = await query(sql);
   console.log(`[DB-Admin] Сброшено ${rowCount} пользователей на тариф Free.`);
@@ -1456,7 +1459,7 @@ export async function resetOtherTariffsToFree() {
 }
 
 export async function getActiveFreeUsers() {
-  const { rows } = await query(`SELECT id FROM users WHERE active = TRUE AND premium_limit <= 3`);
+  const { rows } = await query(`SELECT id FROM users WHERE active = TRUE AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`);
   return rows;
 }
 
@@ -1465,7 +1468,7 @@ export async function getActivePremiumUsers() {
     `SELECT id
      FROM users
      WHERE active = TRUE
-       AND premium_limit > 3
+       AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
        AND (premium_until IS NULL OR premium_until >= NOW())`
   );
   return rows;
@@ -1629,7 +1632,7 @@ export async function findUsersExpiringIn(days, flagField) {
     SELECT id, first_name, premium_until
     FROM users
     WHERE active = TRUE
-      AND premium_limit <> 3
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
       AND premium_until IS NOT NULL
       AND premium_until >= date_trunc('day', (NOW() AT TIME ZONE 'UTC')) + make_interval(days => $1::int)
       AND premium_until <  date_trunc('day', (NOW() AT TIME ZONE 'UTC')) + make_interval(days => ($1::int + 1))
@@ -2222,8 +2225,8 @@ export async function runSupportSystemMigration() {
     -- Индекс для быстрого поиска сообщений конкретного пользователя
     CREATE INDEX IF NOT EXISTS idx_support_messages_user ON support_messages(user_id);
 
-    -- 3. Обновляем лимит существующих пользователей с 5 до 3, чтобы соответствовать тарифной сетке
-    UPDATE users SET premium_limit = 3 WHERE premium_limit = 5;
+    -- 3. Обновляем лимит существующих пользователей с 5 до динамического лимита Free, чтобы соответствовать тарифной сетке
+    UPDATE users SET premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) WHERE premium_limit = 5;
   `;
   try {
     await query(sql);

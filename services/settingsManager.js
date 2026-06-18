@@ -6,10 +6,14 @@ let settingsCache = {};
 
 // Дефолтные значения на случай, если в БД пусто
 const DEFAULTS = {
-  playlist_limit_free: '10',
+  daily_limit_free: '3',
+  daily_limit_plus: '30',
+  daily_limit_pro: '100',
+  daily_limit_unlim: '10000',
+  playlist_limit_free: '3',
   playlist_limit_plus: '30',
   playlist_limit_pro: '100',
-  playlist_limit_unlim: '200',
+  playlist_limit_unlim: '10000',
   use_hybrid_worker: 'false', // Гибридная архитектура (воркер для Spotify/YouTube)
   use_spotify: 'true',        // Включен ли сервис Spotify
   use_youtube: 'true',        // Включен ли сервис YouTube
