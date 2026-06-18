@@ -282,19 +282,23 @@ export async function updateUserField(id, updates) {
     ? { [updates]: arguments[2] }
     : updates;
 
-  for (const field in fieldsToUpdate) {
+  const keys = Object.keys(fieldsToUpdate);
+  if (keys.length === 0) return;
+
+  for (const field of keys) {
     if (!allowedFields.has(field)) {
       throw new Error(`Недопустимое поле для обновления: ${field}`);
     }
   }
 
-  const { error } = await supabase
-    .from('users')
-    .update(fieldsToUpdate)
-    .eq('id', id);
-
-  if (error) {
-    console.error(`[DB] Ошибка при обновлении пользователя ${id}:`, error);
+  const setClauses = keys.map((key, index) => `"${key}" = $${index + 2}`).join(', ');
+  const values = keys.map(key => fieldsToUpdate[key]);
+  
+  const sql = `UPDATE users SET ${setClauses} WHERE id = $1`;
+  try {
+    await query(sql, [id, ...values]);
+  } catch (err) {
+    console.error(`[DB] Ошибка при обновлении пользователя ${id} через SQL:`, err.message);
     throw new Error('Не удалось обновить пользователя.');
   }
 }
