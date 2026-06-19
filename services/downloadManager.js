@@ -612,7 +612,13 @@ async function ensureTaskMetadata(task) {
   let { metadata, cacheKey } = task;
   const url = task.url || task.originalUrl;
   
-  if (!metadata) {
+  const hasBadTitle = !metadata?.title || 
+                      metadata.title === 'track' || 
+                      metadata.title === 'undefined' || 
+                      metadata.title === 'null' ||
+                      metadata.title === 'Unknown Title';
+                      
+  if (!metadata || hasBadTitle) {
     if (!url) throw new Error('TASK_MISSING_URL');
     
     // Если это не ссылка на SoundCloud, не мучаем их API
@@ -621,7 +627,7 @@ async function ensureTaskMetadata(task) {
         const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     } else {
-        console.warn('[Worker] Metadata отсутствует, получаем через ytdl для SoundCloud:', url);
+        console.warn('[Worker] Metadata отсутствует или некорректна, получаем через ytdl для SoundCloud:', url);
         const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     }
@@ -842,7 +848,14 @@ export async function trackDownloadProcessor(task) {
       cached = await db.findCachedTrack(task.originalUrl, { source, quality });
     }
     
-    if (cached?.fileId && cached.title && cached.title !== 'track' && cached.title !== 'undefined' && !cached.title.startsWith('scdl_') && !cached.title.startsWith('dl_')) {
+    const hasBadCachedTitle = !cached?.title || 
+                              cached.title === 'null' || 
+                              cached.title === 'undefined' || 
+                              cached.title === 'track' || 
+                              cached.title.startsWith('scdl_') || 
+                              cached.title.startsWith('dl_');
+                              
+    if (cached?.fileId && !hasBadCachedTitle) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.title}" из кэша.`);
       await bot.telegram.sendAudio(userId, cached.fileId, { 
         title: cached.title, 

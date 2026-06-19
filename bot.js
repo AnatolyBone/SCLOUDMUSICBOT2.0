@@ -1310,7 +1310,15 @@ async function handleSoundCloudUrl(ctx, url) {
             cachedTrack = await findCachedTrack(resolvedUrl, { source: 'soundcloud' });
         }
         
-        if (cachedTrack && cachedTrack.fileId && cachedTrack.title && cachedTrack.title !== 'track' && cachedTrack.title !== 'undefined' && !cachedTrack.title.startsWith('scdl_') && !cachedTrack.title.startsWith('dl_')) {
+        const hasBadCachedTitle = !cachedTrack || 
+                                  !cachedTrack.title || 
+                                  cachedTrack.title === 'null' || 
+                                  cachedTrack.title === 'undefined' || 
+                                  cachedTrack.title === 'track' || 
+                                  cachedTrack.title.startsWith('scdl_') || 
+                                  cachedTrack.title.startsWith('dl_');
+                                  
+        if (cachedTrack && cachedTrack.fileId && !hasBadCachedTitle) {
             console.log(`[Fast-Track] Трек найден в SQL, обход yt-dlp: ${cleanUrl}`);
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
             
