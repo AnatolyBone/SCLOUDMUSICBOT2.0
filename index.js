@@ -1494,7 +1494,8 @@ res.redirect('/dashboard?resetExpired=err');
         page: 'support', 
         tickets, 
         activeUserId: null, 
-        messages: [] 
+        messages: [],
+        settings: getAllSettings()
       });
     } catch (e) {
       console.error('[Support] Error:', e);
@@ -1513,7 +1514,8 @@ res.redirect('/dashboard?resetExpired=err');
         page: 'support', 
         tickets, 
         activeUserId: userId, 
-        messages 
+        messages,
+        settings: getAllSettings()
       });
     } catch (e) {
       console.error('[Support Details] Error:', e);
