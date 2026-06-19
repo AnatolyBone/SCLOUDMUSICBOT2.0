@@ -38,7 +38,7 @@
     "redis": "^4.6.7",
     "soundcloud-downloader": "^1.0.0",
     "telegraf": "^4.16.3",
-    "youtube-dl-exec": "^2.0.1"
+    "youtube-dl-exec": "^3.1.8"
   },
   "engines": {
     "node": ">=18"
