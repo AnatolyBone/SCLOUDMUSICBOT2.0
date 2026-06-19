@@ -130,9 +130,9 @@ const YTDL_OPTIONS = {
 // ========================= QUALITY PRESETS =========================
 
 export const QUALITY_PRESETS = {
-  low: { bitrate: '128K', format: 'mp3', label: '128 kbps' },
-  medium: { bitrate: '192K', format: 'mp3', label: '192 kbps' },
-  high: { bitrate: '320K', format: 'mp3', label: '320 kbps' }
+  low: { bitrate: '128K', format: 'mp3', label: 'до 128 kbps' },
+  medium: { bitrate: '192K', format: 'mp3', label: 'до 192 kbps' },
+  high: { bitrate: '320K', format: 'mp3', label: 'MP3' }
 };
 
 /**
@@ -866,8 +866,7 @@ export async function trackDownloadProcessor(task) {
       return;
     }
 
-    const qualityLabel = QUALITY_PRESETS[quality]?.label || quality;
-    statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}" (${qualityLabel})`);
+    statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}"...`);
     
     // Индикатор прогресса для пользователя
     let dots = 1;
@@ -881,7 +880,7 @@ export async function trackDownloadProcessor(task) {
             userId,
             statusMessage.message_id,
             null,
-            `⏳ Скачиваю: "${title}" (${qualityLabel})${dotString}`
+            `⏳ Скачиваю: "${title}"${dotString}`
           );
         } catch (e) {
           // Игнорируем ошибки (сообщение может быть удалено)
@@ -1497,11 +1496,16 @@ export async function trackDownloadProcessor(task) {
     const errorDetails = err?.stderr || err?.message || 'Unknown error';
     console.error(`❌ Ошибка воркера (User ${userId}):`, errorDetails);
     
-    let userMsg = `❌ Не удалось скачать трек`;
-    const trackTitle = task.metadata?.title || 'Unknown';
+    // Берём название трека - сначала из уже разрешённых метаданных (title может быть уже задан),
+    // затем из task.metadata, потом из URL как запасной вариант
+    const trackTitle = (typeof title !== 'undefined' && title && title !== 'Unknown Title')
+      ? title
+      : (task.metadata?.title || null);
     const trackUrl = task.originalUrl || task.url || '';
     
-    if (trackTitle !== 'Unknown') userMsg += `: "${trackTitle}"`;
+    let userMsg = trackTitle
+      ? `❌ Не удалось скачать: "${trackTitle}"`
+      : `❌ Не удалось скачать трек`;
     
     // Определяем причину ошибки
     let reason = 'UNKNOWN_ERROR';

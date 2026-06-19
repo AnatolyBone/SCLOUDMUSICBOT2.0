@@ -745,8 +745,8 @@ export async function findCachedTrack(key, options = {}) {
   const { source, quality } = options;
   
   try {
-    // 1. Прямой поиск по ключу (Быстрый SQL)
-    const exactSql = `SELECT * FROM track_cache WHERE url = $1 LIMIT 1`;
+    // 1. Прямой поиск по ключу (Быстрый SQL) — исключаем строки с null/пустым title
+    const exactSql = `SELECT * FROM track_cache WHERE url = $1 AND title IS NOT NULL AND title != '' LIMIT 1`;
     const { rows: exactRows } = await query(exactSql, [key]);
 
     if (exactRows.length > 0) {
@@ -780,7 +780,8 @@ export async function findCachedTrack(key, options = {}) {
     }
 
     if (scId) {
-      const scSql = `SELECT * FROM track_cache WHERE url = $1 OR url = $2 LIMIT 1`;
+      // Исключаем строки с null/пустым title при поиске по SoundCloud ID
+      const scSql = `SELECT * FROM track_cache WHERE (url = $1 OR url = $2) AND title IS NOT NULL AND title != '' LIMIT 1`;
       const { rows: scRows } = await query(scSql, [`sc:${scId}`, `https://api-v2.soundcloud.com/tracks/${scId}`]);
 
       if (scRows.length > 0) {
@@ -796,9 +797,13 @@ export async function findCachedTrack(key, options = {}) {
       .rpc('find_similar_track', { search_key: key });
 
     if (!rpcError && similarData && similarData.length > 0) {
-      const match = similarData[0];
-      console.log(`[✓ Cache HIT] ${match.title} (похожее совпадение)`);
-      return { fileId: match.file_id, ...match };
+      // Фильтруем результаты с null/пустым/битым title — не отдаём их как хит
+      const BAD_TITLES = new Set(['null', 'undefined', 'track', '']);
+      const match = similarData.find(m => m.title && !BAD_TITLES.has(m.title.trim().toLowerCase()));
+      if (match) {
+        console.log(`[✓ Cache HIT] ${match.title} (похожее совпадение)`);
+        return { fileId: match.file_id, ...match };
+      }
     }
 
     console.log(`[✗ Cache MISS] ${key.slice(0, 50)}...`);
