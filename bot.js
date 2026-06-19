@@ -959,15 +959,6 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         return;
     }
 
-    if (!session.fullTracks) {
-        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько минут.');
-        
-        const youtubeDl = getYoutubeDl();
-        const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
-        session.tracks = fullData.entries.filter(track => track && track.url);
-        session.fullTracks = true;
-    }
-
     const playlistLimit = await getPlaylistLimitForUser(userId);
     const tracksToTake = isAll ? Math.min(session.tracks.length, playlistLimit) : playlistLimit;
     
@@ -1047,32 +1038,7 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         return await ctx.answerCbQuery('Лимит исчерпан');
     }
 
-    // Проверяем, есть ли у нас уже полные данные с названиями
-    if (!session.fullTracks) {
-        // ==========================================================
-        //         ЭТО ИДЕАЛЬНОЕ РЕШЕНИЕ ДЛЯ UX
-        // ==========================================================
-        
-        // 1. Мгновенно отвечаем на нажатие
-        await ctx.answerCbQuery('⏳ Загружаю названия треков...');
-        
-        // 2. Меняем сообщение, чтобы было понятно, что идет работа
-        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько секунд.');
-        
-        try {
-            // 3. Запускаем долгую операцию
-            const youtubeDl = getYoutubeDl();
-            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
-            
-            session.tracks = fullData.entries.filter(track => track && track.url);
-            session.fullTracks = true; // Ставим флаг, что данные загружены
-            
-        } catch (e) {
-            console.error('[Playlist] Ошибка при дозагрузке названий:', e);
-            await ctx.editMessageText('❌ Не удалось получить детали плейлиста. Попробуйте снова или выберите другой вариант.');
-            return await ctx.answerCbQuery('Ошибка!', { show_alert: true });
-        }
-    }
+    await ctx.answerCbQuery();
     
     // 4. Когда все готово, показываем меню выбора с названиями
     session.currentPage = 0;
@@ -1276,7 +1242,7 @@ async function processUrlInBackground(ctx, url) {
             playlistSessions.set(ctx.from.id, {
                 playlistId,
                 title: data.title,
-                tracks: data.entries,
+                tracks: data.entries.filter(track => track && track.url),
                 originalUrl: cleanUrl,
                 selected: new Set(),
                 currentPage: 0,
@@ -1382,7 +1348,7 @@ async function handleSoundCloudUrl(ctx, url) {
             playlistSessions.set(ctx.from.id, {
                 playlistId,
                 title: data.title,
-                tracks: data.entries,
+                tracks: data.entries.filter(track => track && track.url),
                 originalUrl: cleanUrl, 
                 selected: new Set(),
                 currentPage: 0,
