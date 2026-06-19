@@ -26,7 +26,9 @@ RUN pip3 uninstall -y yt-dlp --break-system-packages --root-user-action=ignore |
 
 # Node.js зависимости
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN YOUTUBE_DL_SKIP_DOWNLOAD=true npm install --omit=dev && \
+    mkdir -p node_modules/youtube-dl-exec/bin && \
+    ln -s $(command -v yt-dlp) node_modules/youtube-dl-exec/bin/yt-dlp
 
 # Копируем исходники
 COPY . .
