@@ -920,6 +920,18 @@ export async function trackDownloadProcessor(task) {
             roundedDuration = Math.round(info.duration / 1000);
           }
           
+          // Сразу обновляем сообщение статуса с правильным названием
+          if (statusMessage) {
+            try {
+              await bot.telegram.editMessageText(
+                userId,
+                statusMessage.message_id,
+                null,
+                `⏳ Скачиваю: "${title}" (${qualityLabel})`
+              ).catch(() => {});
+            } catch (e) {}
+          }
+          
           if (!info.media || !info.media.transcodings || info.media.transcodings.length === 0) {
             throw new Error(`Нет доступных медиа-потоков для трека: ${trackId}`);
           }
