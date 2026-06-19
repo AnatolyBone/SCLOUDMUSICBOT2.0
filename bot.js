@@ -1247,7 +1247,11 @@ async function processUrlInBackground(ctx, url) {
         try {
             data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true, ignoreErrors: true });
         } catch (ytdlError) {
-            console.error(`[youtube-dl] Ошибка для ${cleanUrl}:`, ytdlError.stderr || ytdlError.message);
+            const errText = ytdlError.stderr || ytdlError.message || '';
+            console.error(`[youtube-dl] Ошибка для ${cleanUrl}:`, errText);
+            if (errText.includes('DRM protected')) {
+                throw new Error('DRM_PROTECTED');
+            }
             throw new Error('Ошибка.');
         }
 
@@ -1284,7 +1288,11 @@ async function processUrlInBackground(ctx, url) {
             });
         }
     } catch (error) {
-        if (loadingMessage) await ctx.telegram.editMessageText(ctx.chat.id, loadingMessage.message_id, undefined, '❌ Не удалось обработать ссылку.').catch(() => {});
+        let userMessage = '❌ Не удалось обработать ссылку.';
+        if (error.message === 'DRM_PROTECTED') {
+            userMessage = '❌ Этот трек защищен DRM-защитой (SoundCloud Go+). Скачивание платных премиум-треков невозможно.';
+        }
+        if (loadingMessage) await ctx.telegram.editMessageText(ctx.chat.id, loadingMessage.message_id, undefined, userMessage).catch(() => {});
     }
 }
 async function handleSoundCloudUrl(ctx, url) {
@@ -1340,7 +1348,11 @@ async function handleSoundCloudUrl(ctx, url) {
         try {
             data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true, ignoreErrors: true });
         } catch (ytdlError) {
-            console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${cleanUrl}:`, ytdlError.stderr || ytdlError.message);
+            const errText = ytdlError.stderr || ytdlError.message || '';
+            console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${cleanUrl}:`, errText);
+            if (errText.includes('DRM protected')) {
+                throw new Error('DRM_PROTECTED');
+            }
             throw new Error('Ошибка при запросе к SoundCloud (см. логи)');
         }
         
@@ -1376,7 +1388,10 @@ async function handleSoundCloudUrl(ctx, url) {
         
     } catch (error) {
         console.error('Ошибка handleSoundCloudUrl:', error.message);
-        const userMessage = '❌ Не удалось обработать ссылку. Возможно, трек удален или заблокирован.';
+        let userMessage = '❌ Не удалось обработать ссылку. Возможно, трек удален или заблокирован.';
+        if (error.message === 'DRM_PROTECTED') {
+            userMessage = '❌ Этот трек защищен DRM-защитой (SoundCloud Go+). Скачивание платных премиум-треков невозможно.';
+        }
         if (loadingMessage) {
             await ctx.telegram.editMessageText(ctx.chat.id, loadingMessage.message_id, undefined, userMessage).catch(() => {});
         } else {

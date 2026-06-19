@@ -1443,6 +1443,10 @@ export async function trackDownloadProcessor(task) {
       userMsg = `❌ К сожалению, "${trackTitle}" защищён от скачивания.\n\n💡 SoundCloud отдаёт только превью (30 сек). Попробуйте найти этот трек на Spotify.`;
       reason = 'PREVIEW_ONLY';
 
+    } else if (errorDetails.includes('DRM protected')) {
+      userMsg = `❌ К сожалению, "${trackTitle}" защищён DRM-защитой (SoundCloud Go+).\n\n💡 Скачивание платных премиум-треков технически невозможно. Попробуйте найти обычную версию или этот трек на Spotify.`;
+      reason = 'DRM_PROTECTED';
+
     } else if (err.message === 'FILE_TOO_LARGE' || err.message === 'BUFFER_TOO_LARGE') {
       // НАШ НОВЫЙ БЛОК:
       userMsg = `❌ Трек "${trackTitle}" слишком большой.\n\n💡 Лимит Telegram — 50 МБ. Попробуйте скачать в качестве 128kbps или найти версию покороче.`;
