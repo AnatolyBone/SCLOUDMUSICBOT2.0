@@ -25,19 +25,17 @@ const adminReplySessions = new Map();
 const TRACKS_PER_PAGE = 5;
 
 function getYoutubeDl() {
-    const options = {};
-    if (PROXY_URL) {
-        options.proxy = PROXY_URL;
-    }
-    
     // Убрали жесткие заголовки, которые выдавали нас Cloudflare
     const defaultFlags = {
         'no-warnings': true,
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'no-check-certificates': true
     };
+    if (PROXY_URL) {
+        defaultFlags.proxy = PROXY_URL;
+    }
     
-    return (url, flags) => execYoutubeDl(url, { ...defaultFlags, ...flags }, options);
+    return (url, flags) => execYoutubeDl(url, { ...defaultFlags, ...flags });
 }
 async function addTaskToQueue(task) {
     try {
@@ -952,7 +950,7 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько минут.');
         
         const youtubeDl = getYoutubeDl();
-        const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+        const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
         session.tracks = fullData.entries.filter(track => track && track.url);
         session.fullTracks = true;
     }
@@ -1051,7 +1049,7 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         try {
             // 3. Запускаем долгую операцию
             const youtubeDl = getYoutubeDl();
-            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
             
             session.tracks = fullData.entries.filter(track => track && track.url);
             session.fullTracks = true; // Ставим флаг, что данные загружены
@@ -1247,7 +1245,7 @@ async function processUrlInBackground(ctx, url) {
         const youtubeDl = getYoutubeDl();
         let data;
         try {
-            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true });
+            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true, ignoreErrors: true });
         } catch (ytdlError) {
             console.error(`[youtube-dl] Ошибка для ${cleanUrl}:`, ytdlError.stderr || ytdlError.message);
             throw new Error('Ошибка.');
@@ -1340,7 +1338,7 @@ async function handleSoundCloudUrl(ctx, url) {
         const youtubeDl = getYoutubeDl();
         let data;
         try {
-            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true });
+            data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true, ignoreErrors: true });
         } catch (ytdlError) {
             console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${cleanUrl}:`, ytdlError.stderr || ytdlError.message);
             throw new Error('Ошибка при запросе к SoundCloud (см. логи)');

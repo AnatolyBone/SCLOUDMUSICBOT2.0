@@ -1593,7 +1593,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       statusMessage = await safeSendMessage(userId, '🔍 Анализирую ссылку...');
       
       // Получаем инфо через yt-dlp
-      const info = await ytdl(url, { 'dump-single-json': true, 'flat-playlist': true, ...YTDL_COMMON });
+      const info = await ytdl(url, { 'dump-single-json': true, 'flat-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
       
       // Удаляем сообщение "Анализирую..."
       if (statusMessage) {
