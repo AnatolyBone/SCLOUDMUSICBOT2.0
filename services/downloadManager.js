@@ -1571,9 +1571,9 @@ export async function trackDownloadProcessor(task) {
     
     // Берём название трека - сначала из уже разрешённых метаданных (title может быть уже задан),
     // затем из task.metadata, потом из URL как запасной вариант
-    const trackTitle = (typeof title !== 'undefined' && title && title !== 'Unknown Title')
+    const trackTitle = (typeof title !== 'undefined' && title && title !== 'Unknown Title' && title !== 'null')
       ? title
-      : (task.metadata?.title || null);
+      : (task.metadata?.title && task.metadata.title !== 'null' ? task.metadata.title : null);
     const trackUrl = task.originalUrl || task.url || '';
     
     let userMsg = trackTitle
@@ -1585,11 +1585,13 @@ export async function trackDownloadProcessor(task) {
     
     // 🔥 ВОТ СЮДА ДОБАВЛЯЕМ ОБРАБОТКУ ЛИМИТА 🔥
     if (err.message === 'PREVIEW_ONLY') {
-      userMsg = `❌ К сожалению, "${trackTitle}" защищён от скачивания.\n\n💡 SoundCloud отдаёт только превью (30 сек). Попробуйте найти этот трек на Spotify.`;
+      const previewName = trackTitle || 'трек';
+      userMsg = `❌ К сожалению, "${previewName}" защищён от скачивания.\n\n💡 SoundCloud отдаёт только превью (30 сек). Попробуйте найти этот трек на Spotify.`;
       reason = 'PREVIEW_ONLY';
 
     } else if (errorDetails.includes('DRM protected')) {
-      userMsg = `❌ К сожалению, "${trackTitle}" защищён DRM-защитой (SoundCloud Go+).\n\n💡 Скачивание платных премиум-треков технически невозможно. Попробуйте найти обычную версию или этот трек на Spotify.`;
+      const drmName = trackTitle || 'трек';
+      userMsg = `❌ К сожалению, "${drmName}" защищён DRM-защитой (SoundCloud Go+).\n\n💡 Скачивание платных премиум-треков технически невозможно. Попробуйте найти обычную версию или этот трек на Spotify.`;
       reason = 'DRM_PROTECTED';
 
     } else if (err.message === 'FILE_TOO_LARGE' || err.message === 'BUFFER_TOO_LARGE') {

@@ -745,8 +745,8 @@ export async function findCachedTrack(key, options = {}) {
   const { source, quality } = options;
   
   try {
-    // 1. Прямой поиск по ключу (Быстрый SQL) — исключаем строки с null/пустым title
-    const exactSql = `SELECT * FROM track_cache WHERE url = $1 AND title IS NOT NULL AND title != '' LIMIT 1`;
+    // 1. Прямой поиск по ключу (Быстрый SQL) — fileId достаточно для хита, title не обязателен
+    const exactSql = `SELECT * FROM track_cache WHERE url = $1 AND file_id IS NOT NULL LIMIT 1`;
     const { rows: exactRows } = await query(exactSql, [key]);
 
     if (exactRows.length > 0) {
@@ -780,8 +780,8 @@ export async function findCachedTrack(key, options = {}) {
     }
 
     if (scId) {
-      // Исключаем строки с null/пустым title при поиске по SoundCloud ID
-      const scSql = `SELECT * FROM track_cache WHERE (url = $1 OR url = $2) AND title IS NOT NULL AND title != '' LIMIT 1`;
+      // fileId достаточен для кэш-хита — title не обязателен
+      const scSql = `SELECT * FROM track_cache WHERE (url = $1 OR url = $2) AND file_id IS NOT NULL LIMIT 1`;
       const { rows: scRows } = await query(scSql, [`sc:${scId}`, `https://api-v2.soundcloud.com/tracks/${scId}`]);
 
       if (scRows.length > 0) {
