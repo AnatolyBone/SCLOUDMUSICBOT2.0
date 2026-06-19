@@ -894,13 +894,15 @@ async function getPlaylistLimitForUser(userId) {
 }
 
 function generateInitialPlaylistMenu(playlistId, trackCount, playlistLimit) {
-    const downloadLimit = Math.min(trackCount, playlistLimit);
-    return Markup.inlineKeyboard([
-        [Markup.button.callback(`📥 Скачать все (${trackCount})`, `pl_download_all:${playlistId}`)],
-        [Markup.button.callback(`📥 Скачать первые ${downloadLimit}`, `pl_download_limit:${playlistId}`)],
-        [Markup.button.callback('📝 Выбрать треки вручную', `pl_select_manual:${playlistId}`)],
-        [Markup.button.callback('❌ Отмена', `pl_cancel:${playlistId}`)]
-    ]);
+    const buttons = [
+        [Markup.button.callback(`📥 Скачать все (${trackCount})`, `pl_download_all:${playlistId}`)]
+    ];
+    if (trackCount > playlistLimit) {
+        buttons.push([Markup.button.callback(`📥 Скачать первые ${playlistLimit}`, `pl_download_limit:${playlistId}`)]);
+    }
+    buttons.push([Markup.button.callback('📝 Выбрать треки вручную', `pl_select_manual:${playlistId}`)]);
+    buttons.push([Markup.button.callback('❌ Отмена', `pl_cancel:${playlistId}`)]);
+    return Markup.inlineKeyboard(buttons);
 }
 
 function generateSelectionMenu(userId) {
@@ -1308,7 +1310,7 @@ async function handleSoundCloudUrl(ctx, url) {
             cachedTrack = await findCachedTrack(resolvedUrl, { source: 'soundcloud' });
         }
         
-        if (cachedTrack && cachedTrack.fileId) {
+        if (cachedTrack && cachedTrack.fileId && cachedTrack.title && cachedTrack.title !== 'track' && cachedTrack.title !== 'undefined' && !cachedTrack.title.startsWith('scdl_') && !cachedTrack.title.startsWith('dl_')) {
             console.log(`[Fast-Track] Трек найден в SQL, обход yt-dlp: ${cleanUrl}`);
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
             

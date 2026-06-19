@@ -696,6 +696,9 @@ export async function cacheTrack({
       ON CONFLICT (url) DO UPDATE SET
         file_id = EXCLUDED.file_id,
         title = EXCLUDED.title,
+        artist = EXCLUDED.artist,
+        duration = EXCLUDED.duration,
+        thumbnail = EXCLUDED.thumbnail,
         cached_at = NOW()
     `;
     
@@ -764,6 +767,26 @@ export async function findCachedTrack(key, options = {}) {
           console.log(`[✓ Cache HIT] ${spotifyData.title} (spotify_id + quality)`);
           return { fileId: spotifyData.file_id, ...spotifyData };
         }
+      }
+    }
+
+    // 2.5. Поиск по SoundCloud ID (Быстрый SQL)
+    let scId = null;
+    if (key.startsWith('sc:')) {
+      scId = key.substring(3);
+    } else if (key.includes('soundcloud.com')) {
+      const match = key.match(/(?:tracks|tracks\/)(\d+)/);
+      if (match) scId = match[1];
+    }
+
+    if (scId) {
+      const scSql = `SELECT * FROM track_cache WHERE url = $1 OR url = $2 LIMIT 1`;
+      const { rows: scRows } = await query(scSql, [`sc:${scId}`, `https://api-v2.soundcloud.com/tracks/${scId}`]);
+
+      if (scRows.length > 0) {
+        const scData = scRows[0];
+        console.log(`[✓ Cache HIT] ${scData.title} (SoundCloud ID: ${scId})`);
+        return { fileId: scData.file_id, ...scData };
       }
     }
 

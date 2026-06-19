@@ -842,7 +842,7 @@ export async function trackDownloadProcessor(task) {
       cached = await db.findCachedTrack(task.originalUrl, { source, quality });
     }
     
-    if (cached?.fileId) {
+    if (cached?.fileId && cached.title && cached.title !== 'track' && cached.title !== 'undefined' && !cached.title.startsWith('scdl_') && !cached.title.startsWith('dl_')) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.title}" из кэша.`);
       await bot.telegram.sendAudio(userId, cached.fileId, { 
         title: cached.title, 
@@ -900,7 +900,35 @@ export async function trackDownloadProcessor(task) {
         
         // Скачиваем через scdl, но сохраняем во временный файл с конвертацией
         const { spawn } = await import('child_process');
-        const rawStream = await scdl.default.download(fullUrl);
+        let rawStream;
+        
+        // Если это API-ссылка, то скачиваем по ID напрямую, чтобы обойти resolve
+        const trackIdMatch = fullUrl.match(/(?:api(?:-v2)?\.soundcloud\.com|soundcloud\.com)\/tracks\/(\d+)/);
+        if (trackIdMatch) {
+          const trackId = parseInt(trackIdMatch[1]);
+          console.log(`[Worker/SoundCloud] Обнаружен ID трека: ${trackId}. Скачиваем напрямую.`);
+          const trackInfos = await scdl.default.getTrackInfoByID([trackId]);
+          if (!trackInfos || trackInfos.length === 0) {
+            throw new Error(`Не удалось получить информацию о треке по ID: ${trackId}`);
+          }
+          const info = trackInfos[0];
+          
+          // 🔥 ИСПРАВЛЕНИЕ: Обновляем метаданные из официального API SoundCloud
+          title = info.title || title || 'Unknown Title';
+          uploader = info.user?.username || info.publisher_metadata?.artist || info.uploader || uploader || 'Unknown Artist';
+          if (info.duration) {
+            roundedDuration = Math.round(info.duration / 1000);
+          }
+          
+          if (!info.media || !info.media.transcodings || info.media.transcodings.length === 0) {
+            throw new Error(`Нет доступных медиа-потоков для трека: ${trackId}`);
+          }
+          const { fromMediaObj } = await import('soundcloud-downloader/dist/download.js');
+          const clientID = await scdl.default.getClientID();
+          rawStream = await fromMediaObj(info.media.transcodings[0], clientID, scdl.default.axios);
+        } else {
+          rawStream = await scdl.default.download(fullUrl);
+        }
         
         // Генерируем имя временного файла
         const outputPath = path.join(TEMP_DIR, `scdl_${Date.now()}.mp3`);
