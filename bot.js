@@ -35,7 +35,20 @@ function getYoutubeDl() {
         defaultFlags.proxy = PROXY_URL;
     }
     
-    return (url, flags) => execYoutubeDl(url, { ...defaultFlags, ...flags });
+    return async (url, flags) => {
+        try {
+            return await execYoutubeDl(url, { ...defaultFlags, ...flags });
+        } catch (err) {
+            const errText = err.stderr || err.message || '';
+            if (PROXY_URL && (errText.includes('Unable to connect to proxy') || errText.includes('ProxyError') || errText.includes('Tunnel connection failed') || errText.includes('Failed to establish a new connection'))) {
+                console.warn(`[youtube-dl] Прокси (${PROXY_URL}) недоступен. Пробую без прокси... Ошибка:`, errText.slice(0, 200));
+                const flagsCopy = { ...defaultFlags, ...flags };
+                delete flagsCopy.proxy;
+                return await execYoutubeDl(url, flagsCopy);
+            }
+            throw err;
+        }
+    };
 }
 async function addTaskToQueue(task) {
     try {

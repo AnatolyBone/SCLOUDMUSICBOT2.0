@@ -2,6 +2,21 @@
 
 import ytdl from 'youtube-dl-exec';
 import { PROXY_URL, ADMIN_ID } from '../config.js';
+
+async function ytdlWithFallback(url, flags) {
+  try {
+    return await ytdl(url, flags);
+  } catch (err) {
+    const errText = err.stderr || err.message || '';
+    if (flags.proxy && (errText.includes('Unable to connect to proxy') || errText.includes('ProxyError') || errText.includes('Tunnel connection failed') || errText.includes('Failed to establish a new connection'))) {
+      console.warn(`[YouTubeManager] Прокси (${flags.proxy}) недоступен. Пробую без прокси... Ошибка:`, errText.slice(0, 200));
+      const flagsCopy = { ...flags };
+      delete flagsCopy.proxy;
+      return await ytdl(url, flagsCopy);
+    }
+    throw err;
+  }
+}
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
 
@@ -29,7 +44,7 @@ export function isYouTubeUrl(url) {
 
 async function getYouTubeMetadata(url) {
   try {
-    const info = await ytdl(url, {
+    const info = await ytdlWithFallback(url, {
       'dump-single-json': true,
       'flat-playlist': true,
       ...YTDL_COMMON

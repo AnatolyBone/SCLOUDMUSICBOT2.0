@@ -48,6 +48,21 @@ import { fileURLToPath } from 'url';
 import ytdl from 'youtube-dl-exec';
 import axios from 'axios';
 
+async function ytdlWithFallback(url, flags) {
+  try {
+    return await ytdl(url, flags);
+  } catch (err) {
+    const errText = err.stderr || err.message || '';
+    if (flags.proxy && (errText.includes('Unable to connect to proxy') || errText.includes('ProxyError') || errText.includes('Tunnel connection failed') || errText.includes('Failed to establish a new connection'))) {
+      console.warn(`[DownloadManager] Прокси (${flags.proxy}) недоступен. Пробую без прокси... Ошибка:`, errText.slice(0, 200));
+      const flagsCopy = { ...flags };
+      delete flagsCopy.proxy;
+      return await ytdl(url, flagsCopy);
+    }
+    throw err;
+  }
+}
+
 /**
  * Форматирует секунды в mm:ss
  */
@@ -603,11 +618,11 @@ async function ensureTaskMetadata(task) {
     // Если это не ссылка на SoundCloud, не мучаем их API
     if (!url.includes('soundcloud.com')) {
         console.warn('[Worker] Не SoundCloud URL, используем ytdl для метаданных:', url);
-        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     } else {
         console.warn('[Worker] Metadata отсутствует, получаем через ytdl для SoundCloud:', url);
-        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     }
     
@@ -629,7 +644,7 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
   try {
     // Получаем метаданные если нет
     if (!metadata) {
-      const info = await ytdl(url, { 
+      const info = await ytdlWithFallback(url, { 
         'dump-single-json': true, 
         'skip-download': true,
         ...YTDL_OPTIONS 
@@ -1597,7 +1612,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       statusMessage = await safeSendMessage(userId, '🔍 Анализирую ссылку...');
       
       // Получаем инфо через yt-dlp
-      const info = await ytdl(url, { 'dump-single-json': true, 'flat-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+      const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'flat-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
       
       // Удаляем сообщение "Анализирую..."
       if (statusMessage) {

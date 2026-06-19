@@ -3,6 +3,21 @@
 import ytdl from 'youtube-dl-exec';
 import crypto from 'crypto';
 import { PROXY_URL } from '../config.js';
+
+async function ytdlWithFallback(url, flags) {
+  try {
+    return await ytdl(url, flags);
+  } catch (err) {
+    const errText = err.stderr || err.message || '';
+    if (flags.proxy && (errText.includes('Unable to connect to proxy') || errText.includes('ProxyError') || errText.includes('Tunnel connection failed') || errText.includes('Failed to establish a new connection'))) {
+      console.warn(`[SearchManager] Прокси (${flags.proxy}) недоступен. Пробую без прокси... Ошибка:`, errText.slice(0, 200));
+      const flagsCopy = { ...flags };
+      delete flagsCopy.proxy;
+      return await ytdl(url, flagsCopy);
+    }
+    throw err;
+  }
+}
 import { searchTracksInCache, logSearchQuery, logFailedSearch } from '../db.js';
 import redisService from './redisClient.js';
 
@@ -48,7 +63,7 @@ async function searchLiveOnSoundCloud(query) {
         );
         
         // Запускаем поиск через yt-dlp
-        const ytdlPromise = ytdl(`scsearch${SEARCH_RESULTS_LIMIT}:${query}`, {
+        const ytdlPromise = ytdlWithFallback(`scsearch${SEARCH_RESULTS_LIMIT}:${query}`, {
             dumpSingleJson: true,
             proxy: PROXY_URL || undefined,
             noWarnings: true
