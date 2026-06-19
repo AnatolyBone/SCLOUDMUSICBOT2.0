@@ -24,25 +24,59 @@ const playlistSessions = new Map();
 const adminReplySessions = new Map();
 const TRACKS_PER_PAGE = 5;
 
+// ===== PROXY CIRCUIT BREAKER (bot.js) =====
+const BOT_PROXY_ERR = [
+    'Unable to connect to proxy', 'ProxyError',
+    'Tunnel connection failed', 'Failed to establish a new connection', 'Cannot connect to proxy',
+];
+let _botProxyCircuitOpen = false;
+let _botProxyFailCount = 0;
+const BOT_PROXY_FAIL_THRESHOLD = 2;
+const BOT_PROXY_RESET_MS = 5 * 60 * 1000;
+
 function getYoutubeDl() {
-    // Убрали жесткие заголовки, которые выдавали нас Cloudflare
     const defaultFlags = {
         'no-warnings': true,
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'no-check-certificates': true
+        'no-check-certificates': true,
+        'socket-timeout': 15,  // Быстрая детекция мёртвого прокси
     };
     if (PROXY_URL) {
         defaultFlags.proxy = PROXY_URL;
     }
     
     return async (url, flags) => {
+        // Если цепь открыта — сразу без прокси
+        const mergedFlags = { ...defaultFlags, ...flags };
+        if (PROXY_URL && _botProxyCircuitOpen) {
+            console.warn('[youtube-dl] Proxy circuit breaker OPEN — работаю напрямую');
+            delete mergedFlags.proxy;
+            return await execYoutubeDl(url, mergedFlags);
+        }
+
         try {
-            return await execYoutubeDl(url, { ...defaultFlags, ...flags });
+            const result = await execYoutubeDl(url, mergedFlags);
+            if (PROXY_URL && _botProxyFailCount > 0) _botProxyFailCount = 0;
+            return result;
         } catch (err) {
             const errText = err.stderr || err.message || '';
-            if (PROXY_URL && (errText.includes('Unable to connect to proxy') || errText.includes('ProxyError') || errText.includes('Tunnel connection failed') || errText.includes('Failed to establish a new connection'))) {
-                console.warn(`[youtube-dl] Прокси (${PROXY_URL}) недоступен. Пробую без прокси... Ошибка:`, errText.slice(0, 200));
-                const flagsCopy = { ...defaultFlags, ...flags };
+            const isProxyErr = PROXY_URL && BOT_PROXY_ERR.some(p => errText.includes(p));
+
+            if (isProxyErr) {
+                _botProxyFailCount++;
+                console.warn(`[youtube-dl] Ошибка proxy #${_botProxyFailCount}: ${errText.slice(0, 200)}`);
+
+                if (_botProxyFailCount >= BOT_PROXY_FAIL_THRESHOLD && !_botProxyCircuitOpen) {
+                    _botProxyCircuitOpen = true;
+                    console.error(`[youtube-dl] 🔴 Proxy circuit breaker OPENED. Следующие ${BOT_PROXY_RESET_MS / 60000} мин. — без прокси.`);
+                    setTimeout(() => {
+                        _botProxyCircuitOpen = false;
+                        _botProxyFailCount = 0;
+                        console.log('[youtube-dl] 🟡 Proxy circuit breaker RESET');
+                    }, BOT_PROXY_RESET_MS);
+                }
+
+                const flagsCopy = { ...mergedFlags };
                 delete flagsCopy.proxy;
                 return await execYoutubeDl(url, flagsCopy);
             }
@@ -50,6 +84,7 @@ function getYoutubeDl() {
         }
     };
 }
+
 async function addTaskToQueue(task) {
     try {
         // Валидируем payload (проверяем, что задача не "пустая")

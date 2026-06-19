@@ -48,13 +48,57 @@ import { fileURLToPath } from 'url';
 import ytdl from 'youtube-dl-exec';
 import axios from 'axios';
 
+// ===== PROXY CIRCUIT BREAKER =====
+// Если прокси нет, все последующие запросы сразу идут без прокси — без ожидания 40-120с timeout'а
+let _proxyCircuitOpen = false;
+let _proxyFailCount = 0;
+const PROXY_FAIL_THRESHOLD = 2;    // сколько ошибок подряд до открытия цепи
+const PROXY_RESET_MS = 5 * 60 * 1000; // попытка снова через 5 минут
+
+const PROXY_ERR_PATTERNS = [
+  'Unable to connect to proxy',
+  'ProxyError',
+  'Tunnel connection failed',
+  'Failed to establish a new connection',
+  'Cannot connect to proxy',
+];
+
 async function ytdlWithFallback(url, flags) {
+  // Если цепь открыта — сразу убираем proxy из флагов без лишнего ожидания
+  if (flags.proxy && _proxyCircuitOpen) {
+    console.warn('[DownloadManager] Proxy circuit breaker OPEN — пропускаю прокси, работаю напрямую');
+    const flagsCopy = { ...flags };
+    delete flagsCopy.proxy;
+    return await ytdl(url, flagsCopy);
+  }
+
   try {
-    return await ytdl(url, flags);
+    const result = await ytdl(url, flags);
+    // Успех — сбрасываем счётчик ошибок прокси
+    if (flags.proxy && _proxyFailCount > 0) {
+      console.log('[DownloadManager] Proxy работает, сбрасываю счётчик ошибок');
+      _proxyFailCount = 0;
+    }
+    return result;
   } catch (err) {
     const errText = err.stderr || err.message || '';
-    if (flags.proxy && (errText.includes('Unable to connect to proxy') || errText.includes('ProxyError') || errText.includes('Tunnel connection failed') || errText.includes('Failed to establish a new connection'))) {
-      console.warn(`[DownloadManager] Прокси (${flags.proxy}) недоступен. Пробую без прокси... Ошибка:`, errText.slice(0, 200));
+    const isProxyErr = flags.proxy && PROXY_ERR_PATTERNS.some(p => errText.includes(p));
+
+    if (isProxyErr) {
+      _proxyFailCount++;
+      console.warn(`[DownloadManager] Ошибка proxy #${_proxyFailCount}: ${errText.slice(0, 200)}`);
+
+      if (_proxyFailCount >= PROXY_FAIL_THRESHOLD && !_proxyCircuitOpen) {
+        _proxyCircuitOpen = true;
+        console.error(`[DownloadManager] 🔴 Proxy circuit breaker OPENED (ошибок: ${_proxyFailCount}). Следующие ${PROXY_RESET_MS / 60000} мин. — без прокси.`);
+        setTimeout(() => {
+          _proxyCircuitOpen = false;
+          _proxyFailCount = 0;
+          console.log('[DownloadManager] 🟡 Proxy circuit breaker RESET — попытаю прокси снова...');
+        }, PROXY_RESET_MS);
+      }
+
+      // Немедленно повторяем без прокси
       const flagsCopy = { ...flags };
       delete flagsCopy.proxy;
       return await ytdl(url, flagsCopy);
@@ -116,7 +160,7 @@ const YTDL_COMMON = {
   'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
   proxy: PROXY_URL,
   retries: 3,
-  'socket-timeout': 120,
+  'socket-timeout': 15,  // Уменьшено с 120 до 15с — быстрая детекция мёртвого прокси
   'no-warnings': true,
 };
 
