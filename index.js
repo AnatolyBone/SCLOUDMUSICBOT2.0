@@ -2,6 +2,7 @@
 // index.js (продакшен-вебхук с диагностикой, быстрый дашборд, /tmp для загрузок, Referer)
 
 import express from 'express';
+import axios from 'axios';
 import session from 'express-session';
 import compression from 'compression';
 import path from 'path';
@@ -1528,6 +1529,31 @@ res.redirect('/dashboard?resetExpired=err');
       res.json({ success: true, messages });
     } catch (e) {
       res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.get('/support/file/:fileId', requireAuth, async (req, res) => {
+    const { fileId } = req.params;
+    try {
+      const fileLink = await bot.telegram.getFileLink(fileId);
+      const url = typeof fileLink === 'string' ? fileLink : fileLink.href;
+
+      const response = await axios({
+        method: 'get',
+        url: url,
+        responseType: 'stream'
+      });
+
+      const contentType = response.headers['content-type'];
+      if (contentType) {
+        res.setHeader('Content-Type', contentType);
+      }
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+
+      response.data.pipe(res);
+    } catch (e) {
+      console.error('[Support File Proxy] Error:', e.message);
+      res.status(404).send('File not found');
     }
   });
 

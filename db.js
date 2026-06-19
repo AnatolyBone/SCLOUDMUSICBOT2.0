@@ -2258,6 +2258,11 @@ export async function runSupportSystemMigration() {
 
     -- 3. Обновляем лимит существующих пользователей с 5 до динамического лимита Free, чтобы соответствовать тарифной сетке
     UPDATE users SET premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) WHERE premium_limit = 5;
+
+    -- 4. Добавляем колонки для поддержки медиафайлов в техподдержке
+    ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS media_type VARCHAR(50) DEFAULT 'text';
+    ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS file_id TEXT DEFAULT NULL;
+    ALTER TABLE support_messages ALTER COLUMN message_text DROP NOT NULL;
   `;
   try {
     await query(sql);
@@ -2267,15 +2272,15 @@ export async function runSupportSystemMigration() {
   }
 }
 
-export async function createSupportMessage(userId, text, sender) {
+export async function createSupportMessage(userId, text, sender, mediaType = 'text', fileId = null) {
   const sql = `
-    INSERT INTO support_messages (user_id, message_text, sender, is_read)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO support_messages (user_id, message_text, sender, is_read, media_type, file_id)
+    VALUES ($1, $2, $3, $4, $5, $6)
     RETURNING *
   `;
   // Если отправитель - админ, сообщение считается прочитанным по умолчанию
   const isRead = sender === 'admin';
-  const { rows } = await query(sql, [userId, text, sender, isRead]);
+  const { rows } = await query(sql, [userId, text, sender, isRead, mediaType, fileId]);
   return rows[0];
 }
 

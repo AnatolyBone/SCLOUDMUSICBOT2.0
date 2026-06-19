@@ -196,7 +196,16 @@
             <% } else { %>
               <% messages.forEach(msg => { %>
                 <div class="message-bubble <%= msg.sender === 'admin' ? 'message-admin' : 'message-user' %>">
-                  <span class="message-text"><%- linkify(msg.message_text) %></span>
+                  <span class="message-text">
+                    <% if (msg.media_type === 'photo' && msg.file_id) { %>
+                      <div class="mb-2">
+                        <a href="/support/file/<%= msg.file_id %>" target="_blank">
+                          <img src="/support/file/<%= msg.file_id %>" class="img-fluid rounded" style="max-height: 250px; cursor: zoom-in;" alt="Screenshot">
+                        </a>
+                      </div>
+                    <% } %>
+                    <%- linkify(msg.message_text) %>
+                  </span>
                   <span class="message-time"><%= formatDate(msg.created_at) %></span>
                 </div>
               <% }); %>
@@ -325,7 +334,27 @@
     
     const textSpan = document.createElement('span');
     textSpan.className = 'message-text';
-    textSpan.innerHTML = clientLinkify(msg.message_text);
+
+    // Рендерим фото, если оно есть
+    if (msg.media_type === 'photo' && msg.file_id) {
+      const imgDiv = document.createElement('div');
+      imgDiv.className = 'mb-2';
+      const a = document.createElement('a');
+      a.href = `/support/file/${msg.file_id}`;
+      a.target = '_blank';
+      const img = document.createElement('img');
+      img.src = `/support/file/${msg.file_id}`;
+      img.className = 'img-fluid rounded';
+      img.style.maxHeight = '250px';
+      img.style.cursor = 'zoom-in';
+      a.appendChild(img);
+      imgDiv.appendChild(a);
+      textSpan.appendChild(imgDiv);
+    }
+
+    const captionSpan = document.createElement('span');
+    captionSpan.innerHTML = clientLinkify(msg.message_text);
+    textSpan.appendChild(captionSpan);
     
     const timeSpan = document.createElement('span');
     timeSpan.className = 'message-time';

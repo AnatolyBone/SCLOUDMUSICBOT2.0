@@ -1470,6 +1470,43 @@ const handleMediaForShazam = async (ctx) => {
 // Подключаем обработчик ко всем медиа-типам
 bot.on(['voice', 'video_note', 'audio', 'video'], handleMediaForShazam);
 
+bot.on('photo', async (ctx) => {
+    if (isShuttingDown()) return;
+    if (ctx.chat.type !== 'private') return;
+
+    const user = ctx.state.user;
+    if (user && user.support_mode) {
+        try {
+            const photo = ctx.message.photo[ctx.message.photo.length - 1];
+            const fileId = photo.file_id;
+            const caption = ctx.message.caption || '';
+
+            await createSupportMessage(ctx.from.id, caption, 'user', 'photo', fileId);
+
+            const safeName = ctx.from.first_name ? ctx.from.first_name.replace(/</g, '&lt;').replace(/>/g, '&gt;') : 'Без имени';
+            const adminMessage = `📷 <b>Новое фото в поддержку!</b>\n` +
+                `<b>От:</b> ${safeName} (ID: <code>${ctx.from.id}</code>, @${ctx.from.username || ''})\n` +
+                (caption ? `<b>Подпись:</b> <i>"${caption}"</i>` : '');
+
+            await bot.telegram.sendPhoto(ADMIN_ID, fileId, {
+                caption: adminMessage,
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('✍️ Ответить', `reply_user:${ctx.from.id}`)]
+                ])
+            });
+
+            await ctx.reply('✅ Ваше фото отправлено в поддержку. Ожидайте ответа.', Markup.inlineKeyboard([
+                [Markup.button.callback('❌ Выйти из поддержки', 'support_exit')]
+            ]));
+        } catch (e) {
+            console.error('Ошибка при обработке фото в поддержке:', e.message);
+            await ctx.reply('❌ Не удалось отправить фото. Попробуйте еще раз.').catch(() => {});
+        }
+        return;
+    }
+});
+
 bot.on('text', async (ctx) => {
     if (isShuttingDown()) return;
     
