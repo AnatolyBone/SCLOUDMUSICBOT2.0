@@ -312,6 +312,42 @@
     </div>
   </div>
 
+  <!-- Настройки прокси -->
+  <div class="col-lg-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-header fw-semibold bg-light">
+        <i class="bi bi-hdd-network-fill me-2 text-secondary"></i>Прокси для yt-dlp
+      </div>
+      <div class="card-body">
+        <form action="/settings/update" method="POST" id="proxySettingsForm"
+              onsubmit="document.getElementById('useProxyValue').value = document.getElementById('useProxyToggle').checked ? 'true' : 'false';">
+          <input type="hidden" id="useProxyValue" name="use_proxy" value="<%= settings.use_proxy || 'false' %>">
+
+          <div class="mb-3 d-flex align-items-center gap-3">
+            <input class="form-check-input" type="checkbox" id="useProxyToggle"
+                   <%= settings.use_proxy === 'true' ? 'checked' : '' %> style="width: 2.5rem; height: 1.25rem;">
+            <label class="form-check-label fw-semibold" for="useProxyToggle">Включить прокси</label>
+          </div>
+
+          <div class="mb-2">
+            <label for="proxyUrl" class="form-label small text-muted">URL прокси <span class="text-danger">*</span></label>
+            <input type="text" class="form-control form-control-sm font-monospace"
+                   id="proxyUrl" name="proxy_url"
+                   placeholder="http://user:pass@host:port"
+                   value="<%= settings.proxy_url || '' %>">
+            <div class="form-text text-muted">
+              Поддерживаются HTTP/HTTPS/SOCKS5 прокси. Circuit breaker автоматически отключает нерабочий прокси.
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-sm btn-outline-secondary mt-1">
+            <i class="bi bi-check-lg me-1"></i>Сохранить настройки прокси
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Шаблоны ответов техподдержки -->
   <div class="col-lg-6">
     <div class="card shadow-sm h-100">

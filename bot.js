@@ -34,21 +34,38 @@ let _botProxyFailCount = 0;
 const BOT_PROXY_FAIL_THRESHOLD = 2;
 const BOT_PROXY_RESET_MS = 5 * 60 * 1000;
 
+/** Динамически читает URL прокси из настроек бота */
+function getBotProxyUrl() {
+    try {
+        if (getSetting('use_proxy') !== 'true') return null;
+        return getSetting('proxy_url') || null;
+    } catch {
+        return null;
+    }
+}
+
 function getYoutubeDl() {
     const defaultFlags = {
         'no-warnings': true,
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'no-check-certificates': true,
-        'socket-timeout': 15,  // Быстрая детекция мёртвого прокси
+        'socket-timeout': 15,
     };
-    if (PROXY_URL) {
-        defaultFlags.proxy = PROXY_URL;
-    }
-    
+
     return async (url, flags) => {
-        // Если цепь открыта — сразу без прокси
+        const currentProxy = getBotProxyUrl();
         const mergedFlags = { ...defaultFlags, ...flags };
-        if (PROXY_URL && _botProxyCircuitOpen) {
+
+        // Прокси выключен — убираем из флагов
+        if (!currentProxy) {
+            delete mergedFlags.proxy;
+            return await execYoutubeDl(url, mergedFlags);
+        }
+
+        mergedFlags.proxy = currentProxy;
+
+        // Цепь открыта — работаем без прокси
+        if (_botProxyCircuitOpen) {
             console.warn('[youtube-dl] Proxy circuit breaker OPEN — работаю напрямую');
             delete mergedFlags.proxy;
             return await execYoutubeDl(url, mergedFlags);
@@ -56,11 +73,11 @@ function getYoutubeDl() {
 
         try {
             const result = await execYoutubeDl(url, mergedFlags);
-            if (PROXY_URL && _botProxyFailCount > 0) _botProxyFailCount = 0;
+            if (_botProxyFailCount > 0) _botProxyFailCount = 0;
             return result;
         } catch (err) {
             const errText = err.stderr || err.message || '';
-            const isProxyErr = PROXY_URL && BOT_PROXY_ERR.some(p => errText.includes(p));
+            const isProxyErr = BOT_PROXY_ERR.some(p => errText.includes(p));
 
             if (isProxyErr) {
                 _botProxyFailCount++;
@@ -84,6 +101,7 @@ function getYoutubeDl() {
         }
     };
 }
+
 
 async function addTaskToQueue(task) {
     try {

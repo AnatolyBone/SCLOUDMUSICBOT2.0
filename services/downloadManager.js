@@ -6,7 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
-import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID } from '../config.js';
+import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID } from '../config.js';
 
 // Логика определения пути к кукам:
 // 1. Сначала ищем в секретах Render (/etc/secrets/cookies.txt)
@@ -63,9 +63,33 @@ const PROXY_ERR_PATTERNS = [
   'Cannot connect to proxy',
 ];
 
+/**
+ * Динамически читает URL прокси из настроек.
+ * Если прокси выключен — возвращает null.
+ */
+function getProxyUrl() {
+  try {
+    const useProxy = getSetting('use_proxy');
+    if (useProxy !== 'true') return null;
+    return getSetting('proxy_url') || null;
+  } catch {
+    return null;
+  }
+}
+
 async function ytdlWithFallback(url, flags) {
+  const currentProxy = getProxyUrl();
+  // Если прокси выключен — убираем из флагов
+  if (!currentProxy) {
+    const flagsCopy = { ...flags };
+    delete flagsCopy.proxy;
+    return await ytdl(url, flagsCopy);
+  }
+
+  const flagsWithProxy = { ...flags, proxy: currentProxy };
+
   // Если цепь открыта — сразу убираем proxy из флагов без лишнего ожидания
-  if (flags.proxy && _proxyCircuitOpen) {
+  if (_proxyCircuitOpen) {
     console.warn('[DownloadManager] Proxy circuit breaker OPEN — пропускаю прокси, работаю напрямую');
     const flagsCopy = { ...flags };
     delete flagsCopy.proxy;
@@ -73,16 +97,16 @@ async function ytdlWithFallback(url, flags) {
   }
 
   try {
-    const result = await ytdl(url, flags);
+    const result = await ytdl(url, flagsWithProxy);
     // Успех — сбрасываем счётчик ошибок прокси
-    if (flags.proxy && _proxyFailCount > 0) {
+    if (_proxyFailCount > 0) {
       console.log('[DownloadManager] Proxy работает, сбрасываю счётчик ошибок');
       _proxyFailCount = 0;
     }
     return result;
   } catch (err) {
     const errText = err.stderr || err.message || '';
-    const isProxyErr = flags.proxy && PROXY_ERR_PATTERNS.some(p => errText.includes(p));
+    const isProxyErr = PROXY_ERR_PATTERNS.some(p => errText.includes(p));
 
     if (isProxyErr) {
       _proxyFailCount++;
@@ -153,16 +177,20 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 4;
 
-// Настройки для yt-dlp
-const YTDL_COMMON = {
-  'format': 'bestaudio[ext=mp3]/bestaudio[ext=opus]/bestaudio',
-  'ffmpeg-location': ffmpegPath,
-  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-  proxy: PROXY_URL,
-  retries: 3,
-  'socket-timeout': 15,  // Уменьшено с 120 до 15с — быстрая детекция мёртвого прокси
-  'no-warnings': true,
-};
+// Настройки для yt-dlp — строится динамически, чтобы читать proxy из settingsManager
+function getYtdlCommon() {
+  return {
+    'format': 'bestaudio[ext=mp3]/bestaudio[ext=opus]/bestaudio',
+    'ffmpeg-location': ffmpegPath,
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+    retries: 3,
+    'socket-timeout': 15,
+    'no-warnings': true,
+    // proxy не указываем здесь — ytdlWithFallback сам читает из getSetting('proxy_url')
+  };
+}
+// Вызываем один раз при старте — proxy не нужен здесь, ytdlWithFallback добавляет его динамически
+const YTDL_COMMON = getYtdlCommon();
 
 // Базовые опции для получения метаданных/скачиваний через yt-dlp
 const YTDL_OPTIONS = {
@@ -170,6 +198,7 @@ const YTDL_OPTIONS = {
   'no-playlist': true,
   'ignore-errors': true
 };
+
 
 // ========================= QUALITY PRESETS =========================
 
