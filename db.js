@@ -696,9 +696,6 @@ export async function cacheTrack({
       ON CONFLICT (url) DO UPDATE SET
         file_id = EXCLUDED.file_id,
         title = EXCLUDED.title,
-        artist = EXCLUDED.artist,
-        duration = EXCLUDED.duration,
-        thumbnail = EXCLUDED.thumbnail,
         cached_at = NOW()
     `;
     
@@ -745,8 +742,8 @@ export async function findCachedTrack(key, options = {}) {
   const { source, quality } = options;
   
   try {
-    // 1. Прямой поиск по ключу (Быстрый SQL) — fileId достаточно для хита, title не обязателен
-    const exactSql = `SELECT * FROM track_cache WHERE url = $1 AND file_id IS NOT NULL LIMIT 1`;
+    // 1. Прямой поиск по ключу (Быстрый SQL)
+    const exactSql = `SELECT * FROM track_cache WHERE url = $1 LIMIT 1`;
     const { rows: exactRows } = await query(exactSql, [key]);
 
     if (exactRows.length > 0) {
@@ -770,40 +767,15 @@ export async function findCachedTrack(key, options = {}) {
       }
     }
 
-    // 2.5. Поиск по SoundCloud ID (Быстрый SQL)
-    let scId = null;
-    if (key.startsWith('sc:')) {
-      scId = key.substring(3);
-    } else if (key.includes('soundcloud.com')) {
-      const match = key.match(/(?:tracks|tracks\/)(\d+)/);
-      if (match) scId = match[1];
-    }
-
-    if (scId) {
-      // fileId достаточен для кэш-хита — title не обязателен
-      const scSql = `SELECT * FROM track_cache WHERE (url = $1 OR url = $2) AND file_id IS NOT NULL LIMIT 1`;
-      const { rows: scRows } = await query(scSql, [`sc:${scId}`, `https://api-v2.soundcloud.com/tracks/${scId}`]);
-
-      if (scRows.length > 0) {
-        const scData = scRows[0];
-        console.log(`[✓ Cache HIT] ${scData.title} (SoundCloud ID: ${scId})`);
-        return { fileId: scData.file_id, ...scData };
-      }
-    }
-
     // 3. Нечёткий поиск 
     // ВОЗВРАЩАЕМ ВЫЗОВ ЧЕРЕЗ SUPABASE, чтобы избежать ошибки с типами (unknown)
     const { data: similarData, error: rpcError } = await supabase
       .rpc('find_similar_track', { search_key: key });
 
     if (!rpcError && similarData && similarData.length > 0) {
-      // Фильтруем результаты с null/пустым/битым title — не отдаём их как хит
-      const BAD_TITLES = new Set(['null', 'undefined', 'track', '']);
-      const match = similarData.find(m => m.title && !BAD_TITLES.has(m.title.trim().toLowerCase()));
-      if (match) {
-        console.log(`[✓ Cache HIT] ${match.title} (похожее совпадение)`);
-        return { fileId: match.file_id, ...match };
-      }
+      const match = similarData[0];
+      console.log(`[✓ Cache HIT] ${match.title} (похожее совпадение)`);
+      return { fileId: match.file_id, ...match };
     }
 
     console.log(`[✗ Cache MISS] ${key.slice(0, 50)}...`);

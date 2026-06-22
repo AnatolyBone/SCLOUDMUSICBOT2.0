@@ -6,7 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
-import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID } from '../config.js';
+import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
 
 // Логика определения пути к кукам:
 // 1. Сначала ищем в секретах Render (/etc/secrets/cookies.txt)
@@ -47,89 +47,6 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import ytdl from 'youtube-dl-exec';
 import axios from 'axios';
-
-// ===== PROXY CIRCUIT BREAKER =====
-// Если прокси нет, все последующие запросы сразу идут без прокси — без ожидания 40-120с timeout'а
-let _proxyCircuitOpen = false;
-let _proxyFailCount = 0;
-const PROXY_FAIL_THRESHOLD = 2;    // сколько ошибок подряд до открытия цепи
-const PROXY_RESET_MS = 5 * 60 * 1000; // попытка снова через 5 минут
-
-const PROXY_ERR_PATTERNS = [
-  'Unable to connect to proxy',
-  'ProxyError',
-  'Tunnel connection failed',
-  'Failed to establish a new connection',
-  'Cannot connect to proxy',
-];
-
-/**
- * Динамически читает URL прокси из настроек.
- * Если прокси выключен — возвращает null.
- */
-function getProxyUrl() {
-  try {
-    const useProxy = getSetting('use_proxy');
-    if (useProxy !== 'true') return null;
-    return getSetting('proxy_url') || null;
-  } catch {
-    return null;
-  }
-}
-
-async function ytdlWithFallback(url, flags) {
-  const currentProxy = getProxyUrl();
-  // Если прокси выключен — убираем из флагов
-  if (!currentProxy) {
-    const flagsCopy = { ...flags };
-    delete flagsCopy.proxy;
-    return await ytdl(url, flagsCopy);
-  }
-
-  const flagsWithProxy = { ...flags, proxy: currentProxy };
-
-  // Если цепь открыта — сразу убираем proxy из флагов без лишнего ожидания
-  if (_proxyCircuitOpen) {
-    console.warn('[DownloadManager] Proxy circuit breaker OPEN — пропускаю прокси, работаю напрямую');
-    const flagsCopy = { ...flags };
-    delete flagsCopy.proxy;
-    return await ytdl(url, flagsCopy);
-  }
-
-  try {
-    const result = await ytdl(url, flagsWithProxy);
-    // Успех — сбрасываем счётчик ошибок прокси
-    if (_proxyFailCount > 0) {
-      console.log('[DownloadManager] Proxy работает, сбрасываю счётчик ошибок');
-      _proxyFailCount = 0;
-    }
-    return result;
-  } catch (err) {
-    const errText = err.stderr || err.message || '';
-    const isProxyErr = PROXY_ERR_PATTERNS.some(p => errText.includes(p));
-
-    if (isProxyErr) {
-      _proxyFailCount++;
-      console.warn(`[DownloadManager] Ошибка proxy #${_proxyFailCount}: ${errText.slice(0, 200)}`);
-
-      if (_proxyFailCount >= PROXY_FAIL_THRESHOLD && !_proxyCircuitOpen) {
-        _proxyCircuitOpen = true;
-        console.error(`[DownloadManager] 🔴 Proxy circuit breaker OPENED (ошибок: ${_proxyFailCount}). Следующие ${PROXY_RESET_MS / 60000} мин. — без прокси.`);
-        setTimeout(() => {
-          _proxyCircuitOpen = false;
-          _proxyFailCount = 0;
-          console.log('[DownloadManager] 🟡 Proxy circuit breaker RESET — попытаю прокси снова...');
-        }, PROXY_RESET_MS);
-      }
-
-      // Немедленно повторяем без прокси
-      const flagsCopy = { ...flags };
-      delete flagsCopy.proxy;
-      return await ytdl(url, flagsCopy);
-    }
-    throw err;
-  }
-}
 
 /**
  * Форматирует секунды в mm:ss
@@ -177,20 +94,16 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 4;
 
-// Настройки для yt-dlp — строится динамически, чтобы читать proxy из settingsManager
-function getYtdlCommon() {
-  return {
-    'format': 'bestaudio[ext=mp3]/bestaudio[ext=opus]/bestaudio',
-    'ffmpeg-location': ffmpegPath,
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-    retries: 3,
-    'socket-timeout': 15,
-    'no-warnings': true,
-    // proxy не указываем здесь — ytdlWithFallback сам читает из getSetting('proxy_url')
-  };
-}
-// Вызываем один раз при старте — proxy не нужен здесь, ytdlWithFallback добавляет его динамически
-const YTDL_COMMON = getYtdlCommon();
+// Настройки для yt-dlp
+const YTDL_COMMON = {
+  'format': 'bestaudio[ext=mp3]/bestaudio[ext=opus]/bestaudio',
+  'ffmpeg-location': ffmpegPath,
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+  proxy: PROXY_URL,
+  retries: 3,
+  'socket-timeout': 120,
+  'no-warnings': true,
+};
 
 // Базовые опции для получения метаданных/скачиваний через yt-dlp
 const YTDL_OPTIONS = {
@@ -199,13 +112,12 @@ const YTDL_OPTIONS = {
   'ignore-errors': true
 };
 
-
 // ========================= QUALITY PRESETS =========================
 
 export const QUALITY_PRESETS = {
-  low: { bitrate: '128K', format: 'mp3', label: 'до 128 kbps' },
-  medium: { bitrate: '192K', format: 'mp3', label: 'до 192 kbps' },
-  high: { bitrate: '320K', format: 'mp3', label: 'MP3' }
+  low: { bitrate: '128K', format: 'mp3', label: '128 kbps' },
+  medium: { bitrate: '192K', format: 'mp3', label: '192 kbps' },
+  high: { bitrate: '320K', format: 'mp3', label: '320 kbps' }
 };
 
 /**
@@ -506,160 +418,48 @@ async function safeSendMessage(userId, text, extra = {}) {
   }
 }
 
-// Порог скачиваний для рекламы Яндекс Музыки
-const YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD = 3;
+async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null) {
+  const updatedUser = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
+  if (updatedUser) {
+    checkAndSendYandexPromo(userId, updatedUser);
+  }
+  return updatedUser;
+}
 
 /** Запасной URL, если в админке очистили yandex_promo_url */
 const YANDEX_PROMO_URL_FALLBACK =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
-async function checkAndSendGenericPromo(
-  userId,
-  user,
-  shownFlag,
-  targetDownloads,
-  markShownCallback,
-  messageKey,
-  buttonKey,
-  urlKey,
-  fallbackUrl,
-  delayMs = 2500,
-  labelLog = 'Promo'
-) {
-  try {
-    const wasSet = await markShownCallback(userId);
-    if (!wasSet) return;
+function checkAndSendYandexPromo(userId, user) {
+  // Отдельный счётчик с момента старта акции (см. yandex_promo_progress в БД)
+  const progress = Number(user?.yandex_promo_progress);
+  const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
+  if (!user || progress !== 3 || promoAlready) return;
 
-    setTimeout(async () => {
-      try {
-        const promoBody = T(messageKey);
-        const btnLabel = (T(buttonKey) || '🔗 Перейти').trim();
-        const promoUrl = (T(urlKey) || '').trim() || fallbackUrl;
-        
-        if (!promoBody) {
-          console.warn(`[${labelLog}] ⚠️ Пустой текст промо для ключа ${messageKey}, отправка отменена`);
-          return;
+  (async () => {
+    try {
+      const wasSet = await db.markYandexPromoShown(userId);
+      if (!wasSet) return;
+
+      setTimeout(async () => {
+        try {
+          const promoBody = T('yandex_promo_message');
+          const btnLabel = (T('yandex_promo_button') || '💰 Забрать 300₽ на телефон').trim();
+          const promoUrl = (T('yandex_promo_url') || '').trim() || YANDEX_PROMO_URL_FALLBACK;
+          await bot.telegram.sendMessage(userId, promoBody, {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
+          });
+          console.log(`[YandexPromo] ✅ Промо отправлено пользователю ${userId}`);
+        } catch (e) {
+          console.error(`[YandexPromo] Ошибка отправки для ${userId}:`, e.message);
         }
-
-        await bot.telegram.sendMessage(userId, promoBody, {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true,
-          ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
-        });
-        console.log(`[${labelLog}] ✅ Промо отправлено пользователю ${userId}`);
-      } catch (e) {
-        console.error(`[${labelLog}] Ошибка отправки для ${userId}:`, e.message);
-      }
-    }, delayMs);
-  } catch (e) {
-    console.error(`[${labelLog}] Ошибка проверки для ${userId}:`, e.message);
-  }
-}
-
-async function checkAndSendYandexPromo(userId, user) {
-  try {
-    const campaigns = await db.getPromoCampaigns();
-    const campaign = campaigns.find(c => c.id === 1);
-    if (!campaign || !campaign.is_active) return;
-
-    const progress = Number(user?.yandex_promo_progress);
-    const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
-    if (!user || progress !== 3 || promoAlready) return;
-
-    checkAndSendGenericPromo(
-      userId,
-      user,
-      'yandex_promo_shown',
-      3,
-      db.markYandexPromoShown,
-      'yandex_promo_message',
-      'yandex_promo_button',
-      'yandex_promo_url',
-      YANDEX_PROMO_URL_FALLBACK,
-      2500,
-      'YandexPromo'
-    );
-  } catch (e) {
-    console.error('[YandexPromo] Ошибка проверки активности:', e.message);
-  }
-}
-
-async function checkAndSendYandexMusicPromo(userId, user) {
-  try {
-    const campaigns = await db.getPromoCampaigns();
-    const campaign = campaigns.find(c => c.id === 2);
-    if (!campaign || !campaign.is_active) return;
-
-    const downloads = Number(user?.total_downloads);
-    const promoAlready = user?.yandex_music_promo_shown === true || user?.yandex_music_promo_shown === 'true';
-    if (!user || downloads < YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD || promoAlready) return;
-
-    checkAndSendGenericPromo(
-      userId,
-      user,
-      'yandex_music_promo_shown',
-      YANDEX_MUSIC_PROMO_DOWNLOADS_THRESHOLD,
-      db.markYandexMusicPromoShown,
-      'yandex_music_promo_message',
-      'yandex_music_promo_button',
-      'yandex_music_promo_url',
-      'https://music.yandex.ru',
-      3000,
-      'YandexMusicPromo'
-    );
-  } catch (e) {
-    console.error('[YandexMusicPromo] Ошибка проверки активности:', e.message);
-  }
-}
-
-// Проверка и отправка кастомных промо-кампаний (динамические)
-async function checkAndSendCustomPromos(userId) {
-  try {
-    const campaigns = await db.getPromoCampaigns();
-    const activeCustomCampaigns = campaigns.filter(c => c.id > 2 && c.is_active === true);
-    if (activeCustomCampaigns.length === 0) return;
-
-    const userProgressList = await db.getCustomPromoProgressForUser(userId);
-
-    for (const campaign of activeCustomCampaigns) {
-      const userProgress = userProgressList.find(p => p.campaign_id === campaign.id);
-      const progressValue = Number(userProgress?.progress || 0);
-      const isShown = userProgress?.shown === true || userProgress?.shown === 'true';
-
-      if (progressValue >= campaign.trigger_downloads && !isShown) {
-        // Атомарно помечаем в БД
-        const wasSet = await db.markCustomPromoShown(userId, campaign.id);
-        if (!wasSet) continue;
-
-        // Отправляем
-        setTimeout(async () => {
-          try {
-            const btnLabel = (campaign.button_text || '🔗 Перейти').trim();
-            await bot.telegram.sendMessage(userId, campaign.message_text, {
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, campaign.url)]])
-            });
-            console.log(`[CustomPromo #${campaign.id}] ✅ Промо отправлено пользователю ${userId}`);
-          } catch (e) {
-            console.error(`[CustomPromo #${campaign.id}] Ошибка отправки для ${userId}:`, e.message);
-          }
-        }, 3000);
-      }
+      }, 2500);
+    } catch (e) {
+      console.error(`[YandexPromo] Ошибка проверки для ${userId}:`, e.message);
     }
-  } catch (err) {
-    console.error('[CustomPromo] Ошибка проверки кастомных промо:', err.message);
-  }
-}
-
-async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null) {
-  const updatedUser = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
-  if (updatedUser) {
-    checkAndSendYandexPromo(userId, updatedUser);
-    checkAndSendYandexMusicPromo(userId, updatedUser);
-    checkAndSendCustomPromos(userId);
-  }
-  return updatedUser;
+  })();
 }
 
 async function getUserUsage(userId) {
@@ -685,23 +485,17 @@ async function ensureTaskMetadata(task) {
   let { metadata, cacheKey } = task;
   const url = task.url || task.originalUrl;
   
-  const hasBadTitle = !metadata?.title || 
-                      metadata.title === 'track' || 
-                      metadata.title === 'undefined' || 
-                      metadata.title === 'null' ||
-                      metadata.title === 'Unknown Title';
-                      
-  if (!metadata || hasBadTitle) {
+  if (!metadata) {
     if (!url) throw new Error('TASK_MISSING_URL');
     
     // Если это не ссылка на SoundCloud, не мучаем их API
     if (!url.includes('soundcloud.com')) {
         console.warn('[Worker] Не SoundCloud URL, используем ytdl для метаданных:', url);
-        const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     } else {
-        console.warn('[Worker] Metadata отсутствует или некорректна, получаем через ytdl для SoundCloud:', url);
-        const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        console.warn('[Worker] Metadata отсутствует, получаем через ytdl для SoundCloud:', url);
+        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     }
     
@@ -723,7 +517,7 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
   try {
     // Получаем метаданные если нет
     if (!metadata) {
-      const info = await ytdlWithFallback(url, { 
+      const info = await ytdl(url, { 
         'dump-single-json': true, 
         'skip-download': true,
         ...YTDL_OPTIONS 
@@ -877,8 +671,7 @@ export async function trackDownloadProcessor(task) {
   try {
     // 1. Проверка лимитов
     const usage = await getUserUsage(userId);
-    const isAdmin = Number(userId) === Number(ADMIN_ID);
-    if (!isAdmin && (!usage || usage.downloads_today >= usage.premium_limit)) {
+    if (!usage || usage.downloads_today >= usage.premium_limit) {
       await safeSendMessage(userId, T('limitReached'));
       return;
     }
@@ -921,14 +714,7 @@ export async function trackDownloadProcessor(task) {
       cached = await db.findCachedTrack(task.originalUrl, { source, quality });
     }
     
-    const hasBadCachedTitle = !cached?.title || 
-                              cached.title === 'null' || 
-                              cached.title === 'undefined' || 
-                              cached.title === 'track' || 
-                              cached.title.startsWith('scdl_') || 
-                              cached.title.startsWith('dl_');
-                              
-    if (cached?.fileId && !hasBadCachedTitle) {
+    if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.title}" из кэша.`);
       await bot.telegram.sendAudio(userId, cached.fileId, { 
         title: cached.title, 
@@ -939,7 +725,8 @@ export async function trackDownloadProcessor(task) {
       return;
     }
 
-    statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}"...`);
+    const qualityLabel = QUALITY_PRESETS[quality]?.label || quality;
+    statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}" (${qualityLabel})`);
     
     // Индикатор прогресса для пользователя
     let dots = 1;
@@ -953,7 +740,7 @@ export async function trackDownloadProcessor(task) {
             userId,
             statusMessage.message_id,
             null,
-            `⏳ Скачиваю: "${title}"${dotString}`
+            `⏳ Скачиваю: "${title}" (${qualityLabel})${dotString}`
           );
         } catch (e) {
           // Игнорируем ошибки (сообщение может быть удалено)
@@ -985,47 +772,7 @@ export async function trackDownloadProcessor(task) {
         
         // Скачиваем через scdl, но сохраняем во временный файл с конвертацией
         const { spawn } = await import('child_process');
-        let rawStream;
-        
-        // Если это API-ссылка, то скачиваем по ID напрямую, чтобы обойти resolve
-        const trackIdMatch = fullUrl.match(/(?:api(?:-v2)?\.soundcloud\.com|soundcloud\.com)\/tracks\/(\d+)/);
-        if (trackIdMatch) {
-          const trackId = parseInt(trackIdMatch[1]);
-          console.log(`[Worker/SoundCloud] Обнаружен ID трека: ${trackId}. Скачиваем напрямую.`);
-          const trackInfos = await scdl.default.getTrackInfoByID([trackId]);
-          if (!trackInfos || trackInfos.length === 0) {
-            throw new Error(`Не удалось получить информацию о треке по ID: ${trackId}`);
-          }
-          const info = trackInfos[0];
-          
-          // 🔥 ИСПРАВЛЕНИЕ: Обновляем метаданные из официального API SoundCloud
-          title = info.title || title || 'Unknown Title';
-          uploader = info.user?.username || info.publisher_metadata?.artist || info.uploader || uploader || 'Unknown Artist';
-          if (info.duration) {
-            roundedDuration = Math.round(info.duration / 1000);
-          }
-          
-          // Сразу обновляем сообщение статуса с правильным названием
-          if (statusMessage) {
-            try {
-              await bot.telegram.editMessageText(
-                userId,
-                statusMessage.message_id,
-                null,
-                `⏳ Скачиваю: "${title}" (${qualityLabel})`
-              ).catch(() => {});
-            } catch (e) {}
-          }
-          
-          if (!info.media || !info.media.transcodings || info.media.transcodings.length === 0) {
-            throw new Error(`Нет доступных медиа-потоков для трека: ${trackId}`);
-          }
-          const { fromMediaObj } = await import('soundcloud-downloader/dist/download.js');
-          const clientID = await scdl.default.getClientID();
-          rawStream = await fromMediaObj(info.media.transcodings[0], clientID, scdl.default.axios);
-        } else {
-          rawStream = await scdl.default.download(fullUrl);
-        }
+        const rawStream = await scdl.default.download(fullUrl);
         
         // Генерируем имя временного файла
         const outputPath = path.join(TEMP_DIR, `scdl_${Date.now()}.mp3`);
@@ -1569,30 +1316,19 @@ export async function trackDownloadProcessor(task) {
     const errorDetails = err?.stderr || err?.message || 'Unknown error';
     console.error(`❌ Ошибка воркера (User ${userId}):`, errorDetails);
     
-    // Берём название трека - сначала из уже разрешённых метаданных (title может быть уже задан),
-    // затем из task.metadata, потом из URL как запасной вариант
-    const trackTitle = (typeof title !== 'undefined' && title && title !== 'Unknown Title' && title !== 'null')
-      ? title
-      : (task.metadata?.title && task.metadata.title !== 'null' ? task.metadata.title : null);
+    let userMsg = `❌ Не удалось скачать трек`;
+    const trackTitle = task.metadata?.title || 'Unknown';
     const trackUrl = task.originalUrl || task.url || '';
     
-    let userMsg = trackTitle
-      ? `❌ Не удалось скачать: "${trackTitle}"`
-      : `❌ Не удалось скачать трек`;
+    if (trackTitle !== 'Unknown') userMsg += `: "${trackTitle}"`;
     
     // Определяем причину ошибки
     let reason = 'UNKNOWN_ERROR';
     
     // 🔥 ВОТ СЮДА ДОБАВЛЯЕМ ОБРАБОТКУ ЛИМИТА 🔥
     if (err.message === 'PREVIEW_ONLY') {
-      const previewName = trackTitle || 'трек';
-      userMsg = `❌ К сожалению, "${previewName}" защищён от скачивания.\n\n💡 SoundCloud отдаёт только превью (30 сек). Попробуйте найти этот трек на Spotify.`;
+      userMsg = `❌ К сожалению, "${trackTitle}" защищён от скачивания.\n\n💡 SoundCloud отдаёт только превью (30 сек). Попробуйте найти этот трек на Spotify.`;
       reason = 'PREVIEW_ONLY';
-
-    } else if (errorDetails.includes('DRM protected')) {
-      const drmName = trackTitle || 'трек';
-      userMsg = `❌ К сожалению, "${drmName}" защищён DRM-защитой (SoundCloud Go+).\n\n💡 Скачивание платных премиум-треков технически невозможно. Попробуйте найти обычную версию или этот трек на Spotify.`;
-      reason = 'DRM_PROTECTED';
 
     } else if (err.message === 'FILE_TOO_LARGE' || err.message === 'BUFFER_TOO_LARGE') {
       // НАШ НОВЫЙ БЛОК:
@@ -1676,8 +1412,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
     try {
       // Проверка бонусов/лимитов
       const user = await db.getUser(userId);
-      const isAdmin = Number(userId) === Number(ADMIN_ID);
-      if (!isAdmin && (user.downloads_today || 0) >= user.premium_limit) {
+      if ((user.downloads_today || 0) >= user.premium_limit) {
           const bonusAvailable = Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used);
           const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
           const bonusText = bonusAvailable ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.` : '';
@@ -1744,7 +1479,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       statusMessage = await safeSendMessage(userId, '🔍 Анализирую ссылку...');
       
       // Получаем инфо через yt-dlp
-      const info = await ytdlWithFallback(url, { 'dump-single-json': true, 'flat-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+      const info = await ytdl(url, { 'dump-single-json': true, 'flat-playlist': true, ...YTDL_COMMON });
       
       // Удаляем сообщение "Анализирую..."
       if (statusMessage) {
