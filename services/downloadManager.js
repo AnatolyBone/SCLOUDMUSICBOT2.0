@@ -110,11 +110,9 @@ async function ytdlSafe(url, flags = {}, options = {}) {
       console.warn('[ytdlSafe] Ошибка прокси, пробуем без прокси:', errText.slice(0, 200));
       const cleanFlags = { ...flags };
       delete cleanFlags.proxy;
-      cleanFlags['no-proxy'] = true;
       
       const cleanCommon = { ...YTDL_COMMON };
       delete cleanCommon.proxy;
-      cleanCommon['no-proxy'] = true;
       
       const mergedFlags = { ...cleanCommon, ...cleanFlags };
       return await ytdl(url, mergedFlags, options);
@@ -375,8 +373,6 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
     
     if (useProxy && PROXY_URL) {
       args.push('--proxy', PROXY_URL);
-    } else {
-      args.push('--no-proxy');
     }
     
     if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
