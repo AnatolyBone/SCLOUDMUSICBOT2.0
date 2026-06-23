@@ -1014,6 +1014,21 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         return;
     }
 
+    if (!session.fullTracks) {
+        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько минут.');
+        try {
+            const youtubeDl = getYoutubeDl();
+            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+            session.tracks = fullData.entries.filter(track => track && track.url);
+            session.fullTracks = true;
+        } catch (e) {
+            console.error('[Playlist] Ошибка фоновой загрузки:', e);
+            await ctx.editMessageText('❌ Не удалось получить полную информацию о плейлисте. Попробуйте еще раз.');
+            playlistSessions.delete(userId);
+            return;
+        }
+    }
+
     const playlistLimit = await getPlaylistLimitForUser(userId);
     const tracksToTake = isAll ? Math.min(session.tracks.length, playlistLimit) : playlistLimit;
     
@@ -1091,6 +1106,23 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
         playlistSessions.delete(userId);
         return await ctx.answerCbQuery('Лимит исчерпан');
+    }
+
+    // Проверяем, есть ли у нас уже полные данные с названиями
+    if (!session.fullTracks) {
+        await ctx.answerCbQuery('⏳ Загружаю названия треков...');
+        await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько секунд.');
+        
+        try {
+            const youtubeDl = getYoutubeDl();
+            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+            session.tracks = fullData.entries.filter(track => track && track.url);
+            session.fullTracks = true; // Ставим флаг, что данные загружены
+        } catch (e) {
+            console.error('[Playlist] Ошибка при дозагрузке названий:', e);
+            await ctx.editMessageText('❌ Не удалось получить детали плейлиста. Попробуйте снова или выберите другой вариант.');
+            return;
+        }
     }
 
     await ctx.answerCbQuery();
