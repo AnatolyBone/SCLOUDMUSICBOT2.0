@@ -44,6 +44,24 @@ function getBotProxyUrl() {
     }
 }
 
+async function execYoutubeDlSafe(url, flags, options) {
+    try {
+        return await execYoutubeDl(url, flags, options);
+    } catch (err) {
+        if (flags.dumpSingleJson || flags['dump-single-json'] || flags.dumpJson || flags['dump-json']) {
+            if (err.stdout && err.stdout.trim().startsWith('{')) {
+                try {
+                    console.warn('[youtube-dl] Процесс завершился с ошибкой, но вернул JSON на stdout. Парсим и продолжаем...');
+                    return JSON.parse(err.stdout);
+                } catch (parseErr) {
+                    console.error('[youtube-dl] Ошибка парсинга JSON из stdout ошибки:', parseErr.message);
+                }
+            }
+        }
+        throw err;
+    }
+}
+
 function getYoutubeDl() {
     const defaultFlags = {
         'no-warnings': true,
@@ -59,7 +77,7 @@ function getYoutubeDl() {
         // Прокси выключен — убираем из флагов
         if (!currentProxy) {
             delete mergedFlags.proxy;
-            return await execYoutubeDl(url, mergedFlags);
+            return await execYoutubeDlSafe(url, mergedFlags);
         }
 
         mergedFlags.proxy = currentProxy;
@@ -68,11 +86,11 @@ function getYoutubeDl() {
         if (_botProxyCircuitOpen) {
             console.warn('[youtube-dl] Proxy circuit breaker OPEN — работаю напрямую');
             delete mergedFlags.proxy;
-            return await execYoutubeDl(url, mergedFlags);
+            return await execYoutubeDlSafe(url, mergedFlags);
         }
 
         try {
-            const result = await execYoutubeDl(url, mergedFlags);
+            const result = await execYoutubeDlSafe(url, mergedFlags);
             if (_botProxyFailCount > 0) _botProxyFailCount = 0;
             return result;
         } catch (err) {
@@ -95,7 +113,7 @@ function getYoutubeDl() {
 
                 const flagsCopy = { ...mergedFlags };
                 delete flagsCopy.proxy;
-                return await execYoutubeDl(url, flagsCopy);
+                return await execYoutubeDlSafe(url, flagsCopy);
             }
             throw err;
         }
@@ -1018,7 +1036,7 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько минут.');
         try {
             const youtubeDl = getYoutubeDl();
-            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
             session.tracks = fullData.entries.filter(track => track && track.url);
             session.fullTracks = true;
         } catch (e) {
@@ -1115,7 +1133,7 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         
         try {
             const youtubeDl = getYoutubeDl();
-            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true });
+            const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
             session.tracks = fullData.entries.filter(track => track && track.url);
             session.fullTracks = true; // Ставим флаг, что данные загружены
         } catch (e) {
