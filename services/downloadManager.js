@@ -94,6 +94,35 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 4;
 
+const BOT_PROXY_ERR = [
+  'Unable to connect to proxy', 'ProxyError',
+  'Tunnel connection failed', 'Failed to establish a new connection', 'Cannot connect to proxy',
+];
+
+async function ytdlSafe(url, flags = {}, options = {}) {
+  try {
+    return await ytdl(url, flags, options);
+  } catch (err) {
+    const errText = err.stderr || err.message || '';
+    const isProxyErr = BOT_PROXY_ERR.some(p => errText.includes(p));
+    
+    if (isProxyErr && (flags.proxy || YTDL_COMMON.proxy)) {
+      console.warn('[ytdlSafe] Ошибка прокси, пробуем без прокси:', errText.slice(0, 200));
+      const cleanFlags = { ...flags };
+      delete cleanFlags.proxy;
+      cleanFlags['no-proxy'] = true;
+      
+      const cleanCommon = { ...YTDL_COMMON };
+      delete cleanCommon.proxy;
+      cleanCommon['no-proxy'] = true;
+      
+      const mergedFlags = { ...cleanCommon, ...cleanFlags };
+      return await ytdl(url, mergedFlags, options);
+    }
+    throw err;
+  }
+}
+
 // Настройки для yt-dlp
 const YTDL_COMMON = {
   'format': 'bestaudio[ext=mp3]/bestaudio[ext=opus]/bestaudio',
@@ -312,7 +341,7 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
 /**
  * Скачивает трек через yt-dlp в файл (надёжный fallback)
  */
-async function downloadWithYtdlp(url, quality = 'high') {
+async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
   const { spawn } = await import('child_process');
   
   return new Promise((resolve, reject) => {
@@ -344,6 +373,12 @@ async function downloadWithYtdlp(url, quality = 'high') {
       '--http-chunk-size', '10M', // Размер чанков
     ];
     
+    if (useProxy && PROXY_URL) {
+      args.push('--proxy', PROXY_URL);
+    } else {
+      args.push('--no-proxy');
+    }
+    
     if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) {
       args.push('--cookies', WRITABLE_COOKIES_PATH);
       console.log(`[yt-dlp/fallback] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
@@ -351,7 +386,7 @@ async function downloadWithYtdlp(url, quality = 'high') {
       console.warn('[yt-dlp/fallback] Куки не найдены, пробую без них (возможна блокировка)');
     }
     
-    console.log(`[yt-dlp/fallback] Скачиваю: ${url.slice(0, 60)}...`);
+    console.log(`[yt-dlp/fallback] Скачиваю (useProxy=${useProxy}): ${url.slice(0, 60)}...`);
     
     const proc = spawn('python3', args);
     
@@ -365,8 +400,22 @@ async function downloadWithYtdlp(url, quality = 'high') {
       stderrOutput += data.toString();
     });
     
-    proc.on('close', (code) => {
+    proc.on('close', async (code) => {
       if (code !== 0) {
+        if (useProxy && PROXY_URL) {
+          const isProxyErr = BOT_PROXY_ERR.some(p => stderrOutput.includes(p));
+          if (isProxyErr) {
+            console.warn('[yt-dlp/fallback] Ошибка прокси при скачивании, пробуем БЕЗ прокси...');
+            try {
+              const res = await downloadWithYtdlp(url, quality, false);
+              resolve(res);
+              return;
+            } catch (retryErr) {
+              reject(retryErr);
+              return;
+            }
+          }
+        }
         console.error(`[yt-dlp/fallback] Ошибка ${code}: ${stderrOutput.slice(-500)}`);
         return reject(new Error(`yt-dlp exited with code ${code}`));
       }
@@ -492,11 +541,11 @@ async function ensureTaskMetadata(task) {
     // Если это не ссылка на SoundCloud, не мучаем их API
     if (!url.includes('soundcloud.com')) {
         console.warn('[Worker] Не SoundCloud URL, используем ytdl для метаданных:', url);
-        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        const info = await ytdlSafe(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     } else {
         console.warn('[Worker] Metadata отсутствует или неполная, получаем через ytdl для SoundCloud:', url);
-        const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        const info = await ytdlSafe(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     }
     
@@ -518,7 +567,7 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
   try {
     // Получаем метаданные если нет
     if (!metadata) {
-      const info = await ytdl(url, { 
+      const info = await ytdlSafe(url, { 
         'dump-single-json': true, 
         'skip-download': true,
         ...YTDL_OPTIONS 
@@ -1481,7 +1530,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       statusMessage = await safeSendMessage(userId, '🔍 Анализирую ссылку...');
       
       // Получаем инфо через yt-dlp
-      const info = await ytdl(url, { 'dump-single-json': true, 'flat-playlist': true, ...YTDL_COMMON });
+      const info = await ytdlSafe(url, { 'dump-single-json': true, 'flat-playlist': true, ...YTDL_COMMON });
       
       // Удаляем сообщение "Анализирую..."
       if (statusMessage) {
