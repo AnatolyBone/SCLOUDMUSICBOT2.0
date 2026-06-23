@@ -485,7 +485,8 @@ async function ensureTaskMetadata(task) {
   let { metadata, cacheKey } = task;
   const url = task.url || task.originalUrl;
   
-  if (!metadata) {
+  // Если метаданные отсутствуют или неполные (нет названия или название "undefined")
+  if (!metadata || !metadata.title || metadata.title === 'undefined') {
     if (!url) throw new Error('TASK_MISSING_URL');
     
     // Если это не ссылка на SoundCloud, не мучаем их API
@@ -494,7 +495,7 @@ async function ensureTaskMetadata(task) {
         const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     } else {
-        console.warn('[Worker] Metadata отсутствует, получаем через ytdl для SoundCloud:', url);
+        console.warn('[Worker] Metadata отсутствует или неполная, получаем через ytdl для SoundCloud:', url);
         const info = await ytdl(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
         metadata = extractMetadataFromInfo(info);
     }
@@ -725,8 +726,9 @@ export async function trackDownloadProcessor(task) {
       return;
     }
 
-    const qualityLabel = QUALITY_PRESETS[quality]?.label || quality;
-    statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}" (${qualityLabel})`);
+    // Для SoundCloud не выводим информацию о качестве (избегаем неправдивых 320 kbps)
+    const qualitySuffix = source === 'soundcloud' ? '' : ` (${QUALITY_PRESETS[quality]?.label || quality})`;
+    statusMessage = await safeSendMessage(userId, `⏳ Скачиваю: "${title}"${qualitySuffix}`);
     
     // Индикатор прогресса для пользователя
     let dots = 1;
@@ -740,7 +742,7 @@ export async function trackDownloadProcessor(task) {
             userId,
             statusMessage.message_id,
             null,
-            `⏳ Скачиваю: "${title}" (${qualityLabel})${dotString}`
+            `⏳ Скачиваю: "${title}"${qualitySuffix}${dotString}`
           );
         } catch (e) {
           // Игнорируем ошибки (сообщение может быть удалено)
