@@ -1038,7 +1038,7 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
             const youtubeDl = getYoutubeDl();
             const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
             const originalTracks = session.tracks || [];
-            const resolvedIds = new Set(fullData.entries.map(t => String(t.id)));
+            const resolvedIds = new Set(fullData.entries.filter(t => t && t.id).map(t => String(t.id)));
             session.skippedTracks = originalTracks.filter(t => t && !resolvedIds.has(String(t.id)));
             session.tracks = fullData.entries.filter(track => track && track.url);
             session.fullTracks = true;
@@ -1080,7 +1080,8 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
     if (session.skippedTracks && session.skippedTracks.length > 0) {
         reportMessage += '\n\n⚠️ <b>Пропущены из-за DRM (SoundCloud Go+):</b>\n';
         session.skippedTracks.slice(0, 10).forEach((t, i) => {
-            reportMessage += `${i + 1}. <i>${t.title || 'Без названия'}</i>\n`;
+            const trackName = t.title || (t.url && !t.url.includes('api-v2.soundcloud.com') ? t.url.split('/').slice(-2).join('/') : null) || `Трек ID: ${t.id}`;
+            reportMessage += `${i + 1}. <i>${trackName}</i>\n`;
         });
         if (session.skippedTracks.length > 10) {
             reportMessage += `...и ещё ${session.skippedTracks.length - 10} трек(ов).`;
@@ -1147,7 +1148,7 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
             const youtubeDl = getYoutubeDl();
             const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
             const originalTracks = session.tracks || [];
-            const resolvedIds = new Set(fullData.entries.map(t => String(t.id)));
+            const resolvedIds = new Set(fullData.entries.filter(t => t && t.id).map(t => String(t.id)));
             session.skippedTracks = originalTracks.filter(t => t && !resolvedIds.has(String(t.id)));
             session.tracks = fullData.entries.filter(track => track && track.url);
             session.fullTracks = true; // Ставим флаг, что данные загружены
@@ -1277,7 +1278,8 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     if (session.skippedTracks && session.skippedTracks.length > 0) {
         reportMessage += '\n\n⚠️ <b>Пропущены из-за DRM (SoundCloud Go+):</b>\n';
         session.skippedTracks.slice(0, 10).forEach((t, i) => {
-            reportMessage += `${i + 1}. <i>${t.title || 'Без названия'}</i>\n`;
+            const trackName = t.title || (t.url && !t.url.includes('api-v2.soundcloud.com') ? t.url.split('/').slice(-2).join('/') : null) || `Трек ID: ${t.id}`;
+            reportMessage += `${i + 1}. <i>${trackName}</i>\n`;
         });
         if (session.skippedTracks.length > 10) {
             reportMessage += `...и ещё ${session.skippedTracks.length - 10} трек(ов).`;
