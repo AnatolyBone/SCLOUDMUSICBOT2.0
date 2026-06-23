@@ -1037,6 +1037,9 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
         try {
             const youtubeDl = getYoutubeDl();
             const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
+            const originalTracks = session.tracks || [];
+            const resolvedIds = new Set(fullData.entries.map(t => String(t.id)));
+            session.skippedTracks = originalTracks.filter(t => t && !resolvedIds.has(String(t.id)));
             session.tracks = fullData.entries.filter(track => track && track.url);
             session.fullTracks = true;
         } catch (e) {
@@ -1073,6 +1076,15 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
     let reportMessage = `${limitMessage}⏳ ${tracksToProcess.length} трек(ов) добавлено в очередь.`;
     if (numberOfTracksToQueue < tracksToTake) {
         reportMessage += '\n\nℹ️ Ваш дневной лимит будет исчерпан. Остальные треки из плейлиста не были добавлены.';
+    }
+    if (session.skippedTracks && session.skippedTracks.length > 0) {
+        reportMessage += '\n\n⚠️ <b>Пропущены из-за DRM (SoundCloud Go+):</b>\n';
+        session.skippedTracks.slice(0, 10).forEach((t, i) => {
+            reportMessage += `${i + 1}. <i>${t.title || 'Без названия'}</i>\n`;
+        });
+        if (session.skippedTracks.length > 10) {
+            reportMessage += `...и ещё ${session.skippedTracks.length - 10} трек(ов).`;
+        }
     }
     await bot.telegram.sendMessage(userId, reportMessage, { parse_mode: 'HTML' });
     playlistSessions.delete(userId);
@@ -1134,6 +1146,9 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         try {
             const youtubeDl = getYoutubeDl();
             const fullData = await youtubeDl(session.originalUrl, { dumpSingleJson: true, ignoreErrors: true });
+            const originalTracks = session.tracks || [];
+            const resolvedIds = new Set(fullData.entries.map(t => String(t.id)));
+            session.skippedTracks = originalTracks.filter(t => t && !resolvedIds.has(String(t.id)));
             session.tracks = fullData.entries.filter(track => track && track.url);
             session.fullTracks = true; // Ставим флаг, что данные загружены
         } catch (e) {
@@ -1259,8 +1274,17 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     if (numberOfTracksToQueue < selectedIndexes.length) {
         reportMessage += `\n\nℹ️ Ваш дневной лимит будет исчерпан. Остальные выбранные треки не были добавлены.`;
     }
+    if (session.skippedTracks && session.skippedTracks.length > 0) {
+        reportMessage += '\n\n⚠️ <b>Пропущены из-за DRM (SoundCloud Go+):</b>\n';
+        session.skippedTracks.slice(0, 10).forEach((t, i) => {
+            reportMessage += `${i + 1}. <i>${t.title || 'Без названия'}</i>\n`;
+        });
+        if (session.skippedTracks.length > 10) {
+            reportMessage += `...и ещё ${session.skippedTracks.length - 10} трек(ов).`;
+        }
+    }
     
-    await ctx.reply(reportMessage);
+    await ctx.reply(reportMessage, { parse_mode: 'HTML' });
     playlistSessions.delete(userId);
 });
 bot.action(/pl_cancel:(.+)/, async (ctx) => {
