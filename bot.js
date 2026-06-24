@@ -241,6 +241,21 @@ const telegrafOptions = { handlerTimeout: 300_000 };
 // }
 export const bot = new Telegraf(BOT_TOKEN, telegrafOptions);
 
+// --- Безопасный ответ на callback-запросы (предотвращает краш из-за таймаутов Telegram) ---
+bot.use(async (ctx, next) => {
+    if (ctx.callbackQuery && ctx.answerCbQuery) {
+        const originalAnswerCbQuery = ctx.answerCbQuery.bind(ctx);
+        ctx.answerCbQuery = async (...args) => {
+            try {
+                return await originalAnswerCbQuery(...args);
+            } catch (err) {
+                console.warn(`[CallbackQuery] Ошибка при ответе на callback (ID: ${ctx.callbackQuery.id}):`, err.message || err);
+            }
+        };
+    }
+    return await next();
+});
+
 // --- Режим обслуживания (Глобальный Middleware) ---
 bot.use(async (ctx, next) => {
     if (isShuttingDown()) return;
@@ -1139,9 +1154,11 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         return await ctx.answerCbQuery('Лимит исчерпан');
     }
 
+    let queryAnswered = false;
     // Проверяем, есть ли у нас уже полные данные с названиями
     if (!session.fullTracks) {
         await ctx.answerCbQuery('⏳ Загружаю названия треков...');
+        queryAnswered = true;
         await ctx.editMessageText('⏳ Получаю полные данные плейлиста... Это может занять несколько секунд.');
         
         try {
@@ -1159,7 +1176,9 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         }
     }
 
-    await ctx.answerCbQuery();
+    if (!queryAnswered) {
+        await ctx.answerCbQuery();
+    }
     
     // 4. Когда все готово, показываем меню выбора с названиями
     session.currentPage = 0;
