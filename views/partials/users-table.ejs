@@ -102,8 +102,10 @@
 
             <%# === Пользователь === %>
             <td data-label="Пользователь">
-              <div class="fw-bold"><%- safeName %></div>
-              <% if (safeUsername) { %><div class="text-muted small"><%- safeUsername %></div><% } %>
+              <div class="d-flex flex-column align-items-end align-items-md-start">
+                <div class="fw-bold text-end text-md-start"><%- safeName %></div>
+                <% if (safeUsername) { %><div class="text-muted small text-end text-md-start"><%- safeUsername %></div><% } %>
+              </div>
             </td>
 
             <%# === Статус === %>

@@ -46,14 +46,28 @@
     }
     .table tbody td {
       display: flex; justify-content: space-between; align-items: center;
-      padding: 0.5rem 0; border: none; border-bottom: 1px solid var(--bs-border-color);
+      padding: 0.6rem 0; border: none; border-bottom: 1px solid var(--bs-border-color);
+      gap: 12px;
     }
     .table tbody td:last-child { border-bottom: none; }
     .table tbody td::before {
       content: attr(data-label); font-weight: 600; margin-right: 10px; flex-shrink: 0; color: #6c757d;
     }
-    .tariff-form { width: 100%; flex-direction: column; gap: 0.5rem !important; }
-    .tariff-form select, .tariff-form input { width: 100% !important; }
+    .tariff-form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem !important;
+      align-items: flex-end;
+      width: 100%;
+      max-width: 160px;
+    }
+    .tariff-form select, .tariff-form input {
+      width: 100% !important;
+      text-align: right;
+    }
+    .tariff-form button {
+      width: 100%;
+    }
     .btn-group { width: 100%; }
     .stat-card .stat-value { font-size: 1.5rem; }
   }
