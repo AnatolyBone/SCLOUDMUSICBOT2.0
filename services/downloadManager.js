@@ -466,7 +466,7 @@ async function safeSendMessage(userId, text, extra = {}) {
 async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null) {
   const updatedUser = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source);
   if (updatedUser) {
-    checkAndSendYandexPromo(userId, updatedUser);
+    checkAndSendPromos(userId, updatedUser);
   }
   return updatedUser;
 }
@@ -475,36 +475,105 @@ async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = 
 const YANDEX_PROMO_URL_FALLBACK =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
-function checkAndSendYandexPromo(userId, user) {
-  // Отдельный счётчик с момента старта акции (см. yandex_promo_progress в БД)
-  const progress = Number(user?.yandex_promo_progress);
-  const promoAlready = user?.yandex_promo_shown === true || user?.yandex_promo_shown === 'true';
-  if (!user || progress !== 3 || promoAlready) return;
-
-  (async () => {
-    try {
-      const wasSet = await db.markYandexPromoShown(userId);
-      if (!wasSet) return;
-
-      setTimeout(async () => {
-        try {
-          const promoBody = T('yandex_promo_message');
-          const btnLabel = (T('yandex_promo_button') || '💰 Забрать 300₽ на телефон').trim();
-          const promoUrl = (T('yandex_promo_url') || '').trim() || YANDEX_PROMO_URL_FALLBACK;
-          await bot.telegram.sendMessage(userId, promoBody, {
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-            ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
-          });
-          console.log(`[YandexPromo] ✅ Промо отправлено пользователю ${userId}`);
-        } catch (e) {
-          console.error(`[YandexPromo] Ошибка отправки для ${userId}:`, e.message);
+async function checkAndSendPromos(userId, user) {
+  if (!user) return;
+  
+  try {
+    const campaigns = await db.getPromoCampaigns();
+    
+    // 1. Системная кампания #1 (Баланс телефона)
+    const c1 = campaigns.find(c => c.id === 1);
+    if (c1 && c1.is_active) {
+      const progress = Number(user.yandex_promo_progress);
+      const promoAlready = user.yandex_promo_shown === true || user.yandex_promo_shown === 'true';
+      const threshold = Number(c1.trigger_downloads) || 3;
+      
+      if (progress === threshold && !promoAlready) {
+        const wasSet = await db.markYandexPromoShown(userId);
+        if (wasSet) {
+          setTimeout(async () => {
+            try {
+              const promoBody = T('yandex_promo_message');
+              const btnLabel = (T('yandex_promo_button') || '💰 Забрать 300₽ на телефон').trim();
+              const promoUrl = (T('yandex_promo_url') || '').trim() || YANDEX_PROMO_URL_FALLBACK;
+              if (promoBody) {
+                await bot.telegram.sendMessage(userId, promoBody, {
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true,
+                  ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
+                });
+                console.log(`[YandexPromo] ✅ Системное промо #1 отправлено пользователю ${userId}`);
+              }
+            } catch (e) {
+              console.error(`[YandexPromo] Ошибка отправки промо #1 для ${userId}:`, e.message);
+            }
+          }, 2500);
         }
-      }, 2500);
-    } catch (e) {
-      console.error(`[YandexPromo] Ошибка проверки для ${userId}:`, e.message);
+      }
     }
-  })();
+    
+    // 2. Системная кампания #2 (Яндекс Музыка)
+    const c2 = campaigns.find(c => c.id === 2);
+    if (c2 && c2.is_active) {
+      const progress = Number(user.yandex_promo_progress);
+      const promoAlready = user.yandex_music_promo_shown === true || user.yandex_music_promo_shown === 'true';
+      const threshold = Number(c2.trigger_downloads) || 3;
+      
+      if (progress === threshold && !promoAlready) {
+        const wasSet = await db.markYandexMusicPromoShown(userId);
+        if (wasSet) {
+          setTimeout(async () => {
+            try {
+              const promoBody = T('yandex_music_promo_message');
+              const btnLabel = (T('yandex_music_promo_button') || '🎵 Попробовать Яндекс Музыку').trim();
+              const promoUrl = (T('yandex_music_promo_url') || '').trim() || 'https://music.yandex.ru';
+              if (promoBody) {
+                await bot.telegram.sendMessage(userId, promoBody, {
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true,
+                  ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
+                });
+                console.log(`[YandexPromo] ✅ Системное промо #2 отправлено пользователю ${userId}`);
+              }
+            } catch (e) {
+              console.error(`[YandexPromo] Ошибка отправки промо #2 для ${userId}:`, e.message);
+            }
+          }, 2500);
+        }
+      }
+    }
+    
+    // 3. Кастомные кампании (ID > 2)
+    const customProgressList = await db.getCustomPromoProgressForUser(userId);
+    for (const p of customProgressList) {
+      if (!p.is_active || p.shown) continue;
+      
+      const progress = Number(p.progress);
+      const threshold = Number(p.trigger_downloads) || 3;
+      
+      if (progress === threshold) {
+        const wasSet = await db.markCustomPromoShown(userId, p.campaign_id);
+        if (wasSet) {
+          setTimeout(async () => {
+            try {
+              if (p.message_text) {
+                await bot.telegram.sendMessage(userId, p.message_text, {
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true,
+                  ...Markup.inlineKeyboard([[Markup.button.url(p.button_text || '🔗 Перейти', p.url)]])
+                });
+                console.log(`[CustomPromo] ✅ Промо #${p.campaign_id} отправлено пользователю ${userId}`);
+              }
+            } catch (e) {
+              console.error(`[CustomPromo] Ошибка отправки промо #${p.campaign_id} для ${userId}:`, e.message);
+            }
+          }, 2500);
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`[PromoSystem] Ошибка при проверке промо для ${userId}:`, e.message);
+  }
 }
 
 async function getUserUsage(userId) {
@@ -1614,7 +1683,7 @@ export async function initializeDownloadManager() {
             result.cacheKey,
             result.source || 'spotify'
           );
-          if (updatedUser) checkAndSendYandexPromo(result.userId, updatedUser);
+          if (updatedUser) checkAndSendPromos(result.userId, updatedUser);
           
           // Удаляем статусное сообщение (если есть и еще не удалено)
           if (result.statusMessageId) {

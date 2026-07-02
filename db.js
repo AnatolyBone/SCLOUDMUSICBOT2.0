@@ -2214,7 +2214,7 @@ export async function getPromoStats() {
 
 export async function getCustomPromoProgressForUser(userId) {
   const { rows } = await query(
-    `SELECT p.*, c.trigger_downloads 
+    `SELECT p.*, c.trigger_downloads, c.message_text, c.button_text, c.url, c.is_active 
      FROM user_promo_progress p
      JOIN promo_campaigns c ON p.campaign_id = c.id
      WHERE p.user_id = $1`,
