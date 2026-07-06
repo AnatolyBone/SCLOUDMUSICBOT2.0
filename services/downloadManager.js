@@ -35,6 +35,18 @@ if (fs.existsSync(COOKIES_PATH)) {
 import { Markup } from 'telegraf';
 import ffmpegPath from 'ffmpeg-static';
 import scdl from 'soundcloud-downloader';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+
+if (PROXY_URL) {
+  try {
+    const agent = new HttpsProxyAgent(PROXY_URL);
+    scdl.default.axios.defaults.httpsAgent = agent;
+    scdl.default.axios.defaults.httpAgent = agent;
+    console.log('[SCDL] ✅ Proxy agent configured successfully');
+  } catch (err) {
+    console.error('[SCDL] ❌ Failed to configure proxy agent:', err.message);
+  }
+}
 
 /** ffprobe рядом с ffmpeg-static часто отсутствует; в Docker используем системный ffprobe из apt */
 function resolveFfprobePath() {
