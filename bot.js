@@ -241,6 +241,48 @@ const telegrafOptions = { handlerTimeout: 300_000 };
 // }
 export const bot = new Telegraf(BOT_TOKEN, telegrafOptions);
 
+// --- Telegram API Rate Limiting (предотвращает 429 ошибки при массовой отправке) ---
+const lastSentTimes = new Map();
+const userQueues = new Map();
+
+function rateLimitRequest(chatId, taskFn) {
+    const id = Number(chatId);
+    if (isNaN(id) || id < 0) {
+        return taskFn();
+    }
+    
+    if (!userQueues.has(id)) {
+        userQueues.set(id, Promise.resolve());
+    }
+    
+    const currentChain = userQueues.get(id);
+    
+    const nextChain = currentChain.then(async () => {
+        const lastSent = lastSentTimes.get(id) || 0;
+        const now = Date.now();
+        const delay = 1200 - (now - lastSent); // Гарантируем задержку 1.2 сек между отправками одному юзеру
+        if (delay > 0) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        const result = await taskFn();
+        lastSentTimes.set(id, Date.now());
+        return result;
+    });
+    
+    userQueues.set(id, nextChain.catch(() => {}));
+    return nextChain;
+}
+
+const originalSendAudio = bot.telegram.sendAudio.bind(bot.telegram);
+bot.telegram.sendAudio = async function(chatId, ...args) {
+    return rateLimitRequest(chatId, () => originalSendAudio(chatId, ...args));
+};
+
+const originalSendMessage = bot.telegram.sendMessage.bind(bot.telegram);
+bot.telegram.sendMessage = async function(chatId, ...args) {
+    return rateLimitRequest(chatId, () => originalSendMessage(chatId, ...args));
+};
+
 // --- Безопасный ответ на callback-запросы (предотвращает краш из-за таймаутов Telegram) ---
 bot.use(async (ctx, next) => {
     if (ctx.callbackQuery && ctx.answerCbQuery) {
