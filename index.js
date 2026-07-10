@@ -124,22 +124,7 @@ async function startApp() {
     await redisService.connect();
     await loadSettings();
     
-    try {
-        if (karaokePool) {
-            console.log('[DEBUG] Querying protect_profile_privileged_fields_trigger source code...');
-            const trgRes = await karaokePool.query(`
-                SELECT prosrc 
-                FROM pg_proc 
-                WHERE proname = 'protect_profile_privileged_fields_trigger'
-            `);
-            console.log('[DEBUG] protect_profile_privileged_fields_trigger source code:', trgRes.rows[0]?.prosrc);
-        } else {
-            console.log('[DEBUG] karaokePool is not initialized');
-        }
-    } catch (e) {
-        console.error('[DEBUG] Failed to inspect trigger function:', e.message);
-    }
-    
+
     await initializeDownloadManager();
     
     let lastUpdateTs = Date.now();

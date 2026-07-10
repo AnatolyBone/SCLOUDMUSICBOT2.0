@@ -42,8 +42,47 @@ WITH CHECK (
   )
 );
 
--- 2. Alter public.profiles table conditionally if it exists
--- 3. Create trigger on public.profiles conditionally if it exists
+-- 2. Update profiles privilege protection trigger to support grant bypass with admin role safety
+CREATE OR REPLACE FUNCTION public.protect_profile_privileged_fields_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Разрешаем серверной функции выдачи тестового доступа менять роль.
+  IF current_setting('app.karaoke_tester_grant', true) = 'true' THEN
+    -- Защита от понижения роли admin:
+    IF OLD.role = 'admin' AND NEW.role <> 'admin' THEN
+      RAISE EXCEPTION 'Downgrading administrator role is not allowed!';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF tg_op = 'UPDATE' AND NOT public.is_admin() THEN
+    IF OLD.role IS DISTINCT FROM NEW.role THEN
+      RAISE EXCEPTION 'Changing role is allowed only for administrators!';
+    END IF;
+
+    IF OLD.telegram_id IS DISTINCT FROM NEW.telegram_id THEN
+      RAISE EXCEPTION 'Changing Telegram ID is allowed only for administrators!';
+    END IF;
+  END IF;
+
+  -- Дополнительная защита роли admin даже для админов (чтобы случайно не понизить себя)
+  IF OLD.role = 'admin' AND NEW.role <> 'admin' THEN
+    RAISE EXCEPTION 'Downgrading administrator role is not allowed!';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Recreate trigger if it was modified
+DROP TRIGGER IF EXISTS protect_profile_privileged_fields ON public.profiles;
+CREATE TRIGGER protect_profile_privileged_fields 
+  BEFORE UPDATE ON public.profiles 
+  FOR EACH ROW 
+  EXECUTE FUNCTION protect_profile_privileged_fields_trigger();
+
+-- 3. Alter public.profiles table conditionally if it exists
+-- 4. Create trigger on public.profiles conditionally if it exists
 CREATE OR REPLACE FUNCTION public.sync_profile_plus_on_insert_trigger()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -85,7 +124,7 @@ BEGIN
     END IF;
 END $$;
 
--- 4. Create database function to grant tester access
+-- 5. Create database function to grant tester access with config bypass
 CREATE OR REPLACE FUNCTION public.grant_karaoke_tester_access(
     p_telegram_id bigint,
     p_username text,
@@ -182,6 +221,9 @@ BEGIN
         ) RETURNING id INTO v_tester_id;
     END IF;
 
+    -- Set local config claim to bypass role updates safety trigger
+    PERFORM set_config('app.karaoke_tester_grant', 'true', true);
+
     -- Update public.profiles if user profile already exists
     IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'profiles') THEN
         EXECUTE '
@@ -205,7 +247,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 5. Create Supabase Storage Bucket for feedback attachments (if schema exists)
+-- 6. Create Supabase Storage Bucket for feedback attachments (if schema exists)
 DO $$
 BEGIN
     IF EXISTS (SELECT FROM information_schema.schemata WHERE schema_name = 'storage') THEN
