@@ -374,6 +374,7 @@
                         'banned_by_admin': { name: 'Бан', class: 'bg-danger text-white' },
                         'unbanned_by_admin': { name: 'Разбан', class: 'bg-success text-white' },
                         'referral_bonus_received': { name: 'Реф. бонус', class: 'bg-info text-dark' },
+                        'karaoke_tester_activated': { name: 'Тест Караоке', class: 'bg-primary text-white' },
                       };
                       const act = actionMap[action.action_type] || { name: escapeHtml(action.action_type), class: 'bg-light text-secondary' };
                     %>
@@ -381,8 +382,8 @@
                   </td>
                   <td>
                     <% if (action.details && typeof action.details === 'object') { %>
-                      <% if (action.details.new_limit) { %>
-                        Limit: <b><%= action.details.new_limit %></b> (<%= action.details.days %>д)
+                      <% if (action.details.limit || action.details.new_limit) { %>
+                        Limit: <b><%= action.details.limit || action.details.new_limit %></b> (<%= action.details.days %>д)
                       <% } else { %>
                         <span class="text-muted small"><%= JSON.stringify(action.details).slice(0, 30) %>...</span>
                       <% } %>

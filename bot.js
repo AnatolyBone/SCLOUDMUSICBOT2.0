@@ -1317,6 +1317,14 @@ bot.action('karaoke_join', async (ctx) => {
             console.log(`[Karaoke/Tester] Granted/extended Plus in Bot DB for user ${ctx.from.id} (30 days)`);
         }
         
+        // Логируем действие в системный лог
+        await logUserAction(ctx.from.id, 'karaoke_tester_activated', {
+            limit: 30,
+            days: 30,
+            status: 'tester_active',
+            source: 'karaoke_test'
+        });
+        
         let successMessage = `✅ <b>Готово! Я выдал тебе Plus-доступ на 30 дней (до ${plusUntilDate}).</b>\n\n`;
         if (result.existed_active && result.old_plus_until) {
             const oldDate = new Date(result.old_plus_until).toLocaleDateString('ru-RU');
