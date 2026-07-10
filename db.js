@@ -3,7 +3,7 @@
 import { Pool } from 'pg';
 import { createClient } from '@supabase/supabase-js';
 import ws from 'ws';
-import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL } from './config.js';
+import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL, KARAOKE_DATABASE_URL, KARAOKE_SUPABASE_URL, KARAOKE_SUPABASE_KEY } from './config.js';
 export const supabase = createClient(
   SUPABASE_URL,
   SUPABASE_KEY,
@@ -21,6 +21,46 @@ export const pool = new Pool({
   connectionTimeoutMillis: 10_000,
   allowExitOnIdle: false
 });
+
+// --- KARAOKE LRC MAKER SEPARATE CONNECTION POOL & CLIENT ---
+export const karaokePool = KARAOKE_DATABASE_URL
+  ? new Pool({
+      connectionString: KARAOKE_DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+      allowExitOnIdle: false
+    })
+  : null;
+
+if (karaokePool) {
+  karaokePool.on('error', (err) => {
+    console.error('⚠️ [Karaoke Pool] Ошибка idle-клиента:', err.message);
+  });
+}
+
+export const karaokeSupabase = (KARAOKE_SUPABASE_URL && KARAOKE_SUPABASE_KEY)
+  ? createClient(KARAOKE_SUPABASE_URL, KARAOKE_SUPABASE_KEY)
+  : null;
+
+export async function karaokeQuery(text, params) {
+  if (!karaokePool) {
+    return await query(text, params);
+  }
+  const start = Date.now();
+  try {
+    const res = await karaokePool.query(text, params);
+    const duration = Date.now() - start;
+    if (duration > 1000) {
+      console.log('[DB] [Karaoke] Slow query:', { text, duration, rows: res.rowCount });
+    }
+    return res;
+  } catch (err) {
+    console.error('[DB] [Karaoke] Query error:', err.message, 'SQL:', text);
+    throw err;
+  }
+}
 
 pool.on('error', (err) => {
   console.error('⚠️ [Pool] Ошибка idle-клиента:', err.message);
@@ -2355,7 +2395,7 @@ export async function getUnreadSupportTicketsCount() {
 export async function grantKaraokeTesterAccess(telegramId, username, firstName, limit = 50) {
   try {
     const sql = `SELECT public.grant_karaoke_tester_access($1, $2, $3, 'music_bot', 30, $4) AS result`;
-    const { rows } = await query(sql, [telegramId, username, firstName, limit]);
+    const { rows } = await karaokeQuery(sql, [telegramId, username, firstName, limit]);
     return rows[0]?.result;
   } catch (e) {
     console.error('[DB] grantKaraokeTesterAccess error:', e.message);
@@ -2366,7 +2406,7 @@ export async function grantKaraokeTesterAccess(telegramId, username, firstName, 
 export async function getKaraokeTester(telegramId) {
   try {
     const sql = `SELECT * FROM public.karaoke_testers WHERE telegram_id = $1`;
-    const { rows } = await query(sql, [telegramId]);
+    const { rows } = await karaokeQuery(sql, [telegramId]);
     return rows[0] || null;
   } catch (e) {
     console.error('[DB] getKaraokeTester error:', e.message);
@@ -2377,7 +2417,7 @@ export async function getKaraokeTester(telegramId) {
 export async function addKaraokeFeedback({ telegramId, messageText, attachmentUrl, attachmentType, contact }) {
   try {
     // 1. Находим user_id (UUID) в public.profiles если есть
-    const profileRes = await query(`SELECT id FROM public.profiles WHERE telegram_id = $1`, [telegramId]);
+    const profileRes = await karaokeQuery(`SELECT id FROM public.profiles WHERE telegram_id = $1`, [telegramId]);
     const userId = profileRes.rows[0]?.id || null;
     
     // 2. Скриншоты в JSONB массив
@@ -2391,7 +2431,7 @@ export async function addKaraokeFeedback({ telegramId, messageText, attachmentUr
       RETURNING id;
     `;
     const technicalData = { source: 'telegram_bot' };
-    const result = await query(sql, [
+    const result = await karaokeQuery(sql, [
       userId,
       telegramId,
       messageText || '',
@@ -2401,7 +2441,7 @@ export async function addKaraokeFeedback({ telegramId, messageText, attachmentUr
     ]);
     
     // 4. Увеличиваем счетчик отзывов у тестировщика
-    await query(`
+    await karaokeQuery(`
       UPDATE public.karaoke_testers
       SET feedback_count = feedback_count + 1, updated_at = NOW()
       WHERE telegram_id = $1
@@ -2418,31 +2458,31 @@ export async function getKaraokeTestersStats() {
   try {
     const stats = {};
     
-    const totalInvited = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers`);
+    const totalInvited = await karaokeQuery(`SELECT COUNT(*)::int as count FROM public.karaoke_testers`);
     stats.totalInvited = totalInvited.rows[0]?.count || 0;
     
-    const totalActive = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE status = 'tester_active'`);
+    const totalActive = await karaokeQuery(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE status = 'tester_active'`);
     stats.totalActive = totalActive.rows[0]?.count || 0;
     
-    const totalWaitlist = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE status = 'tester_waitlist'`);
+    const totalWaitlist = await karaokeQuery(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE status = 'tester_waitlist'`);
     stats.totalWaitlist = totalWaitlist.rows[0]?.count || 0;
     
-    const totalFeedback = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE feedback_count > 0`);
+    const totalFeedback = await karaokeQuery(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE feedback_count > 0`);
     stats.totalFeedback = totalFeedback.rows[0]?.count || 0;
     
-    const openedService = await query(`
+    const openedService = await karaokeQuery(`
       SELECT COUNT(DISTINCT telegram_id)::int as count FROM public.app_events 
       WHERE event_name = 'app_open' AND telegram_id IN (SELECT telegram_id FROM public.karaoke_testers WHERE status = 'tester_active')
     `);
     stats.openedService = openedService.rows[0]?.count || 0;
     
-    const exportedVideos = await query(`
+    const exportedVideos = await karaokeQuery(`
       SELECT COUNT(*)::int as count FROM public.app_events 
       WHERE event_name = 'video_export_completed' AND telegram_id IN (SELECT telegram_id FROM public.karaoke_testers WHERE status = 'tester_active')
     `);
     stats.exportedVideos = exportedVideos.rows[0]?.count || 0;
     
-    const publishedKaraoke = await query(`
+    const publishedKaraoke = await karaokeQuery(`
       SELECT COUNT(*)::int as count FROM public.published_karaoke 
       WHERE publisher_id IN (
         SELECT id FROM public.profiles 
@@ -2475,7 +2515,7 @@ export async function logKaraokeInvitation(telegramId, username, firstName) {
       SET username = EXCLUDED.username, first_name = EXCLUDED.first_name, invited_at = NOW()
       WHERE public.karaoke_testers.status = 'invited' OR public.karaoke_testers.status IS NULL
     `;
-    await query(sql, [telegramId, username, firstName]);
+    await karaokeQuery(sql, [telegramId, username, firstName]);
   } catch (e) {
     console.error('[DB] logKaraokeInvitation error:', e.message);
   }

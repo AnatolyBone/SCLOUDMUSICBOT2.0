@@ -248,6 +248,10 @@ export const SPOTIPY_CLIENT_ID = CONFIG.SPOTIPY_CLIENT_ID;
 export const SPOTIPY_CLIENT_SECRET = CONFIG.SPOTIPY_CLIENT_SECRET;
 export const MVSEP_API_KEY = CONFIG.MVSEP_API_KEY; 
 
+export const KARAOKE_DATABASE_URL = process.env.KARAOKE_DATABASE_URL || '';
+export const KARAOKE_SUPABASE_URL = process.env.KARAOKE_SUPABASE_URL || '';
+export const KARAOKE_SUPABASE_KEY = process.env.KARAOKE_SUPABASE_KEY || '';
+
 
 // ========================= UTILITY FUNCTIONS =========================
 

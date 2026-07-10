@@ -490,8 +490,9 @@ async function handleKaraokeFeedbackMessage(ctx) {
             
             const filename = `feedback_${Date.now()}_${fileId}.${fileExtension}`;
             
-            const { supabase } = await import('./db.js');
-            const { data, error } = await supabase.storage
+            const { karaokeSupabase, supabase } = await import('./db.js');
+            const client = karaokeSupabase || supabase;
+            const { data, error } = await client.storage
                 .from('karaoke-feedback')
                 .upload(filename, buffer, {
                     contentType: mimeType,
@@ -500,7 +501,7 @@ async function handleKaraokeFeedbackMessage(ctx) {
                 
             if (error) throw error;
             
-            const { data: publicData } = supabase.storage
+            const { data: publicData } = client.storage
                 .from('karaoke-feedback')
                 .getPublicUrl(filename);
                 
