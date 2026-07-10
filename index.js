@@ -1623,8 +1623,8 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
     else if (newLimit <= limitPro) tariffName = 'Pro';
     else tariffName = 'Unlimited';
 
-    const untilText = newLimit <= limitFree
-      ? 'бессрочно (Free)'
+    const untilText = !updated.premium_until
+      ? 'бессрочно'
       : new Date(updated.premium_until).toLocaleString('ru-RU', {
           day: '2-digit', month: '2-digit', year: 'numeric',
           hour: '2-digit', minute: '2-digit'

@@ -55,9 +55,11 @@ BEGIN
     FROM public.karaoke_testers
     WHERE telegram_id = NEW.telegram_id AND status = 'tester_active' AND plus_until > NOW();
 
-    -- If active tester, apply pro role and plus plan
+    -- If active tester, apply pro role (unless already admin) and plus plan
     IF v_status IS NOT NULL THEN
-        NEW.role := 'pro';
+        IF NEW.role <> 'admin' THEN
+            NEW.role := 'pro';
+        END IF;
         NEW.plan := 'plus';
         NEW.plus_until := v_plus_until;
     END IF;
@@ -97,29 +99,24 @@ DECLARE
     v_status text;
     v_plus_until timestamp with time zone;
     v_count_active int;
+    v_current_plus_until timestamp with time zone;
+    v_existed_active boolean := false;
+    v_old_plus_until timestamp with time zone := null;
 BEGIN
-    -- Check if user is already an active tester
+    -- Check if user is already registered in karaoke_testers
     SELECT id, status, plus_until INTO v_tester_id, v_status, v_plus_until
     FROM public.karaoke_testers
     WHERE telegram_id = p_telegram_id;
 
-    -- If active, return success with current stats
-    IF v_tester_id IS NOT NULL AND v_status = 'tester_active' AND v_plus_until > now() THEN
-        RETURN jsonb_build_object(
-            'success', true,
-            'status', 'already_active',
-            'tester_id', v_tester_id,
-            'plus_until', v_plus_until
-        );
-    END IF;
-
-    -- Count active testers to enforce limit
+    -- Count active testers to enforce limit (excluding this user if they are already active)
     SELECT COUNT(*) INTO v_count_active
     FROM public.karaoke_testers
-    WHERE status = 'tester_active' AND plus_until > now();
+    WHERE status = 'tester_active' 
+      AND plus_until > now() 
+      AND telegram_id <> p_telegram_id;
 
-    -- If limit reached, register as waitlist
-    IF v_count_active >= p_limit THEN
+    -- If limit reached and user is not already active, register as waitlist
+    IF v_count_active >= p_limit AND (v_status IS NULL OR v_status <> 'tester_active' OR v_plus_until <= now()) THEN
         IF v_tester_id IS NOT NULL THEN
             UPDATE public.karaoke_testers
             SET status = 'tester_waitlist',
@@ -143,17 +140,36 @@ BEGIN
         );
     END IF;
 
-    -- Otherwise, grant active tester status
-    v_plus_until := now() + (p_duration_days || ' days')::interval;
-    
+    -- Check if profile exists and get its plus_until
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'profiles') THEN
+        EXECUTE 'SELECT plus_until FROM public.profiles WHERE telegram_id = $1'
+        INTO v_current_plus_until USING p_telegram_id;
+    END IF;
+
+    -- If no profile or profile has no plus_until, check if there is an existing plus_until in karaoke_testers
+    IF v_current_plus_until IS NULL THEN
+        v_current_plus_until := v_plus_until;
+    END IF;
+
+    -- Calculate new plus_until: extend if active, otherwise set from now()
+    IF v_current_plus_until IS NOT NULL AND v_current_plus_until > now() THEN
+        v_plus_until := v_current_plus_until + (p_duration_days || ' days')::interval;
+        v_existed_active := true;
+        v_old_plus_until := v_current_plus_until;
+    ELSE
+        v_plus_until := now() + (p_duration_days || ' days')::interval;
+        v_existed_active := false;
+    END IF;
+
+    -- Update or insert into karaoke_testers
     IF v_tester_id IS NOT NULL THEN
         UPDATE public.karaoke_testers
         SET status = 'tester_active',
             username = p_username,
             first_name = p_first_name,
-            plus_started_at = now(),
+            plus_started_at = COALESCE(plus_started_at, now()),
             plus_until = v_plus_until,
-            accepted_at = now(),
+            accepted_at = COALESCE(accepted_at, now()),
             updated_at = now()
         WHERE id = v_tester_id;
     ELSE
@@ -166,17 +182,25 @@ BEGIN
         ) RETURNING id INTO v_tester_id;
     END IF;
 
-    -- Update public.profiles if user profile already exists (dynamic query prevents compilation errors if table is not yet created)
+    -- Update public.profiles if user profile already exists
     IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'profiles') THEN
-        EXECUTE 'UPDATE public.profiles SET role = $1, plan = $2, plus_until = $3, updated_at = now() WHERE telegram_id = $4'
-        USING 'pro', 'plus', v_plus_until, p_telegram_id;
+        EXECUTE '
+            UPDATE public.profiles 
+            SET role = CASE WHEN role = ''admin'' THEN ''admin'' ELSE $1 END,
+                plan = $2, 
+                plus_until = $3, 
+                updated_at = now() 
+            WHERE telegram_id = $4
+        ' USING 'pro', 'plus', v_plus_until, p_telegram_id;
     END IF;
 
     RETURN jsonb_build_object(
         'success', true,
         'status', 'tester_active',
         'tester_id', v_tester_id,
-        'plus_until', v_plus_until
+        'plus_until', v_plus_until,
+        'existed_active', v_existed_active,
+        'old_plus_until', v_old_plus_until
     );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

@@ -3,7 +3,7 @@
 import { Telegraf, Markup, TelegramError } from 'telegraf';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
+import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL, DATABASE_URL, KARAOKE_DATABASE_URL } from './config.js';
 import { getSetting } from './services/settingsManager.js';
 import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage,
@@ -133,8 +133,7 @@ async function addTaskToQueue(task) {
         
         // Получаем приоритет из тарифа пользователя
         const user = await getUser(task.userId);
-        const dailyLimitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
-        const priority = user ? (user.premium_limit || dailyLimitFree) : dailyLimitFree;
+        const priority = getUserLimit(user);
         
         // Новый, правильный лог
         console.log('[Queue] Добавляю задачу', {
@@ -172,11 +171,77 @@ async function isSubscribed(userId) {
     }
 }
 
+function maskConnectionString(url) {
+    if (!url) return 'not set';
+    try {
+        const parsed = new URL(url);
+        if (parsed.password) parsed.password = '*****';
+        return parsed.toString();
+    } catch {
+        return url.replace(/:([^:@]+)@/, ':*****@');
+    }
+}
+
+export function getUserLimit(user) {
+    if (!user) return parseInt(getSetting('daily_limit_free') || '3', 10);
+    
+    // Проверяем, есть ли активная подписка
+    const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
+    if (isPremium) {
+        return user.premium_limit || parseInt(getSetting('daily_limit_plus') || '30', 10);
+    }
+    
+    return parseInt(getSetting('daily_limit_free') || '3', 10);
+}
+
+async function isDownloadLimitReached(ctx, userId) {
+    const isAdmin = Number(userId) === Number(ADMIN_ID);
+    if (isAdmin) return false;
+
+    const user = await getUser(userId);
+    if (!user) return false;
+
+    const downloadsToday = user.downloads_today || 0;
+    const userLimit = getUserLimit(user);
+    const limitFreeSetting = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const limitPlusSetting = parseInt(getSetting('daily_limit_plus') || '30', 10);
+    const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
+    
+    const playlistLimit = await getPlaylistLimitForUser(userId);
+    
+    const limitSource = isPremium 
+        ? (user.premium_limit ? 'user_premium_limit_db' : 'default_daily_limit_plus_setting')
+        : 'daily_limit_free_setting';
+
+    console.log(`[DEBUG] [Tariffs & Limits] User check:`, {
+        telegram_id: userId,
+        username: ctx.from?.username || 'unknown',
+        is_admin: isAdmin,
+        is_premium: isPremium,
+        premium_until: user.premium_until,
+        daily_limit: userLimit,
+        playlist_limit: playlistLimit,
+        downloaded_today: downloadsToday,
+        remaining_downloads: Math.max(0, userLimit - downloadsToday),
+        limit_source: limitSource,
+        free_setting: limitFreeSetting,
+        plus_setting: limitPlusSetting,
+        database_url_masked: maskConnectionString(DATABASE_URL),
+        karaoke_database_url_masked: maskConnectionString(KARAOKE_DATABASE_URL)
+    });
+
+    return downloadsToday >= userLimit;
+}
+
 function getTariffName(limit) {
+    const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
+    const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
+
     if (limit >= 10000) return 'Unlimited — 💎';
-    if (limit >= 100) return 'Pro — 100 💪';
-    if (limit >= 30) return 'Plus — 30 🎯';
-    return '🆓 Free — 5 🟢';
+    if (limit >= limitPro) return `Pro — ${limitPro} 💪`;
+    if (limit >= limitPlus) return `Plus — ${limitPlus} 🎯`;
+    return `🆓 Free — ${limitFree} 🟢`;
 }
 
 function getDaysLeft(premiumUntil) {
@@ -191,7 +256,8 @@ function getDaysLeft(premiumUntil) {
 
 function formatMenuMessage(user, botUsername) {
     // 1. Сначала получаем все динамические данные (как и раньше)
-    const tariffLabel = getTariffName(user.premium_limit);
+    const userLimit = getUserLimit(user);
+    const tariffLabel = getTariffName(userLimit);
     const downloadsToday = user.downloads_today || 0;
     const daysLeft = getDaysLeft(user.premium_until);
     const referralCount = user.referral_count || 0;
@@ -201,7 +267,7 @@ function formatMenuMessage(user, botUsername) {
     const statsBlock = [
         `💼 <b>Тариф:</b> <i>${tariffLabel}</i>`,
         `⏳ <b>Осталось дней подписки:</b> <i>${daysLeft}</i>`,
-        `🎧 <b>Сегодня скачано:</b> <i>${downloadsToday}</i> из <i>${user.premium_limit}</i>`
+        `🎧 <b>Сегодня скачано:</b> <i>${downloadsToday}</i> из <i>${userLimit}</i>`
     ].join('\n');
     
     // 3. Берем шаблоны из T() и заменяем плейсхолдеры
@@ -1200,10 +1266,11 @@ bot.command('karaoke_test', async (ctx) => {
     if (ctx.chat.type !== 'private') return;
 
     const tester = await getKaraokeTester(ctx.from.id);
-    if (tester && tester.status === 'tester_active' && new Date(tester.plus_until) > new Date()) {
+    if (tester && tester.status === 'tester_active' && tester.plus_until && new Date(tester.plus_until) > new Date()) {
+        const plusUntilDate = tester.plus_until ? new Date(tester.plus_until).toLocaleDateString('ru-RU') : 'не задан';
         return await ctx.reply(
             `🎤 Вы уже зарегистрированы как тестировщик!\n` +
-            `Plus-доступ активен до: <b>${new Date(tester.plus_until).toLocaleDateString('ru-RU')}</b>\n\n` +
+            `Plus-доступ активен до: <b>${plusUntilDate}</b>\n\n` +
             `🔗 Сервис: https://karaoke-lrc.vercel.app/`,
             {
                 parse_mode: 'HTML',
@@ -1240,13 +1307,20 @@ bot.action('karaoke_join', async (ctx) => {
     const result = await grantKaraokeTesterAccess(ctx.from.id, ctx.from.username || null, ctx.from.first_name || null, limit);
 
     if (result.success) {
-        const plusUntilDate = new Date(result.plus_until).toLocaleDateString('ru-RU');
+        const plusUntilDate = result.plus_until ? new Date(result.plus_until).toLocaleDateString('ru-RU') : 'не задан';
         try { await ctx.editMessageReplyMarkup(null); } catch {}
         
+        let successMessage = `✅ <b>Готово! Я выдал тебе Plus-доступ на 30 дней (до ${plusUntilDate}).</b>\n\n`;
+        if (result.existed_active && result.old_plus_until) {
+            const oldDate = new Date(result.old_plus_until).toLocaleDateString('ru-RU');
+            successMessage = `✅ <b>У тебя уже был активный тариф до ${oldDate}. Мы добавили 30 дней тестового Plus. Новый срок: ${plusUntilDate}.</b>\n\n`;
+        }
+        
+        successMessage += `Попробуй создать караоке-видео и пришли фидбэк, если что-то будет неудобно или сломается.\n\n` +
+                          `🔗 <b>Открыть сервис:</b> https://karaoke-lrc.vercel.app/`;
+
         return await ctx.reply(
-            `✅ <b>Готово! Я выдал тебе Plus-доступ на 30 дней (до ${plusUntilDate}).</b>\n\n` +
-            `Попробуй создать караоке-видео и пришли фидбэк, если что-то будет неудобно или сломается.\n\n` +
-            `🔗 <b>Открыть сервис:</b> https://karaoke-lrc.vercel.app/`,
+            successMessage,
             {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
@@ -1393,7 +1467,7 @@ async function getPlaylistLimitForUser(userId) {
         const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
         const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
         
-        const userLimit = user ? (user.premium_limit || limitFree) : limitFree;
+        const userLimit = getUserLimit(user);
         
         if (userLimit <= limitFree) {
             return parseInt(getSetting('playlist_limit_free') || '3', 10);
@@ -1459,7 +1533,8 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
     // 1. Проверяем лимиты ДО загрузки полных данных плейлиста
     const user = await getUser(userId);
     const isAdmin = Number(userId) === Number(ADMIN_ID);
-    const remainingLimit = isAdmin ? 99999 : user.premium_limit - (user.downloads_today || 0);
+    const userLimit = getUserLimit(user);
+    const remainingLimit = isAdmin ? 99999 : userLimit - (user.downloads_today || 0);
 
     if (remainingLimit <= 0) {
         const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
@@ -1569,7 +1644,8 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
     // 1. Проверяем лимиты ДО загрузки названий!
     const user = await getUser(userId);
     const isAdmin = Number(userId) === Number(ADMIN_ID);
-    const remainingLimit = isAdmin ? 99999 : user.premium_limit - (user.downloads_today || 0);
+    const userLimit = getUserLimit(user);
+    const remainingLimit = isAdmin ? 99999 : userLimit - (user.downloads_today || 0);
     if (remainingLimit <= 0) {
         const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
         const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
@@ -1678,7 +1754,8 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     
     // --- 1. Проверка лимитов пользователя ---
     const user = await getUser(userId);
-    const remainingLimit = isAdmin ? 99999 : user.premium_limit - (user.downloads_today || 0);
+    const userLimit = getUserLimit(user);
+    const remainingLimit = isAdmin ? 99999 : userLimit - (user.downloads_today || 0);
     
     if (remainingLimit <= 0) {
   const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
@@ -1858,23 +1935,19 @@ async function processUrlInBackground(ctx, url) {
 async function handleSoundCloudUrl(ctx, url) {
     let loadingMessage;
     try {
-        // Ранняя проверка лимитов (для всех, кроме админа)
-        const isAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
-        if (!isAdmin) {
+        if (await isDownloadLimitReached(ctx, ctx.from.id)) {
             const user = await getUser(ctx.from.id);
-            if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-                const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-                const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-                const bonusText = bonusAvailable
-                  ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-                  : '';
-                const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-                if (bonusAvailable) {
-                  extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
-                }
-                await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
-                return;
+            const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+            const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+            const bonusText = bonusAvailable
+              ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+              : '';
+            const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+            if (bonusAvailable) {
+              extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
             }
+            await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+            return;
         }
 
         loadingMessage = await ctx.reply('🔍 Анализирую ссылку...');
@@ -2179,22 +2252,19 @@ bot.on('text', async (ctx) => {
     
     const url = urlMatch[0];
 
-    // Проверка лимитов (для всех, кроме админа)
-    if (!isAdmin) {
+    if (await isDownloadLimitReached(ctx, ctx.from.id)) {
         const user = await getUser(ctx.from.id);
-        if ((user.downloads_today || 0) >= (user.premium_limit || 0)) {
-            const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-            const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-            const bonusText = bonusAvailable
-              ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-              : '';
-            const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-            if (bonusAvailable) {
-              extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
-            }
-            await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
-            return;
+        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
+        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
+        const bonusText = bonusAvailable
+          ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
+          : '';
+        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+        if (bonusAvailable) {
+          extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
         }
+        await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+        return;
     }
 
     // Определяем источник и обрабатываем
