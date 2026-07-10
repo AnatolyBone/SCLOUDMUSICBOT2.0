@@ -181,16 +181,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 5. Add columns to users table for feedback mode conditionally if table exists
+-- 5. Create Supabase Storage Bucket for feedback attachments (if schema exists)
 DO $$
 BEGIN
-    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') THEN
-        ALTER TABLE public.users ADD COLUMN IF NOT EXISTS karaoke_feedback_mode BOOLEAN DEFAULT FALSE;
-        ALTER TABLE public.users ADD COLUMN IF NOT EXISTS karaoke_feedback_started_at TIMESTAMP WITH TIME ZONE;
+    IF EXISTS (SELECT FROM information_schema.schemata WHERE schema_name = 'storage') THEN
+        INSERT INTO storage.buckets (id, name, public)
+        VALUES ('karaoke-feedback', 'karaoke-feedback', true)
+        ON CONFLICT (id) DO NOTHING;
     END IF;
 END $$;
-
--- 6. Create Supabase Storage Bucket for feedback attachments (if schema exists)
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('karaoke-feedback', 'karaoke-feedback', true)
-ON CONFLICT (id) DO NOTHING;
