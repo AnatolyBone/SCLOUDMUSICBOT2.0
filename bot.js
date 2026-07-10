@@ -5,7 +5,7 @@ import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL, DATABASE_URL, KARAOKE_DATABASE_URL } from './config.js';
 import { getSetting } from './services/settingsManager.js';
-import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
+import { updateUserField, getUser, createUser, setPremium, setTariffAdmin, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage,
     grantKaraokeTesterAccess, getKaraokeTester, addKaraokeFeedback, getKaraokeTestersStats, logKaraokeInvitation} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
@@ -1309,6 +1309,13 @@ bot.action('karaoke_join', async (ctx) => {
     if (result.success) {
         const plusUntilDate = result.plus_until ? new Date(result.plus_until).toLocaleDateString('ru-RU') : 'не задан';
         try { await ctx.editMessageReplyMarkup(null); } catch {}
+
+        // Выдаем/продлеваем Plus-доступ в локальной базе музыкального бота (кроме администраторов)
+        const isBotAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
+        if (!isBotAdmin) {
+            await setTariffAdmin(ctx.from.id, 30, 30, { mode: 'extend' });
+            console.log(`[Karaoke/Tester] Granted/extended Plus in Bot DB for user ${ctx.from.id} (30 days)`);
+        }
         
         let successMessage = `✅ <b>Готово! Я выдал тебе Plus-доступ на 30 дней (до ${plusUntilDate}).</b>\n\n`;
         if (result.existed_active && result.old_plus_until) {
