@@ -303,10 +303,39 @@ bot.use(async (ctx, next) => {
 bot.use(async (ctx, next) => {
     if (isShuttingDown()) return;
     if (isMaintenanceMode() && ctx.from && Number(ctx.from.id) !== Number(ADMIN_ID)) {
-        if (ctx.callbackQuery) {
-            return await ctx.answerCbQuery('⏳ Бот на плановом обслуживании.', { show_alert: true });
+        const text = ctx.message?.text || '';
+        
+        // Разрешаем команды (начинаются с /)
+        if (text.startsWith('/')) {
+            return await next();
         }
-        return await ctx.reply('⏳ Бот на плановом обслуживании.');
+        
+        // Разрешаем кнопки основного меню и навигацию
+        const vpnText = getSetting('vpn_button_text') || '🔐 VPN (YouTube 4K)';
+        const allowedTexts = [
+            T('menu'), '🆔 Распознать', T('upgrade'), T('mytracks'), T('help'), 
+            vpnText, T('vpn')
+        ];
+        if (allowedTexts.includes(text)) {
+            return await next();
+        }
+        
+        // Разрешаем callback-запросы, относящиеся к караоке и админке
+        if (ctx.callbackQuery) {
+            const data = ctx.callbackQuery.data || '';
+            if (data.startsWith('karaoke_') || data.startsWith('admin_karaoke_')) {
+                return await next();
+            }
+            return await ctx.answerCbQuery('⏳ Бот на плановом обслуживании (скачивание временно недоступно).', { show_alert: true });
+        }
+        
+        // Блокируем ссылки и обычный текст (поиск), так как они запускают скачивание
+        const isDownloadAttempt = text.includes('soundcloud.com') || text.includes('spotify.com') || text.includes('youtu') || !text;
+        if (isDownloadAttempt) {
+            return await ctx.reply('⏳ Скачивание музыки временно недоступно: бот на плановом обслуживании.');
+        }
+        
+        return await ctx.reply('⏳ Поиск и скачивание музыки временно недоступны: бот на плановом обслуживании.');
     }
     return await next();
 });
