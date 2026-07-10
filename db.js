@@ -41,7 +41,15 @@ if (karaokePool) {
 }
 
 export const karaokeSupabase = (KARAOKE_SUPABASE_URL && KARAOKE_SUPABASE_KEY)
-  ? createClient(KARAOKE_SUPABASE_URL, KARAOKE_SUPABASE_KEY)
+  ? createClient(
+      KARAOKE_SUPABASE_URL,
+      KARAOKE_SUPABASE_KEY,
+      {
+        realtime: {
+          transport: ws
+        }
+      }
+    )
   : null;
 
 export async function karaokeQuery(text, params) {
