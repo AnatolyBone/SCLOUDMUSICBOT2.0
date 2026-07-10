@@ -598,6 +598,24 @@ bot.start(async (ctx) => {
         await processNewUserReferral(user, ctx);
     }
 
+    if (ctx.startPayload === 'karaoke_test') {
+        await logKaraokeInvitation(ctx.from.id, ctx.from.username || null, ctx.from.first_name || null);
+        const msg = `🎤 <b>Хочешь протестировать новый сервис для создания караоке-видео?</b>\n\n` +
+            `Можно загрузить песню, найти текст, расставить тайминги, экспортировать видео и опубликовать караоке в каталог.\n\n` +
+            `Я даю <b>Plus-доступ на 30 дней бесплатно</b>.\n` +
+            `Взамен попрошу честно потестировать сервис и прислать пару отзывов или багов прямо сюда, если что-то пойдёт не так.\n\n` +
+            `Мест пока немного.`;
+
+        return await ctx.reply(msg, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🚀 Стать тестировщиком', 'karaoke_join')],
+                [Markup.button.url('🌐 Открыть Karaoke LRC Maker', 'https://karaoke-lrc.vercel.app/')],
+                [Markup.button.callback('Позже', 'karaoke_later')]
+            ])
+        });
+    }
+
     const startMessage = isNewRegistration ? T('start_new_user') : T('start');
 
     await ctx.reply(startMessage, {
