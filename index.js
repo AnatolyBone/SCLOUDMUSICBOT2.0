@@ -17,6 +17,7 @@ import { checkAndSendExpirationNotifications, notifyExpiringTodayHourly } from '
 import { loadSettings,getAllSettings,getSetting} from './services/settingsManager.js';
 import {
   pool,
+  karaokePool,
   getUserById,
   resetDailyStats,
   getUserUniqueDownloadedUrls,
@@ -121,7 +122,25 @@ async function startApp() {
     // Остальная инициализация
     await loadTexts(true);
     await redisService.connect();
-await loadSettings();
+    await loadSettings();
+    
+    try {
+        if (karaokePool) {
+            console.log('[DEBUG] Querying triggers on profiles in Karaoke DB...');
+            const trgRes = await karaokePool.query(`
+                SELECT tgname as trigger_name, pg_get_triggerdef(tg.oid) as trigger_def
+                FROM pg_trigger tg
+                JOIN pg_class cl ON cl.oid = tg.tgrelid
+                JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+                WHERE cl.relname = 'profiles' AND ns.nspname = 'public'
+            `);
+            console.log('[DEBUG] Triggers found on profiles:', JSON.stringify(trgRes.rows, null, 2));
+        } else {
+            console.log('[DEBUG] karaokePool is not initialized');
+        }
+    } catch (e) {
+        console.error('[DEBUG] Failed to inspect triggers on profiles:', e.message);
+    }
     
     await initializeDownloadManager();
     
