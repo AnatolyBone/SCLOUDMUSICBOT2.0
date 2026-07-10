@@ -151,9 +151,14 @@
                 <input type="hidden" name="applyMode" value="set">
                 
                 <select name="limit" class="form-select form-select-sm" style="width: 100px;" required>
-                  <option value="5"     <%= limit <= 5 ? 'selected' : '' %>>Free</option>
-                  <option value="30"    <%= limit === 30 ? 'selected' : '' %>>Plus</option>
-                  <option value="100"   <%= limit === 100 ? 'selected' : '' %>>Pro</option>
+                  <% 
+                    const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+                    const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
+                    const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
+                  %>
+                  <option value="<%= limitFree %>"     <%= limit <= limitFree ? 'selected' : '' %>>Free</option>
+                  <option value="<%= limitPlus %>"    <%= limit === limitPlus ? 'selected' : '' %>>Plus</option>
+                  <option value="<%= limitPro %>"   <%= limit === limitPro ? 'selected' : '' %>>Pro</option>
                   <option value="10000" <%= limit >= 10000 ? 'selected' : '' %>>Unlim</option>
                 </select>
                 

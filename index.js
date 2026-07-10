@@ -341,6 +341,7 @@ function setupExpress() {
     res.locals.user = null;
     res.locals.page = '';
     res.locals.unreadSupportCount = 0;
+    res.locals.getSetting = getSetting;
     if (req.session.authenticated && req.session.userId === ADMIN_ID) {
       try { 
         res.locals.user = await getUserById(req.session.userId); 
