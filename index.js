@@ -126,20 +126,18 @@ async function startApp() {
     
     try {
         if (karaokePool) {
-            console.log('[DEBUG] Querying triggers on profiles in Karaoke DB...');
+            console.log('[DEBUG] Querying protect_profile_privileged_fields_trigger source code...');
             const trgRes = await karaokePool.query(`
-                SELECT tgname as trigger_name, pg_get_triggerdef(tg.oid) as trigger_def
-                FROM pg_trigger tg
-                JOIN pg_class cl ON cl.oid = tg.tgrelid
-                JOIN pg_namespace ns ON ns.oid = cl.relnamespace
-                WHERE cl.relname = 'profiles' AND ns.nspname = 'public'
+                SELECT prosrc 
+                FROM pg_proc 
+                WHERE proname = 'protect_profile_privileged_fields_trigger'
             `);
-            console.log('[DEBUG] Triggers found on profiles:', JSON.stringify(trgRes.rows, null, 2));
+            console.log('[DEBUG] protect_profile_privileged_fields_trigger source code:', trgRes.rows[0]?.prosrc);
         } else {
             console.log('[DEBUG] karaokePool is not initialized');
         }
     } catch (e) {
-        console.error('[DEBUG] Failed to inspect triggers on profiles:', e.message);
+        console.error('[DEBUG] Failed to inspect trigger function:', e.message);
     }
     
     await initializeDownloadManager();
