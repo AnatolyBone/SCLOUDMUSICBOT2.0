@@ -2348,4 +2348,137 @@ export async function getUnreadSupportTicketsCount() {
   }
 }
 
+// =====================================================================================
+//                       KARAOKE LRC MAKER INTEGRATION (MVP)
+// =====================================================================================
+
+export async function grantKaraokeTesterAccess(telegramId, username, firstName, limit = 50) {
+  try {
+    const sql = `SELECT public.grant_karaoke_tester_access($1, $2, $3, 'music_bot', 30, $4) AS result`;
+    const { rows } = await query(sql, [telegramId, username, firstName, limit]);
+    return rows[0]?.result;
+  } catch (e) {
+    console.error('[DB] grantKaraokeTesterAccess error:', e.message);
+    return { success: false, status: 'error', message: e.message };
+  }
+}
+
+export async function getKaraokeTester(telegramId) {
+  try {
+    const sql = `SELECT * FROM public.karaoke_testers WHERE telegram_id = $1`;
+    const { rows } = await query(sql, [telegramId]);
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] getKaraokeTester error:', e.message);
+    return null;
+  }
+}
+
+export async function addKaraokeFeedback({ telegramId, messageText, attachmentUrl, attachmentType, contact }) {
+  try {
+    // 1. Находим user_id (UUID) в public.profiles если есть
+    const profileRes = await query(`SELECT id FROM public.profiles WHERE telegram_id = $1`, [telegramId]);
+    const userId = profileRes.rows[0]?.id || null;
+    
+    // 2. Скриншоты в JSONB массив
+    const screenshots = attachmentUrl ? [attachmentUrl] : [];
+    
+    // 3. Сохраняем в public.feedback
+    const sql = `
+      INSERT INTO public.feedback (
+        user_id, telegram_id, type, status, message, contact, screenshots, technical_data
+      ) VALUES ($1, $2, 'other', 'new', $3, $4, $5::jsonb, $6::jsonb)
+      RETURNING id;
+    `;
+    const technicalData = { source: 'telegram_bot' };
+    const result = await query(sql, [
+      userId,
+      telegramId,
+      messageText || '',
+      contact || null,
+      JSON.stringify(screenshots),
+      JSON.stringify(technicalData)
+    ]);
+    
+    // 4. Увеличиваем счетчик отзывов у тестировщика
+    await query(`
+      UPDATE public.karaoke_testers
+      SET feedback_count = feedback_count + 1, updated_at = NOW()
+      WHERE telegram_id = $1
+    `, [telegramId]);
+    
+    return result.rows[0]?.id || null;
+  } catch (e) {
+    console.error('[DB] addKaraokeFeedback error:', e.message);
+    return null;
+  }
+}
+
+export async function getKaraokeTestersStats() {
+  try {
+    const stats = {};
+    
+    const totalInvited = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers`);
+    stats.totalInvited = totalInvited.rows[0]?.count || 0;
+    
+    const totalActive = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE status = 'tester_active'`);
+    stats.totalActive = totalActive.rows[0]?.count || 0;
+    
+    const totalWaitlist = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE status = 'tester_waitlist'`);
+    stats.totalWaitlist = totalWaitlist.rows[0]?.count || 0;
+    
+    const totalFeedback = await query(`SELECT COUNT(*)::int as count FROM public.karaoke_testers WHERE feedback_count > 0`);
+    stats.totalFeedback = totalFeedback.rows[0]?.count || 0;
+    
+    const openedService = await query(`
+      SELECT COUNT(DISTINCT telegram_id)::int as count FROM public.app_events 
+      WHERE event_name = 'app_open' AND telegram_id IN (SELECT telegram_id FROM public.karaoke_testers WHERE status = 'tester_active')
+    `);
+    stats.openedService = openedService.rows[0]?.count || 0;
+    
+    const exportedVideos = await query(`
+      SELECT COUNT(*)::int as count FROM public.app_events 
+      WHERE event_name = 'video_export_completed' AND telegram_id IN (SELECT telegram_id FROM public.karaoke_testers WHERE status = 'tester_active')
+    `);
+    stats.exportedVideos = exportedVideos.rows[0]?.count || 0;
+    
+    const publishedKaraoke = await query(`
+      SELECT COUNT(*)::int as count FROM public.published_karaoke 
+      WHERE publisher_id IN (
+        SELECT id FROM public.profiles 
+        WHERE telegram_id IN (SELECT telegram_id FROM public.karaoke_testers WHERE status = 'tester_active')
+      )
+    `);
+    stats.publishedKaraoke = publishedKaraoke.rows[0]?.count || 0;
+    
+    return stats;
+  } catch (e) {
+    console.error('[DB] getKaraokeTestersStats error:', e.message);
+    return {
+      totalInvited: 0,
+      totalActive: 0,
+      totalWaitlist: 0,
+      totalFeedback: 0,
+      openedService: 0,
+      exportedVideos: 0,
+      publishedKaraoke: 0
+    };
+  }
+}
+
+export async function logKaraokeInvitation(telegramId, username, firstName) {
+  try {
+    const sql = `
+      INSERT INTO public.karaoke_testers (telegram_id, username, first_name, invited_at, status)
+      VALUES ($1, $2, $3, NOW(), 'invited')
+      ON CONFLICT (telegram_id) DO UPDATE
+      SET username = EXCLUDED.username, first_name = EXCLUDED.first_name, invited_at = NOW()
+      WHERE public.karaoke_testers.status = 'invited' OR public.karaoke_testers.status IS NULL
+    `;
+    await query(sql, [telegramId, username, firstName]);
+  } catch (e) {
+    console.error('[DB] logKaraokeInvitation error:', e.message);
+  }
+}
+
 

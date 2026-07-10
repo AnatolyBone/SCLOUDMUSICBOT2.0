@@ -6,7 +6,8 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
 import { getSetting } from './services/settingsManager.js';
 import { updateUserField, getUser, createUser, setPremium, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
-    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage} from './db.js';
+    incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage,
+    grantKaraokeTesterAccess, getKaraokeTester, addKaraokeFeedback, getKaraokeTestersStats, logKaraokeInvitation} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
 import { handleSpotifyUrl, handleQualitySelection as handleSpotifyQuality, registerSpotifyCallbacks } from './services/spotifyManager.js';
@@ -383,6 +384,164 @@ bot.use(async (ctx, next) => {
     
     await resetDailyLimitIfNeeded(ctx.from.id);
     await resetExpiredPremiumIfNeeded(ctx.from.id);
+    return next();
+});
+
+// =====================================================================================
+//                       KARAOKE LRC MAKER INTEGRATION (MVP)
+// =====================================================================================
+
+async function handleKaraokeFeedbackMessage(ctx) {
+    const text = ctx.message.text;
+    
+    if (text === '/cancel') {
+        await updateUserField(ctx.from.id, {
+            karaoke_feedback_mode: false,
+            karaoke_feedback_started_at: null
+        });
+        return await ctx.reply('❌ Отправка отзыва отменена.', getMainKeyboard());
+    }
+
+    let fileId = null;
+    let attachmentType = null;
+    let mimeType = 'image/jpeg';
+    let fileExtension = 'jpg';
+
+    if (ctx.message.photo) {
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        fileId = photo.file_id;
+        attachmentType = 'photo';
+        mimeType = 'image/jpeg';
+        fileExtension = 'jpg';
+    } else if (ctx.message.video) {
+        fileId = ctx.message.video.file_id;
+        attachmentType = 'video';
+        mimeType = ctx.message.video.mime_type || 'video/mp4';
+        fileExtension = 'mp4';
+    } else if (ctx.message.document) {
+        fileId = ctx.message.document.file_id;
+        attachmentType = 'document';
+        mimeType = ctx.message.document.mime_type || 'application/octet-stream';
+        const origName = ctx.message.document.file_name || '';
+        const extMatch = origName.match(/\.([a-zA-Z0-9]+)$/);
+        fileExtension = extMatch ? extMatch[1] : 'bin';
+    } else if (ctx.message.voice) {
+        fileId = ctx.message.voice.file_id;
+        attachmentType = 'voice';
+        mimeType = ctx.message.voice.mime_type || 'audio/ogg';
+        fileExtension = 'ogg';
+    } else if (ctx.message.video_note) {
+        fileId = ctx.message.video_note.file_id;
+        attachmentType = 'video_note';
+        mimeType = 'video/mp4';
+        fileExtension = 'mp4';
+    } else if (ctx.message.audio) {
+        fileId = ctx.message.audio.file_id;
+        attachmentType = 'audio';
+        mimeType = ctx.message.audio.mime_type || 'audio/mpeg';
+        fileExtension = 'mp3';
+    }
+
+    const messageText = ctx.message.text || ctx.message.caption || '';
+    if (!messageText && !fileId) {
+        return await ctx.reply('💬 Пожалуйста, напишите ваш отзыв текстом или пришлите скриншот/видео.');
+    }
+
+    let attachmentUrl = null;
+
+    if (fileId) {
+        try {
+            await ctx.reply('⏳ Загружаю файл в Supabase Storage...');
+            
+            const fileInfo = await ctx.telegram.getFile(fileId);
+            const downloadUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
+            
+            const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+            const buffer = Buffer.from(response.data);
+            
+            const filename = `feedback_${Date.now()}_${fileId}.${fileExtension}`;
+            
+            const { supabase } = await import('./db.js');
+            const { data, error } = await supabase.storage
+                .from('karaoke-feedback')
+                .upload(filename, buffer, {
+                    contentType: mimeType,
+                    upsert: true
+                });
+                
+            if (error) throw error;
+            
+            const { data: publicData } = supabase.storage
+                .from('karaoke-feedback')
+                .getPublicUrl(filename);
+                
+            attachmentUrl = publicData.publicUrl;
+            console.log(`[Storage] Файл загружен: ${attachmentUrl}`);
+        } catch (err) {
+            console.error('🔴 [Feedback Storage] Ошибка загрузки файла:', err.message);
+            await ctx.reply('⚠️ Не удалось сохранить файл в облако, отзыв будет сохранен без вложения...').catch(() => {});
+        }
+    }
+
+    const contact = ctx.from.username ? `@${ctx.from.username}` : (ctx.from.first_name || 'Пользователь');
+    
+    await addKaraokeFeedback({
+        telegramId: ctx.from.id,
+        messageText,
+        attachmentUrl,
+        attachmentType,
+        contact
+    });
+
+    try {
+        const safeName = ctx.from.first_name ? ctx.from.first_name.replace(/</g, '&lt;').replace(/>/g, '&gt;') : 'Без имени';
+        const adminMessage = `🎤 <b>Новый отзыв о караоке-сервисе!</b>\n` +
+            `<b>От:</b> ${safeName} (ID: <code>${ctx.from.id}</code>, ${contact})\n\n` +
+            `<i>"${messageText || '(без текста)'}"</i>`;
+
+        if (attachmentType === 'photo') {
+            await bot.telegram.sendPhoto(ADMIN_ID, fileId, { caption: adminMessage, parse_mode: 'HTML' });
+        } else if (attachmentType === 'video') {
+            await bot.telegram.sendVideo(ADMIN_ID, fileId, { caption: adminMessage, parse_mode: 'HTML' });
+        } else if (attachmentType === 'document') {
+            await bot.telegram.sendDocument(ADMIN_ID, fileId, { caption: adminMessage, parse_mode: 'HTML' });
+        } else {
+            await bot.telegram.sendMessage(ADMIN_ID, adminMessage, { parse_mode: 'HTML' });
+        }
+    } catch (adminErr) {
+        console.error('🔴 Не удалось уведомить админа об отзыве:', adminErr.message);
+    }
+
+    await updateUserField(ctx.from.id, {
+        karaoke_feedback_mode: false,
+        karaoke_feedback_started_at: null
+    });
+
+    return await ctx.reply('✅ Спасибо за ваш отзыв! Он поможет сделать сервис лучше.', getMainKeyboard());
+}
+
+bot.use(async (ctx, next) => {
+    if (isShuttingDown()) return next();
+    if (!ctx.from || ctx.chat?.type !== 'private') return next();
+    if (ctx.callbackQuery) return next();
+
+    const user = ctx.state.user;
+    if (user && user.karaoke_feedback_mode) {
+        const startedAt = user.karaoke_feedback_started_at ? new Date(user.karaoke_feedback_started_at).getTime() : 0;
+        const now = Date.now();
+        
+        if (startedAt > 0 && (now - startedAt) > 20 * 60 * 1000) {
+            await updateUserField(ctx.from.id, {
+                karaoke_feedback_mode: false,
+                karaoke_feedback_started_at: null
+            });
+            await ctx.reply('⏳ Время ожидания отзыва истекло. Если хотите оставить отзыв, пожалуйста, начните заново через /karaoke_test.');
+            return next();
+        }
+
+        return await handleKaraokeFeedbackMessage(ctx);
+    }
+
     return next();
 });
 const getMainKeyboard = () => {
@@ -983,6 +1142,188 @@ bot.hears((text) => {
 }, vpnHandler);
 
 bot.command('vpn', vpnHandler);
+
+// =====================================================================================
+//                       KARAOKE LRC MAKER COMMANDS & ACTIONS
+// =====================================================================================
+
+bot.command('karaoke_test', async (ctx) => {
+    if (isShuttingDown()) return;
+    if (ctx.chat.type !== 'private') return;
+
+    const tester = await getKaraokeTester(ctx.from.id);
+    if (tester && tester.status === 'tester_active' && new Date(tester.plus_until) > new Date()) {
+        return await ctx.reply(
+            `🎤 Вы уже зарегистрированы как тестировщик!\n` +
+            `Plus-доступ активен до: <b>${new Date(tester.plus_until).toLocaleDateString('ru-RU')}</b>\n\n` +
+            `🔗 Сервис: https://karaoke-lrc.vercel.app/`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('🌐 Открыть сервис', 'https://karaoke-lrc.vercel.app/')],
+                    [Markup.button.callback('✍️ Оставить отзыв', 'karaoke_feedback')]
+                ])
+            }
+        );
+    }
+
+    await logKaraokeInvitation(ctx.from.id, ctx.from.username || null, ctx.from.first_name || null);
+
+    const msg = `🎤 <b>Хочешь протестировать новый сервис для создания караоке-видео?</b>\n\n` +
+        `Можно загрузить песню, найти текст, расставить тайминги, экспортировать видео и опубликовать караоке в каталог.\n\n` +
+        `Я даю <b>Plus-доступ на 30 дней бесплатно</b>.\n` +
+        `Взамен попрошу честно потестировать сервис и прислать пару отзывов или багов прямо сюда, если что-то пойдёт не так.\n\n` +
+        `Мест пока немного.`;
+
+    return await ctx.reply(msg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+            [Markup.button.callback('🚀 Стать тестировщиком', 'karaoke_join')],
+            [Markup.button.url('🌐 Открыть Karaoke LRC Maker', 'https://karaoke-lrc.vercel.app/')],
+            [Markup.button.callback('Позже', 'karaoke_later')]
+        ])
+    });
+});
+
+bot.action('karaoke_join', async (ctx) => {
+    await ctx.answerCbQuery();
+    
+    const limit = 50; // Лимит тестировщиков
+    const result = await grantKaraokeTesterAccess(ctx.from.id, ctx.from.username || null, ctx.from.first_name || null, limit);
+
+    if (result.success) {
+        const plusUntilDate = new Date(result.plus_until).toLocaleDateString('ru-RU');
+        try { await ctx.editMessageReplyMarkup(null); } catch {}
+        
+        return await ctx.reply(
+            `✅ <b>Готово! Я выдал тебе Plus-доступ на 30 дней (до ${plusUntilDate}).</b>\n\n` +
+            `Попробуй создать караоке-видео и пришли фидбэк, если что-то будет неудобно или сломается.\n\n` +
+            `🔗 <b>Открыть сервис:</b> https://karaoke-lrc.vercel.app/`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('🌐 Открыть сервис', 'https://karaoke-lrc.vercel.app/')],
+                    [Markup.button.callback('✍️ Отправить фидбэк', 'karaoke_feedback')]
+                ])
+            }
+        );
+    } else if (result.status === 'waitlist') {
+        try { await ctx.editMessageReplyMarkup(null); } catch {}
+        
+        return await ctx.reply(
+            `😔 <b>Места в первой группе тестировщиков уже закончились.</b>\n\n` +
+            `Я добавил тебя в список ожидания и напишу, когда открою следующую волну тестирования.`
+        );
+    } else {
+        return await ctx.reply('⚠️ Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.');
+    }
+});
+
+bot.action('karaoke_later', async (ctx) => {
+    await ctx.answerCbQuery();
+    try { await ctx.editMessageReplyMarkup(null); } catch {}
+    return await ctx.reply('Хорошо! Если передумаете, команда /karaoke_test всегда доступна.');
+});
+
+bot.command('feedback', async (ctx) => {
+    if (isShuttingDown()) return;
+    if (ctx.chat.type !== 'private') return;
+    
+    const tester = await getKaraokeTester(ctx.from.id);
+    if (!tester) {
+        return await ctx.reply('⚠️ Вы не зарегистрированы как тестировщик. Чтобы принять участие, используйте команду /karaoke_test.');
+    }
+    
+    await updateUserField(ctx.from.id, {
+        karaoke_feedback_mode: true,
+        karaoke_feedback_started_at: new Date()
+    });
+    
+    return await ctx.reply(
+        '🎤 <b>Оставьте ваш отзыв о Karaoke LRC Maker!</b>\n\n' +
+        'Напишите, что вы заметили:\n' +
+        '- что не работает или сломалось;\n' +
+        '- что показалось непонятным или неудобным;\n' +
+        '- что понравилось;\n' +
+        '- на каком устройстве вы тестировали.\n\n' +
+        'Вы можете отправить текст, скриншот, видео или файл.\n' +
+        'Для отмены введите /cancel.',
+        { parse_mode: 'HTML', reply_markup: { remove_keyboard: true } }
+    );
+});
+
+bot.action('karaoke_feedback', async (ctx) => {
+    await ctx.answerCbQuery();
+    
+    await updateUserField(ctx.from.id, {
+        karaoke_feedback_mode: true,
+        karaoke_feedback_started_at: new Date()
+    });
+    
+    return await ctx.reply(
+        '🎤 <b>Оставьте ваш отзыв о Karaoke LRC Maker!</b>\n\n' +
+        'Напишите, что вы заметили:\n' +
+        '- что не работает или сломалось;\n' +
+        '- что показалось непонятным или неудобным;\n' +
+        '- что понравилось;\n' +
+        '- на каком устройстве вы тестировали.\n\n' +
+        'Вы можете отправить текст, скриншот, видео или файл.\n' +
+        'Для отмены введите /cancel.',
+        { parse_mode: 'HTML', reply_markup: { remove_keyboard: true } }
+    );
+});
+
+bot.command('karaoke_testers', async (ctx) => {
+    if (isShuttingDown()) return;
+    if (Number(ctx.from.id) !== Number(ADMIN_ID)) return;
+
+    const stats = await getKaraokeTestersStats();
+    
+    const msg = `🎤 <b>Тестировщики Karaoke LRC Maker</b>\n\n` +
+        `👤 Всего приглашено: <b>${stats.totalInvited}</b>\n` +
+        `✅ Активировали тест: <b>${stats.totalActive}</b>\n` +
+        `⏳ В листе ожидания: <b>${stats.totalWaitlist}</b>\n` +
+        `💬 Оставили фидбэк: <b>${stats.totalFeedback}</b>\n\n` +
+        `📊 <b>Активность на сайте:</b>\n` +
+        `🌐 Открывали сервис: <b>${stats.openedService}</b>\n` +
+        `📹 Экспортировали видео: <b>${stats.exportedVideos}</b>\n` +
+        `🎵 Опубликовали караоке: <b>${stats.publishedKaraoke}</b>`;
+
+    return await ctx.reply(msg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+            [Markup.button.callback('🔄 Обновить', 'admin_karaoke_refresh')]
+        ])
+    });
+});
+
+bot.action('admin_karaoke_refresh', async (ctx) => {
+    if (Number(ctx.from.id) !== Number(ADMIN_ID)) return ctx.answerCbQuery('Доступ запрещен');
+    
+    const stats = await getKaraokeTestersStats();
+    
+    const msg = `🎤 <b>Тестировщики Karaoke LRC Maker</b>\n\n` +
+        `👤 Всего приглашено: <b>${stats.totalInvited}</b>\n` +
+        `✅ Активировали тест: <b>${stats.totalActive}</b>\n` +
+        `⏳ В листе ожидания: <b>${stats.totalWaitlist}</b>\n` +
+        `💬 Оставили фидбэк: <b>${stats.totalFeedback}</b>\n\n` +
+        `📊 <b>Активность на сайте:</b>\n` +
+        `🌐 Открывали сервис: <b>${stats.openedService}</b>\n` +
+        `📹 Экспортировали видео: <b>${stats.exportedVideos}</b>\n` +
+        `🎵 Опубликовали караоке: <b>${stats.publishedKaraoke}</b>`;
+
+    try {
+        await ctx.editMessageText(msg, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔄 Обновить', 'admin_karaoke_refresh')]
+            ])
+        });
+        await ctx.answerCbQuery('Статистика обновлена!');
+    } catch (e) {
+        await ctx.answerCbQuery();
+    }
+});
 
 bot.on('inline_query', async (ctx) => {
     const query = ctx.inlineQuery.query;
