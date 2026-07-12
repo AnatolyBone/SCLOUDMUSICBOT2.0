@@ -1,0 +1,335 @@
+<%# views/analytics.ejs %>
+
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <div>
+    <h1 class="h3 mb-0 text-gray-800"><i class="bi bi-bar-chart-fill me-2 text-primary"></i>Сквозная аналитика</h1>
+    <p class="text-muted mb-0">Показатели воронки, выручки и лимитов (Временная зона: Europe/Moscow)</p>
+  </div>
+  
+  <div class="d-flex gap-2 align-items-end flex-wrap">
+    <form class="d-flex gap-2 align-items-end" method="get" action="/admin/analytics">
+      <div>
+        <label class="form-label small text-muted mb-1">С даты</label>
+        <input type="date" name="startDate" class="form-control form-control-sm" value="<%= startDate %>">
+      </div>
+      <div>
+        <label class="form-label small text-muted mb-1">По дату</label>
+        <input type="date" name="endDate" class="form-control form-control-sm" value="<%= endDate %>">
+      </div>
+      <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-filter me-1"></i>Показать</button>
+    </form>
+    <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#aggregation-panel" title="Агрегация данных">
+      <i class="bi bi-gear me-1"></i>Агрегация
+    </button>
+  </div>
+</div>
+
+<div class="collapse mb-3" id="aggregation-panel">
+  <div class="card card-body bg-light border-0 shadow-sm">
+    <div class="d-flex gap-3 align-items-end flex-wrap">
+      <div>
+        <p class="mb-1 fw-semibold">Запустить агрегацию вручную</p>
+        <p class="text-muted small mb-2">Оставьте дату пустой для сегодня, или укажите конкретный день для восстановления исторических данных.</p>
+        <form id="agg-form" class="d-flex gap-2 align-items-end">
+          <div>
+            <label class="form-label small text-muted mb-1">Дата (YYYY-MM-DD)</label>
+            <input type="date" id="agg-date" class="form-control form-control-sm" style="width:180px">
+          </div>
+          <button type="submit" class="btn btn-sm btn-warning" id="agg-btn">
+            <i class="bi bi-play-fill me-1"></i>Запустить
+          </button>
+          <span id="agg-status" class="text-muted small"></span>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.getElementById('agg-form')?.addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const btn = document.getElementById('agg-btn');
+  const status = document.getElementById('agg-status');
+  const dateVal = document.getElementById('agg-date').value;
+  btn.disabled = true;
+  status.textContent = '⏳ Выполняется...';
+  try {
+    const r = await fetch('/admin/run-aggregation', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ targetDate: dateVal || undefined })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      status.textContent = `✅ Готово: ${d.aggregated}`;
+      status.className = 'text-success small';
+    } else {
+      status.textContent = `❌ Ошибка: ${d.error}`;
+      status.className = 'text-danger small';
+    }
+  } catch(err) {
+    status.textContent = `❌ ${err.message}`;
+    status.className = 'text-danger small';
+  }
+  btn.disabled = false;
+});
+</script>
+
+
+<%# Summary Cards %>
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card shadow-sm border-0 border-start border-primary border-4 h-100">
+      <div class="card-body">
+        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Средний DAU</div>
+        <div class="h5 mb-0 font-weight-bold text-gray-800"><%= avgDau %></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm border-0 border-start border-success border-4 h-100">
+      <div class="card-body">
+        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Выручка RUB (СБП/Т-Банк)</div>
+        <div class="h5 mb-0 font-weight-bold text-gray-800"><%= (totalRevRub / 100).toFixed(2) %> ₽</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm border-0 border-start border-warning border-4 h-100">
+      <div class="card-body">
+        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Выручка XTR (Stars)</div>
+        <div class="h5 mb-0 font-weight-bold text-gray-800">⭐️ <%= totalRevXtr %> Stars</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm border-0 border-start border-info border-4 h-100">
+      <div class="card-body">
+        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Всего скачиваний</div>
+        <div class="h5 mb-0 font-weight-bold text-gray-800"><%= totalDownloads %></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%# Charts Section %>
+<div class="row g-4 mb-4">
+  <div class="col-lg-8">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white fw-bold"><i class="bi bi-activity me-2 text-primary"></i>Динамика активности (DAU / WAU / MAU)</div>
+      <div class="card-body">
+        <canvas id="activeUsersChart" height="280"></canvas>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white fw-bold"><i class="bi bi-funnel-fill me-2 text-warning"></i>Воронка продаж тарифов</div>
+      <div class="card-body">
+        <canvas id="funnelChart" height="280"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%# Cohort Limit Analysis %>
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white fw-bold text-primary"><i class="bi bi-bar-chart-steps me-2"></i>Глубокий анализ лимита Free</div>
+  <div class="card-body">
+    <div class="row g-4">
+      <div class="col-md-6 border-end">
+        <h5 class="card-title h6 fw-semibold mb-3">Распределение скачиваний пользователей (за период)</h5>
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Кол-во треков в день</th>
+                <th class="text-end">Пользователей</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (limitDistribution.length === 0) { %>
+                <tr><td colspan="2" class="text-center text-muted">Нет данных</td></tr>
+              <% } else { %>
+                <% limitDistribution.forEach(row => { %>
+                  <tr>
+                    <td><%= row.downloads_count %> трек(ов)</td>
+                    <td class="text-end fw-bold text-primary"><%= row.users_count %></td>
+                  </tr>
+                <% }) %>
+              <% } %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      <div class="col-md-6">
+        <h5 class="card-title h6 fw-semibold mb-3">Конверсия и отток после лимита (за период)</h5>
+        <ul class="list-group list-group-flush">
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>Достигли лимита (Free / Plus / Pro):</span>
+            <span class="badge bg-danger rounded-pill"><%= reachedLimit %></span>
+          </li>
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>Пытались скачать сверх лимита (6-й+ трек):</span>
+            <span class="badge bg-warning text-dark rounded-pill"><%= attemptedOverLimit %></span>
+          </li>
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>Открыли меню тарифов после лимита:</span>
+            <span class="badge bg-info rounded-pill"><%= openedOffersAfterLimit %></span>
+          </li>
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>Оплатили тариф после лимита:</span>
+            <span class="badge bg-success rounded-pill"><%= paidAfterLimit %></span>
+          </li>
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>Вернулись на следующий день после лимита:</span>
+            <span class="badge bg-primary rounded-pill"><%= returnedNextDay %></span>
+          </li>
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>Прекратили активность (Churmed) после лимита:</span>
+            <span class="badge bg-secondary rounded-pill"><%= churnedAfterLimit %></span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%# Historical Data Table %>
+<div class="card shadow-sm">
+  <div class="card-header bg-white fw-bold"><i class="bi bi-table me-2 text-secondary"></i>Детальная статистика по дням</div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover table-striped align-middle mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>Дата</th>
+            <th class="text-center">DAU</th>
+            <th class="text-center">WAU</th>
+            <th class="text-center">MAU</th>
+            <th class="text-center">Регистрации</th>
+            <th class="text-center">Скачиваний</th>
+            <th class="text-center">Кэш / Новые</th>
+            <th class="text-center">Лимиты</th>
+            <th class="text-end">Выручка RUB</th>
+            <th class="text-end">Выручка Stars</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (dailyRows.length === 0) { %>
+            <tr><td colspan="10" class="text-center py-4 text-muted">Нет данных для отображения</td></tr>
+          <% } else { %>
+            <% dailyRows.forEach(row => { %>
+              <tr>
+                <td class="fw-semibold"><%= new Date(row.day).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) %></td>
+                <td class="text-center"><%= row.dau %></td>
+                <td class="text-center text-muted"><%= row.wau %></td>
+                <td class="text-center text-muted"><%= row.mau %></td>
+                <td class="text-center text-success fw-bold">+<%= row.registrations %></td>
+                <td class="text-center fw-bold"><%= row.downloads_total %></td>
+                <td class="text-center text-muted"><%= row.downloads_from_cache %> / <%= row.downloads_new %></td>
+                <td class="text-center text-danger"><%= row.limits_reached %></td>
+                <td class="text-end text-success"><%= (row.revenue_rub_minor / 100).toFixed(2) %> ₽</td>
+                <td class="text-end text-warning">⭐️ <%= row.revenue_xtr %></td>
+              </tr>
+            <% }) %>
+          <% } %>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+
+<script>
+  // Будет вызвано после загрузки Bootstrap и Chart.js
+  window.initializePage = function() {
+    const rawData = <%- JSON.stringify(dailyRows) %>;
+    const labels = rawData.map(r => new Date(r.day).toLocaleDateString('ru-RU', { timeZone: 'UTC' })).reverse();
+    const dauData = rawData.map(r => r.dau).reverse();
+    const wauData = rawData.map(r => r.wau).reverse();
+    const mauData = rawData.map(r => r.mau).reverse();
+
+    // Chart 1: Active Users
+    const activeCtx = document.getElementById('activeUsersChart').getContext('2d');
+    new Chart(activeCtx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'DAU (Активность за день)',
+            data: dauData,
+            borderColor: '#4e73df',
+            backgroundColor: 'rgba(78, 115, 223, 0.05)',
+            tension: 0.3,
+            fill: true
+          },
+          {
+            label: 'WAU (За 7 дней)',
+            data: wauData,
+            borderColor: '#36b9cc',
+            borderDash: [5, 5],
+            tension: 0.3,
+            fill: false
+          },
+          {
+            label: 'MAU (За 30 дней)',
+            data: mauData,
+            borderColor: '#1cc88a',
+            tension: 0.3,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'top' }
+        },
+        scales: {
+          y: { beginAtZero: true }
+        }
+      }
+    });
+
+    // Chart 2: Funnel
+    const funnelCtx = document.getElementById('funnelChart').getContext('2d');
+    new Chart(funnelCtx, {
+      type: 'bar',
+      data: {
+        labels: ['Показ предложений', 'Клик по плану', 'Выбор Stars', 'Оплата'],
+        datasets: [{
+          label: 'Конверсии воронки',
+          data: [
+            <%= totalShown %>,
+            <%= totalClicked %>,
+            <%= totalStarted %>,
+            <%= totalCompleted %>
+          ],
+          backgroundColor: [
+            'rgba(78, 115, 223, 0.8)',
+            'rgba(28, 200, 138, 0.8)',
+            'rgba(246, 194, 62, 0.8)',
+            'rgba(231, 74, 59, 0.8)'
+          ],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: { beginAtZero: true }
+        }
+      }
+    });
+  }
+</script>

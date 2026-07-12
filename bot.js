@@ -189,7 +189,7 @@ export function isUserUnlimited(user) {
 }
 
 export function getUserLimit(user) {
-    if (!user) return parseInt(getSetting('daily_limit_free') || '3', 10);
+    if (!user) return parseInt(getSetting('daily_limit_free') || '5', 10);
     
     // Проверяем, есть ли активная подписка
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
@@ -198,7 +198,7 @@ export function getUserLimit(user) {
         return user.premium_limit || parseInt(getSetting('daily_limit_plus') || '30', 10);
     }
     
-    return parseInt(getSetting('daily_limit_free') || '3', 10);
+    return parseInt(getSetting('daily_limit_free') || '5', 10);
 }
 
 async function isDownloadLimitReached(ctx, userId) {
@@ -212,7 +212,7 @@ async function isDownloadLimitReached(ctx, userId) {
 
     const downloadsToday = user.downloads_today || 0;
     const userLimit = getUserLimit(user);
-    const limitFreeSetting = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const limitFreeSetting = parseInt(getSetting('daily_limit_free') || '5', 10);
     const limitPlusSetting = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
     
@@ -239,11 +239,24 @@ async function isDownloadLimitReached(ctx, userId) {
         karaoke_database_url_masked: maskConnectionString(KARAOKE_DATABASE_URL)
     });
 
-    return downloadsToday >= userLimit;
+    if (downloadsToday >= userLimit) {
+        // Логируем попытку скачивания сверх лимита (только если НЕ только что достигли — то есть уже превышен)
+        if (downloadsToday > userLimit) {
+            try {
+                const { analyticsService } = await import('./services/analyticsService.js');
+                await analyticsService.trackEventSafe(userId, 'download_attempt_over_limit', 'limits', {
+                    downloads_today: downloadsToday,
+                    user_limit: userLimit
+                }, ctx);
+            } catch (_ae) {}
+        }
+        return true;
+    }
+    return false;
 }
 
 function getTariffName(limit) {
-    const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const limitFree = parseInt(getSetting('daily_limit_free') || '5', 10);
     const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 
@@ -1078,6 +1091,118 @@ bot.action('support_enter', async (ctx) => {
     }
 });
 
+// Альтернативные способы оплаты
+bot.action('payment_help', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        const userId = ctx.from?.id;
+
+        // Трекаем открытие меню альтернативных способов
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'alternative_payment_methods_opened', 'monetization', {
+                placement: 'upgrade_menu'
+            }, ctx);
+        }
+
+        const TBANK_URL = getSetting('tbank_payment_url') || '';
+        const ADMIN_USERNAME = getSetting('admin_username') || '';
+
+        const text = `<b>❓ Проблемы с оплатой через Stars?</b>\n\n` +
+            `Если вам не удаётся оплатить через Telegram Stars, вы можете:\n\n` +
+            `🏦 <b>Т-Банк / СБП</b> — перевод на карту вручную\n` +
+            `☕ <b>Boosty</b> — поддержка через платформу\n` +
+            `✉️ <b>Написать администратору</b> — любой вопрос\n\n` +
+            `<i>Выберите нужный способ оплаты ниже для получения ссылки:</i>`;
+
+        const buttons = [];
+        if (TBANK_URL) {
+            buttons.push([Markup.button.callback('🏦 Получить ссылку на Т-Банк', 'tbank_help')]);
+        }
+        buttons.push([Markup.button.callback('☕ Получить ссылку на Boosty', 'boosty_help')]);
+        if (ADMIN_USERNAME) {
+            buttons.push([Markup.button.url('✉️ Написать администратору', `https://t.me/${ADMIN_USERNAME.replace('@', '')}`)]);
+        } else {
+            buttons.push([Markup.button.callback('✉️ Написать в поддержку бота', 'support_enter')]);
+        }
+        buttons.push([Markup.button.callback('« Назад к тарифам', 'back_to_upgrade')]);
+
+        await ctx.reply(text, {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            ...Markup.inlineKeyboard(buttons)
+        });
+    } catch (e) {
+        console.error('[payment_help] Error:', e.message);
+    }
+});
+
+// Клик по Т-Банку
+bot.action('tbank_help', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        const userId = ctx.from?.id;
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'tbank_payment_link_opened', 'monetization', {
+                placement: 'payment_help_menu'
+            }, ctx);
+        }
+        const TBANK_URL = getSetting('tbank_payment_url') || '';
+        await ctx.reply(
+            `🏦 <b>Оплата через Т-Банк / СБП</b>\n\n` +
+            `Для перевода на карту вручную используйте кнопку ниже:\n\n` +
+            `<i>После оплаты обязательно отправьте чек администратору!</i>`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('🔗 Перейти к оплате Т-Банк', TBANK_URL)],
+                    [Markup.button.callback('« Назад к способам оплаты', 'payment_help')]
+                ])
+            }
+        );
+    } catch (e) {
+        console.error('[tbank_help] Error:', e.message);
+    }
+});
+
+// Клик по Boosty
+bot.action('boosty_help', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        const userId = ctx.from?.id;
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'boosty_payment_link_opened', 'monetization', {
+                placement: 'payment_help_menu'
+            }, ctx);
+        }
+        const BOOSTY_URL = getSetting('boosty_url') || 'https://boosty.to';
+        await ctx.reply(
+            `☕ <b>Поддержать на Boosty</b>\n\n` +
+            `Для оплаты через платформу Boosty используйте кнопку ниже:\n\n` +
+            `<i>После оплаты обязательно напишите администратору для начисления тарифа!</i>`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('🔗 Перейти на Boosty', BOOSTY_URL)],
+                    [Markup.button.callback('« Назад к способам оплаты', 'payment_help')]
+                ])
+            }
+        );
+    } catch (e) {
+        console.error('[boosty_help] Error:', e.message);
+    }
+});
+
+// Возврат к меню тарифов
+bot.action('back_to_upgrade', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        await upgradeHandler(ctx);
+    } catch (_e) {}
+});
+
 bot.action('support_exit', async (ctx) => {
     try {
         await ctx.answerCbQuery();
@@ -1226,24 +1351,23 @@ const helpHandler = (ctx) => ctx.reply(T('helpInfo'), {
 const upgradeHandler = async (ctx) => {
     try {
         const text = `<b>💎 Увеличение лимитов скачивания</b>\n\n` +
-            `Выберите тарифный план для мгновенной автоматической активации с помощью <b>Telegram Stars</b>:\n\n` +
-            `⭐️ <b>Plus</b> — 30 скачиваний в день (79 Stars / 30 дней)\n` +
-            `⭐️ <b>Pro</b> — 100 скачиваний в день (129 Stars / 30 дней)\n` +
-            `⭐️ <b>Unlimited</b> — безлимитные скачивания (199 Stars / 30 дней)\n\n` +
-            `<i>Если у вас возникли вопросы или вы хотите оплатить другим способом (Т-Банк, СБП, Boosty), вы можете связаться с поддержкой.</i>`;
+            `Выберите тарифный план — оплата через <b>Telegram Stars</b> (мгновенная автоматическая активация):\n\n` +
+            `⭐️ <b>Plus</b> — 30 скачиваний в день / 79 Stars / 30 дней\n` +
+            `⭐️ <b>Pro</b> — 100 скачиваний в день / 129 Stars / 30 дней\n` +
+            `💎 <b>Unlimited</b> — безлимит / 199 Stars / 30 дней`;
 
         await ctx.reply(text, {
             parse_mode: 'HTML',
             ...Markup.inlineKeyboard([
                 [
-                    Markup.button.callback('⭐️ Plus (79 Stars)', 'buy_plan_plus'),
-                    Markup.button.callback('⭐️ Pro (129 Stars)', 'buy_plan_pro')
+                    Markup.button.callback('⭐️ Plus — 79 Stars', 'buy_plan_plus'),
+                    Markup.button.callback('⭐️ Pro — 129 Stars', 'buy_plan_pro')
                 ],
                 [
-                    Markup.button.callback('💎 Unlimited (199 Stars)', 'buy_plan_unlim')
+                    Markup.button.callback('💎 Unlimited — 199 Stars', 'buy_plan_unlim')
                 ],
                 [
-                    Markup.button.callback('❓ Проблемы с оплатой / Связаться с поддержкой', 'support_enter')
+                    Markup.button.callback('❓ Не получается оплатить Stars?', 'payment_help')
                 ]
             ])
         });
@@ -1511,12 +1635,54 @@ bot.action('admin_karaoke_refresh', async (ctx) => {
     }
 });
 
+const inlineQueries = new Map(); // userId -> currentQueryId
+
 bot.on('inline_query', async (ctx) => {
     const query = ctx.inlineQuery.query;
-    if (!query || query.trim().length < 2) return await ctx.answerInlineQuery([], { switch_pm_text: 'Введите название трека для поиска...', switch_pm_parameter: 'start' });
+    const userId = ctx.from?.id;
+    const queryText = query ? query.trim() : '';
+
+    if (queryText.length < 3) {
+        return await ctx.answerInlineQuery([], { 
+            switch_pm_text: 'Введите не менее 3 символов для поиска...', 
+            switch_pm_parameter: 'start' 
+        });
+    }
+
+    const currentQueryId = ctx.inlineQuery.id;
+    if (userId) {
+        inlineQueries.set(userId, currentQueryId);
+    }
+
+    // Дебаунс 350 мс
+    await new Promise(r => setTimeout(r, 350));
+
+    // Проверяем, не ввёл ли пользователь новый символ за это время
+    if (userId && inlineQueries.get(userId) !== currentQueryId) {
+        return;
+    }
+
     try {
+        // Трекаем начало поиска
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'track_search_started', 'search', {
+                query: query.slice(0, 100),
+                source: 'inline_query'
+            }, ctx);
+        }
         const results = await performInlineSearch(query, ctx.from.id);
         await ctx.answerInlineQuery(results, { cache_time: 60 });
+        // Трекаем результат поиска
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            const eventName = results.length > 0 ? 'track_search_success' : 'track_search_failed';
+            await analyticsService.trackEventSafe(userId, eventName, 'search', {
+                query: query.slice(0, 100),
+                results_count: results.length,
+                source: 'inline_query'
+            }, ctx);
+        }
     } catch (error) {
         console.error('[Inline Query] Глобальная ошибка:', error);
         await ctx.answerInlineQuery([]);
@@ -1527,14 +1693,14 @@ bot.on('inline_query', async (ctx) => {
 async function getPlaylistLimitForUser(userId) {
     try {
         const user = await getUser(userId);
-        const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+        const limitFree = parseInt(getSetting('daily_limit_free') || '5', 10);
         const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
         const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
         
         const userLimit = getUserLimit(user);
         
         if (userLimit <= limitFree) {
-            return parseInt(getSetting('playlist_limit_free') || '3', 10);
+            return parseInt(getSetting('playlist_limit_free') || '5', 10);
         } else if (userLimit <= limitPlus) {
             return parseInt(getSetting('playlist_limit_plus') || '30', 10);
         } else if (userLimit <= limitPro) {
@@ -1998,6 +2164,17 @@ async function processUrlInBackground(ctx, url) {
 }
 async function handleSoundCloudUrl(ctx, url) {
     let loadingMessage;
+    const userId = ctx.from?.id;
+    // Трекаем запрос на скачивание
+    if (userId) {
+        try {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'track_download_requested', 'downloads', {
+                url: url.slice(0, 200),
+                source: 'soundcloud'
+            }, ctx);
+        } catch (_ae) {}
+    }
     try {
         if (await isDownloadLimitReached(ctx, ctx.from.id)) {
             const user = await getUser(ctx.from.id);
@@ -2118,12 +2295,10 @@ const handleMediaForShazam = async (ctx) => {
     else if (message.video_note) fileId = message.video_note.file_id;
     else if (message.audio) fileId = message.audio.file_id;
     else if (message.video) fileId = message.video.file_id;
-    
+
     if (!fileId) return;
-    
+
     const isVoiceOrNote = !!(message.voice || message.video_note);
-    // Можно раскомментировать, если хотите, чтобы аудио файлы распознавались только по команде
-    // if (!isVoiceOrNote && !message.caption?.toLowerCase().includes('shazam')) return;
 
     let statusMsg;
     try {
@@ -2418,7 +2593,7 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
             order_id: order.id
         }, ctx);
 
-        await analyticsService.trackEventSafe(userId, 'payment_method_selected', 'monetization', {
+        await analyticsService.trackEventSafe(userId, 'star_invoice_created', 'monetization', {
             plan,
             price_xtr: tariff.priceXtr,
             payment_method: 'telegram_stars',
@@ -2459,6 +2634,17 @@ bot.on('pre_checkout_query', async (ctx) => {
 
         // Разрешаем оплату
         await ctx.answerPreCheckoutQuery(true).catch(() => {});
+
+        // Логируем аналитику: пользователь прошёл pre-checkout
+        try {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(ctx.from.id, 'star_pre_checkout_received', 'monetization', {
+                order_id: orderId,
+                amount: ctx.preCheckoutQuery.total_amount,
+                currency: ctx.preCheckoutQuery.currency,
+                plan: order.plan
+            }, ctx);
+        } catch (_ae) {}
     } catch (e) {
         console.error('[Payment] PreCheckoutQuery error:', e.message);
         await ctx.answerPreCheckoutQuery(false, 'Внутренняя ошибка сервера. Попробуйте позже.').catch(() => {});

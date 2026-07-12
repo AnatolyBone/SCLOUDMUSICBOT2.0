@@ -147,7 +147,7 @@ export async function setTariffAdmin(userId, limit, days, { mode = 'set', opType
     [userId]
   );
   
-  let prevLimit = 3;
+  let prevLimit = 5;
   let prevPremiumUntil = null;
   
   if (userQuery.rowCount > 0) {
@@ -170,7 +170,7 @@ export async function setTariffAdmin(userId, limit, days, { mode = 'set', opType
   let dbLimit = null;
   if (limit !== null && limit !== undefined && limit !== 'unlim' && limit !== 'unlimited') {
     dbLimit = parseInt(limit, 10);
-    if (isNaN(dbLimit)) dbLimit = 3;
+    if (isNaN(dbLimit)) dbLimit = 5;
   }
   
   let sql;
@@ -259,7 +259,7 @@ export async function resetExpiredPremiumIfNeeded(userId) {
   const sql = `
     UPDATE users
     SET
-      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -268,7 +268,7 @@ export async function resetExpiredPremiumIfNeeded(userId) {
     WHERE id = $1
       AND premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
     RETURNING id
   `;
   try {
@@ -285,7 +285,7 @@ export async function resetExpiredPremiumsBulk() {
   const sql = `
     UPDATE users
     SET
-      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -293,7 +293,7 @@ export async function resetExpiredPremiumsBulk() {
       notified_exp_0d = FALSE
     WHERE premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
   `;
   try {
     const { rowCount } = await query(sql);
@@ -554,11 +554,11 @@ export async function getPaginatedUsers(options) {
       whereClauses.push(`premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)`);
     } 
     else if (tariff === 'Free') {
-      whereClauses.push(`(premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until <= ${now})`);
+      whereClauses.push(`(premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) OR premium_until IS NULL OR premium_until <= ${now})`);
     } 
     else if (tariff === 'Other') {
       whereClauses.push(`(premium_limit NOT IN (
-        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
         COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
         COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
         COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
@@ -672,14 +672,14 @@ export async function getUsersAsCsv(options = {}) {
 
   // тариф
   if (tariff) {
-    if (tariff === 'Free') whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`);
+    if (tariff === 'Free') whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`);
     else if (tariff === 'Plus') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)`);
     else if (tariff === 'Pro') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100)`);
     else if (tariff === 'Unlimited') whereClauses.push(`premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)`);
     else if (tariff === 'Other') {
       whereClauses.push(`(premium_limit IS NULL OR (
         premium_limit NOT IN (
-          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
@@ -692,11 +692,11 @@ export async function getUsersAsCsv(options = {}) {
   // состояние премиума
   if (premium) {
     if (premium === 'active') {
-      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (premium_until IS NULL OR premium_until >= NOW())`);
+      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (premium_until IS NULL OR premium_until >= NOW())`);
     } else if (premium === 'expired') {
-      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND premium_until IS NOT NULL AND premium_until < NOW()`);
+      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND premium_until IS NOT NULL AND premium_until < NOW()`);
     } else if (premium === 'free') {
-      whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`);
+      whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`);
     }
   }
 
@@ -1020,7 +1020,25 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
     [newTrack, userId]
   );
   if (res.rowCount > 0) {
+    const updatedUser = res.rows[0];
     await logDownload(userId, trackName, url, source, isCacheHit);
+
+    // Проверяем, достиг ли пользователь дневного лимита
+    const isPremium = updatedUser.premium_until && new Date(updatedUser.premium_until) > new Date();
+    const freeLimit = parseInt(getSetting('daily_limit_free') || '5', 10);
+    const userLimit = isPremium ? updatedUser.premium_limit : freeLimit;
+    if (userLimit !== null && updatedUser.downloads_today === userLimit) {
+      try {
+        const { analyticsService } = await import('./services/analyticsService.js');
+        await analyticsService.trackEventSafe(userId, 'daily_limit_reached', 'limits', {
+          limit: userLimit,
+          downloads_today: updatedUser.downloads_today
+        });
+      } catch (ae) {
+        console.error('[Analytics] Error tracking daily_limit_reached:', ae.message);
+      }
+    }
+
     // Инкрементируем прогресс для всех активных кастомных РК
     try {
       await query(
@@ -1213,7 +1231,7 @@ export async function getReferralsByUserId(userId) {
 export async function getUsersCountByTariff() {
   const { rows } = await query(`
     SELECT CASE 
-        WHEN premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) THEN 'Free'
+        WHEN premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) THEN 'Free'
         WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30) THEN 'Plus'
         WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) THEN 'Pro'
         WHEN premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) THEN 'Unlimited'
@@ -1501,9 +1519,9 @@ export async function getUsersForBroadcastBatch(broadcastId, audience, limit) {
       AND id NOT IN (SELECT user_id FROM broadcast_log WHERE broadcast_id = $1)
   `;
   if (audience === 'free_users') {
-    sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`;
+    sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`;
   } else if (audience === 'premium_users') {
-    sql += ` AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (premium_until IS NULL OR premium_until >= NOW())`;
+    sql += ` AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (premium_until IS NULL OR premium_until >= NOW())`;
   }
   sql += ` LIMIT $2`;
   const { rows } = await query(sql, [broadcastId, limit]);
@@ -1533,9 +1551,9 @@ export async function getBroadcastProgress(broadcastId, audience) {
     
     // ВАЖНО: сопоставляем ключи с теми, что используются в getUsersForBroadcastBatch
     if (audience === 'free_users') {
-      sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`;
+      sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`;
     } else if (audience === 'premium_users') {
-      sql += ` AND (premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (premium_until IS NULL OR premium_until >= NOW()))`;
+      sql += ` AND (premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (premium_until IS NULL OR premium_until >= NOW()))`;
     }
 
     const totalResult = await query(sql);
@@ -1592,8 +1610,8 @@ export async function getAllBroadcastTasks() {
           AND (
             t.target_audience = 'all' OR
             t.target_audience = 'all_users' OR
-            (t.target_audience = 'free_users' AND u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)) OR
-            (t.target_audience = 'premium_users' AND u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
+            (t.target_audience = 'free_users' AND u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)) OR
+            (t.target_audience = 'premium_users' AND u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
           )
       )::int AS total_count
       
@@ -1635,12 +1653,12 @@ export async function resetOtherTariffsToFree() {
   const sql = `
     UPDATE users
     SET
-      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
       premium_until = NULL,
       notified_about_expiration = FALSE
     WHERE premium_limit IS NULL
        OR premium_limit NOT IN (
-            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
             COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
             COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
             COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
@@ -1652,7 +1670,7 @@ export async function resetOtherTariffsToFree() {
 }
 
 export async function getActiveFreeUsers() {
-  const { rows } = await query(`SELECT id FROM users WHERE active = TRUE AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)`);
+  const { rows } = await query(`SELECT id FROM users WHERE active = TRUE AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`);
   return rows;
 }
 
@@ -1661,7 +1679,7 @@ export async function getActivePremiumUsers() {
     `SELECT id
      FROM users
      WHERE active = TRUE
-       AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+       AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
        AND (premium_until IS NULL OR premium_until >= NOW())`
   );
   return rows;
@@ -1825,7 +1843,7 @@ export async function findUsersExpiringIn(days, flagField) {
     SELECT id, first_name, premium_until
     FROM users
     WHERE active = TRUE
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
       AND premium_until IS NOT NULL
       AND premium_until >= date_trunc('day', (NOW() AT TIME ZONE 'UTC')) + make_interval(days => $1::int)
       AND premium_until <  date_trunc('day', (NOW() AT TIME ZONE 'UTC')) + make_interval(days => ($1::int + 1))
@@ -2419,7 +2437,7 @@ export async function runSupportSystemMigration() {
     CREATE INDEX IF NOT EXISTS idx_support_messages_user ON support_messages(user_id);
 
     -- 3. Обновляем лимит существующих пользователей с 5 до динамического лимита Free, чтобы соответствовать тарифной сетке
-    UPDATE users SET premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) WHERE premium_limit = 5;
+    UPDATE users SET premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) WHERE premium_limit = 5;
 
     -- 4. Добавляем колонки для поддержки медиафайлов в техподдержке
     ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS media_type VARCHAR(50) DEFAULT 'text';
@@ -2696,8 +2714,22 @@ export async function getPaymentOrder(orderId) {
 export async function aggregateDailyStats(targetDayStr = null) {
   // Получаем текущую дату по московскому времени
   const day = targetDayStr || new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  let client = null;
 
   try {
+    client = await pool.connect();
+    
+    // Начинаем транзакцию
+    await client.query('BEGIN');
+    
+    // Пытаемся получить транзакционную advisory lock на эту конкретную дату
+    const lockRes = await client.query(`SELECT pg_try_advisory_xact_lock(hashtext('aggregate_stats:' || $1)) as locked`, [day]);
+    if (!lockRes.rows[0].locked) {
+      console.log(`[Analytics/Aggregate] Пропуск: Агрегация за день ${day} уже выполняется другим процессом.`);
+      await client.query('ROLLBACK');
+      return;
+    }
+
     console.log(`[Analytics/Aggregate] Запуск агрегации за день (Europe/Moscow): ${day}`);
 
     // Границы суток МСК в формате ISO со смещением +03:00
@@ -2705,7 +2737,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const mskEnd = `${day}T23:59:59.999+03:00`;
 
     // 1. DAU: Уникальные пользователи, совершившие live-действия (исключая системные)
-    const dauRes = await query(
+    const dauRes = await client.query(
       `SELECT COUNT(DISTINCT user_id)::int AS dau 
        FROM analytics_events 
        WHERE created_at BETWEEN $1 AND $2 
@@ -2717,7 +2749,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
 
     // 2. WAU (скользящие 7 дней)
     const wskStart = new Date(new Date(mskStart).getTime() - 6 * 86400000).toISOString();
-    const wauRes = await query(
+    const wauRes = await client.query(
       `SELECT COUNT(DISTINCT user_id)::int AS wau 
        FROM analytics_events 
        WHERE created_at BETWEEN $1 AND $2 
@@ -2729,7 +2761,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
 
     // 3. MAU (скользящие 30 дней)
     const mskStart30 = new Date(new Date(mskStart).getTime() - 29 * 86400000).toISOString();
-    const mauRes = await query(
+    const mauRes = await client.query(
       `SELECT COUNT(DISTINCT user_id)::int AS mau 
        FROM analytics_events 
        WHERE created_at BETWEEN $1 AND $2 
@@ -2740,7 +2772,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const mau = mauRes.rows[0].mau || 0;
 
     // 4. Новые регистрации
-    const regRes = await query(
+    const regRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM users 
        WHERE created_at BETWEEN $1 AND $2`,
@@ -2749,7 +2781,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const registrations = regRes.rows[0].count || 0;
 
     // 5. Успешные загрузки из downloads_log (источник истины)
-    const dlTotalRes = await query(
+    const dlTotalRes = await client.query(
       `SELECT COUNT(*)::int AS total 
        FROM downloads_log 
        WHERE downloaded_at BETWEEN $1 AND $2`,
@@ -2758,7 +2790,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const downloadsTotal = dlTotalRes.rows[0].total || 0;
 
     // Скачивания из кэша
-    const cacheHitsRes = await query(
+    const cacheHitsRes = await client.query(
       `SELECT COUNT(*)::int AS cache_hits 
        FROM analytics_events 
        WHERE event_name = 'track_download_success' 
@@ -2770,7 +2802,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const downloadsNew = Math.max(downloadsTotal - cacheHits, 0);
 
     // 6. Достижения лимита
-    const limitsRes = await query(
+    const limitsRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
        WHERE event_name = 'daily_limit_reached' 
@@ -2780,7 +2812,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const limitsReached = limitsRes.rows[0].count || 0;
 
     // 7. Поведенческие предложения и клики тарифов
-    const shownRes = await query(
+    const shownRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
        WHERE event_name = 'star_payment_option_shown' 
@@ -2789,7 +2821,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     );
     const tariffsShown = shownRes.rows[0].count || 0;
 
-    const clickedRes = await query(
+    const clickedRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
        WHERE event_name = 'subscription_plan_clicked' 
@@ -2799,16 +2831,16 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const tariffsClicked = clickedRes.rows[0].count || 0;
 
     // 8. Финансовый воронка
-    const payStartedRes = await query(
+    const payStartedRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
-       WHERE event_name = 'payment_method_selected' 
+       WHERE event_name IN ('payment_method_selected', 'star_invoice_created') 
          AND created_at BETWEEN $1 AND $2`,
       [mskStart, mskEnd]
     );
     const paymentsStarted = payStartedRes.rows[0].count || 0;
 
-    const payCompletedRes = await query(
+    const payCompletedRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM payments 
        WHERE payment_status = 'completed' 
@@ -2818,7 +2850,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const paymentsCompleted = payCompletedRes.rows[0].count || 0;
 
     // 9. Выручка RUB (в копейках) и XTR (Stars)
-    const revRubRes = await query(
+    const revRubRes = await client.query(
       `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum 
        FROM payments 
        WHERE payment_status = 'completed' 
@@ -2828,7 +2860,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     );
     const revenueRub = revRubRes.rows[0].sum || 0;
 
-    const revXtrRes = await query(
+    const revXtrRes = await client.query(
       `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum 
        FROM payments 
        WHERE payment_status = 'completed' 
@@ -2839,7 +2871,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const revenueXtr = revXtrRes.rows[0].sum || 0;
 
     // 10. Вставка агрегированных данных за день
-    await query(
+    await client.query(
       `INSERT INTO analytics_daily (
         day, dau, wau, mau, registrations, downloads_total, downloads_from_cache, downloads_new,
         limits_reached, tariffs_shown, tariffs_clicked, payments_started, payments_completed,
@@ -2870,7 +2902,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     );
 
     // 11. Заполнение детальной пользовательской активности за эти сутки
-    await query(
+    await client.query(
       `INSERT INTO analytics_user_daily (day, user_id, downloads_count, searches_count, limits_reached_count, primary_source)
        SELECT 
          $1::date,
@@ -2889,10 +2921,41 @@ export async function aggregateDailyStats(targetDayStr = null) {
       [day, mskStart, mskEnd]
     );
 
+    await client.query('COMMIT');
     console.log(`[Analytics/Aggregate] Успешно завершено за день ${day}.`);
   } catch (e) {
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_rollbackErr) {}
+    }
     console.error(`[Analytics/Aggregate] Ошибка агрегации за день ${day}:`, e.message);
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
+}
+
+export async function backfillMissingDays() {
+  const today = new Date();
+  console.log('[Analytics/Backfill] Проверка пропущенных дней агрегации за последние 7 суток...');
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const dateStr = d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+    
+    try {
+      const { rows } = await query('SELECT 1 FROM analytics_daily WHERE day = $1', [dateStr]);
+      if (rows.length === 0) {
+        console.log(`[Startup/Backfill] Обнаружен пропущенный день: ${dateStr}. Запуск агрегации...`);
+        await aggregateDailyStats(dateStr);
+      }
+    } catch (e) {
+      console.error(`[Startup/Backfill] Ошибка проверки/агрегации за ${dateStr}:`, e.message);
+    }
+  }
+  console.log('[Analytics/Backfill] Проверка завершена.');
 }
 
 

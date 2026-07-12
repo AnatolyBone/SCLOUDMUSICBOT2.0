@@ -6,11 +6,11 @@ let settingsCache = {};
 
 // Дефолтные значения на случай, если в БД пусто
 const DEFAULTS = {
-  daily_limit_free: '3',
+  daily_limit_free: '5',
   daily_limit_plus: '30',
   daily_limit_pro: '100',
   daily_limit_unlim: '10000',
-  playlist_limit_free: '3',
+  playlist_limit_free: '5',
   playlist_limit_plus: '30',
   playlist_limit_pro: '100',
   playlist_limit_unlim: '10000',

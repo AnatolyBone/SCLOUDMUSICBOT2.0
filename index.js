@@ -75,7 +75,9 @@ import {
   getSupportMessages,
   markSupportMessagesAsRead,
   deleteSupportMessages,
-  getUnreadSupportTicketsCount
+  getUnreadSupportTicketsCount,
+  aggregateDailyStats,
+  backfillMissingDays
 } from './db.js';
 import { initializeWorkers } from './services/workerManager.js';
 import { runBroadcastBatch } from './services/broadcastManager.js';
@@ -120,12 +122,30 @@ async function startApp() {
     setupExpress();
     await runSupportSystemMigration();
     await runAnalyticsSystemMigration();
+
+    // Убедимся, что лимит Free в БД равен 5 (если равен 3)
+    try {
+      await pool.query(`
+        INSERT INTO app_settings (key, value)
+        VALUES ('daily_limit_free', '5')
+        ON CONFLICT (key) DO UPDATE
+        SET value = '5'
+        WHERE app_settings.value = '3'
+      `);
+      await pool.query(`ALTER TABLE users ALTER COLUMN premium_limit SET DEFAULT 5`);
+      await pool.query(`UPDATE users SET premium_limit = 5 WHERE premium_limit = 3`);
+      console.log('[Startup] Инициализация лимита Free (5) в БД завершена.');
+    } catch (e) {
+      console.error('[Startup] Ошибка инициализации лимита Free в БД:', e.message);
+    }
     
     // Остальная инициализация
     await loadTexts(true);
     await redisService.connect();
     await loadSettings();
     
+    // Запуск фоновой проверки/восстановления агрегации за последние 7 дней
+    backfillMissingDays().catch(e => console.error('[Startup/Backfill] Ошибка:', e.message));
 
     await initializeDownloadManager();
     
@@ -245,6 +265,30 @@ async function startApp() {
         console.error('[Cron] Ошибка автоматического сброса подписок:', e.message);
       }
     }, 24 * 3600 * 1000);
+
+    // Ежедневная агрегация аналитики в 00:05 по МСК
+    // Проверяем каждую минуту, не наступило ли 00:05 МСК
+    let lastAggregationDate = null;
+    setInterval(async () => {
+      try {
+        const nowMsk = new Date().toLocaleString('en-CA', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
+        const todayMsk = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+        const [hh, mm] = nowMsk.split(':').map(Number);
+        // Запускаем в 00:05 МСК, один раз в сутки
+        if (hh === 0 && mm === 5 && lastAggregationDate !== todayMsk) {
+          lastAggregationDate = todayMsk;
+          // Агрегируем вчерашний день
+          const yesterday = new Date();
+          yesterday.setDate(yesterday.getDate() - 1);
+          const yStr = yesterday.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+          console.log(`[Cron] Запуск агрегации аналитики за ${yStr}...`);
+          await aggregateDailyStats(yStr);
+          console.log(`[Cron] Агрегация аналитики за ${yStr} завершена.`);
+        }
+      } catch (e) {
+        console.error('[Cron] Ошибка агрегации аналитики:', e.message);
+      }
+    }, 60 * 1000); // каждую минуту
 
     // Разовый запуск сброса подписок при старте сервера
     resetExpiredPremiumsBulk().then(count => {
@@ -647,7 +691,7 @@ app.post('/settings/update', requireAuth, async (req, res) => {
     console.log('[Settings/Update] Получены данные:', JSON.stringify(req.body, null, 2));
     
     // Получаем старые суточные лимиты до обновления
-    const oldFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const oldFree = parseInt(getSetting('daily_limit_free') || '5', 10);
     const oldPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const oldPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 
@@ -768,7 +812,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       pool.query(`
         SELECT
           COUNT(*) FILTER (
-            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
                OR (premium_until IS NOT NULL AND premium_until < NOW())
           ) AS free,
           COUNT(*) FILTER (
@@ -792,7 +836,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         WHERE premium_limit IS NULL
            OR (
              premium_limit NOT IN (
-               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
                COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
                COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
                COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
@@ -806,7 +850,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         FROM users
         WHERE premium_until IS NOT NULL
           AND premium_until < NOW()
-          AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+          AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
       `),
       // Статистика промо Яндекс (воронка акции по yandex_promo_progress; lifetime отдельно)
       pool.query(`
@@ -1626,7 +1670,7 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
       comment: comment || null
     });
 
-    const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const limitFree = parseInt(getSetting('daily_limit_free') || '5', 10);
     const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 
@@ -1666,6 +1710,10 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
 app.post('/register-manual-payment', requireAuth, async (req, res) => {
   const adminId = 0; // Системный ID или ID сессии админа
   const { userId, plan, amountMinor, currency, paymentMethod, periodDays, comment } = req.body;
+
+  if (currency === 'XTR' || paymentMethod === 'telegram_stars') {
+    return res.status(400).send('Ошибка: Валюта Telegram Stars (XTR) не может быть зачислена вручную.');
+  }
 
   try {
     const { processManualPayment } = await import('./db.js');
@@ -1711,6 +1759,152 @@ app.post('/register-manual-payment', requireAuth, async (req, res) => {
     res.redirect(`/user/${userId}?paymentRegistered=1`);
   } else {
     res.redirect('/users');
+  }
+});
+
+app.get('/admin/analytics', requireAuth, async (req, res) => {
+  const todayMskStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  const defaultStart = new Date(Date.now() - 30 * 86400000).toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  const startDate = req.query.startDate || defaultStart;
+  const endDate = req.query.endDate || todayMskStr;
+
+  try {
+    const { query } = await import('./db.js');
+    
+    // 1. Детальная статистика по дням
+    const dailyRowsRes = await query(
+      `SELECT day, dau, wau, mau, registrations, downloads_total, downloads_from_cache, downloads_new, limits_reached, tariffs_shown, tariffs_clicked, payments_started, payments_completed, revenue_rub_minor, revenue_xtr
+       FROM public.analytics_daily
+       WHERE day BETWEEN $1 AND $2
+       ORDER BY day DESC`,
+      [startDate, endDate]
+    );
+    const dailyRows = dailyRowsRes.rows;
+
+    // 2. Агрегированные суммы воронки
+    const funnelRes = await query(
+      `SELECT 
+         COALESCE(SUM(tariffs_shown), 0)::int AS total_shown,
+         COALESCE(SUM(tariffs_clicked), 0)::int AS total_clicked,
+         COALESCE(SUM(payments_started), 0)::int AS total_started,
+         COALESCE(SUM(payments_completed), 0)::int AS total_completed,
+         COALESCE(SUM(revenue_rub_minor), 0)::bigint AS total_rev_rub,
+         COALESCE(SUM(revenue_xtr), 0)::bigint AS total_rev_xtr,
+         COALESCE(SUM(downloads_total), 0)::int AS total_downloads,
+         COALESCE(AVG(dau), 0)::int AS avg_dau
+       FROM public.analytics_daily
+       WHERE day BETWEEN $1 AND $2`,
+      [startDate, endDate]
+    );
+    
+    const funnel = funnelRes.rows[0];
+
+    // 3. Распределение скачиваний пользователей
+    const limitDistRes = await query(
+      `SELECT downloads_count, COUNT(*)::int AS users_count
+       FROM public.analytics_user_daily
+       WHERE day BETWEEN $1 AND $2
+         AND downloads_count > 0
+       GROUP BY downloads_count
+       ORDER BY downloads_count ASC`,
+      [startDate, endDate]
+    );
+    const limitDistribution = limitDistRes.rows;
+
+    // 4. Достигли лимита
+    const reachedLimitRes = await query(
+      `SELECT COUNT(DISTINCT user_id)::int AS count
+       FROM public.analytics_events
+       WHERE event_name = 'daily_limit_reached'
+         AND created_at BETWEEN $1::date AND ($2::date + 1)`,
+      [startDate, endDate]
+    );
+    const reachedLimit = reachedLimitRes.rows[0].count;
+
+    // 5. Попытки скачать 6+ трек
+    const attemptedOverLimitRes = await query(
+      `SELECT COUNT(DISTINCT user_id)::int AS count
+       FROM public.analytics_events
+       WHERE event_name = 'download_attempt_over_limit'
+         AND created_at BETWEEN $1::date AND ($2::date + 1)`,
+      [startDate, endDate]
+    );
+    const attemptedOverLimit = attemptedOverLimitRes.rows[0].count;
+
+    // 6. Открыли меню тарифов после лимита
+    const openedOffersAfterLimitRes = await query(
+      `SELECT COUNT(DISTINCT a.user_id)::int AS count
+       FROM public.analytics_events a
+       JOIN public.analytics_events b ON a.user_id = b.user_id AND b.event_name = 'daily_limit_reached' AND b.created_at < a.created_at
+       WHERE a.event_name = 'star_payment_option_shown'
+         AND a.created_at BETWEEN $1::date AND ($2::date + 1)`,
+      [startDate, endDate]
+    );
+    const openedOffersAfterLimit = openedOffersAfterLimitRes.rows[0].count;
+
+    // 7. Оплатили после лимита
+    const paidAfterLimitRes = await query(
+      `SELECT COUNT(DISTINCT a.user_id)::int AS count
+       FROM public.payments a
+       JOIN public.analytics_events b ON a.user_id = b.user_id AND b.event_name = 'daily_limit_reached' AND b.created_at < a.paid_at
+       WHERE a.payment_status = 'completed'
+         AND a.paid_at BETWEEN $1::date AND ($2::date + 1)`,
+      [startDate, endDate]
+    );
+    const paidAfterLimit = paidAfterLimitRes.rows[0].count;
+
+    // 8. Вернулись на следующий день после лимита
+    const returnedNextDayRes = await query(
+      `SELECT COUNT(DISTINCT a.user_id)::int AS count
+       FROM public.analytics_events a
+       JOIN public.analytics_events b ON a.user_id = b.user_id AND b.event_name = 'daily_limit_reached'
+       WHERE a.created_at::date = b.created_at::date + 1
+         AND b.created_at BETWEEN $1::date AND ($2::date + 1)`,
+      [startDate, endDate]
+    );
+    const returnedNextDay = returnedNextDayRes.rows[0].count;
+
+    // 9. Прекратили активность (отток) после лимита
+    const churnedAfterLimitRes = await query(
+      `SELECT COUNT(DISTINCT e.user_id)::int AS count
+       FROM public.analytics_events e
+       WHERE event_name = 'daily_limit_reached'
+         AND created_at BETWEEN $1::date AND ($2::date + 1)
+         AND NOT EXISTS (
+           SELECT 1 FROM public.analytics_events a
+           WHERE a.user_id = e.user_id
+             AND a.created_at > e.created_at
+         )`,
+      [startDate, endDate]
+    );
+    const churnedAfterLimit = churnedAfterLimitRes.rows[0].count;
+
+    res.render('analytics', {
+      layout: 'layout',
+      page: 'analytics',
+      startDate,
+      endDate,
+      dailyRows,
+      avgDau: funnel.avg_dau,
+      totalRevRub: funnel.total_rev_rub,
+      totalRevXtr: funnel.total_rev_xtr,
+      totalDownloads: funnel.total_downloads,
+      totalShown: funnel.total_shown,
+      totalClicked: funnel.total_clicked,
+      totalStarted: funnel.total_started,
+      totalCompleted: funnel.total_completed,
+      limitDistribution,
+      reachedLimit,
+      attemptedOverLimit,
+      openedOffersAfterLimit,
+      paidAfterLimit,
+      returnedNextDay,
+      churnedAfterLimit,
+      unreadSupportCount: res.locals.unreadSupportCount || 0
+    });
+  } catch (error) {
+    console.error('[Admin] Error rendering analytics:', error.message);
+    res.status(500).send('Ошибка загрузки аналитики: ' + error.message);
   }
 });
   app.post('/reset-bonus', requireAuth, async (req, res) => {
@@ -1789,6 +1983,21 @@ app.post('/tariffs/reset-others', requireAuth, async (req, res) => {
     } catch (e) {
       console.error(e);
       res.status(500).send('Ошибка при исправлении кэша: ' + e.message);
+    }
+  });
+
+  // Ручной запуск агрегации аналитики
+  app.post('/admin/run-aggregation', requireAuth, async (req, res) => {
+    try {
+      const { targetDate } = req.body; // YYYY-MM-DD, если не передан — сегодня МСК
+      const label = targetDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+      console.log(`[Admin] Ручной запуск агрегации аналитики за ${label}...`);
+      await aggregateDailyStats(targetDate || null);
+      console.log(`[Admin] Агрегация за ${label} завершена.`);
+      res.json({ ok: true, aggregated: label });
+    } catch (e) {
+      console.error('[Admin] Ошибка агрегации:', e.message);
+      res.status(500).json({ ok: false, error: e.message });
     }
   });
 
