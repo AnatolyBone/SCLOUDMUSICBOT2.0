@@ -3,7 +3,13 @@
 import { Pool } from 'pg';
 import { createClient } from '@supabase/supabase-js';
 import ws from 'ws';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL, KARAOKE_DATABASE_URL, KARAOKE_SUPABASE_URL, KARAOKE_SUPABASE_KEY } from './config.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 export const supabase = createClient(
   SUPABASE_URL,
   SUPABASE_KEY,
@@ -2317,6 +2323,17 @@ export async function runSupportSystemMigration() {
     console.log('✅ [DB] Автоматическая миграция службы поддержки выполнена успешно.');
   } catch (err) {
     console.error('❌ [DB] Ошибка автоматической миграции службы поддержки:', err.message);
+  }
+}
+
+export async function runAnalyticsSystemMigration() {
+  try {
+    const migrationPath = path.join(__dirname, 'migrations', '006_analytics_system.sql');
+    const sql = fs.readFileSync(migrationPath, 'utf8');
+    await query(sql);
+    console.log('✅ [DB] Автоматическая миграция аналитики и платежей Stars выполнена успешно.');
+  } catch (err) {
+    console.error('❌ [DB] Ошибка автоматической миграции аналитики и платежей Stars:', err.message);
   }
 }
 

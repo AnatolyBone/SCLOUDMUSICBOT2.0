@@ -69,6 +69,7 @@ import {
   getPromoStats,
   resetPromoCampaign,
   runSupportSystemMigration,
+  runAnalyticsSystemMigration,
   createSupportMessage,
   getSupportTickets,
   getSupportMessages,
@@ -118,6 +119,7 @@ async function startApp() {
     const server = app.listen(PORT, () => console.log(`✅ [App] Сервер запущен на порту ${PORT}.`));
     setupExpress();
     await runSupportSystemMigration();
+    await runAnalyticsSystemMigration();
     
     // Остальная инициализация
     await loadTexts(true);
