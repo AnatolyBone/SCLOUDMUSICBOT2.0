@@ -182,12 +182,19 @@ function maskConnectionString(url) {
     }
 }
 
+export function isUserUnlimited(user) {
+    if (!user) return false;
+    const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
+    return isPremium && user.premium_limit === null;
+}
+
 export function getUserLimit(user) {
     if (!user) return parseInt(getSetting('daily_limit_free') || '3', 10);
     
     // Проверяем, есть ли активная подписка
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
     if (isPremium) {
+        if (user.premium_limit === null) return null; // Безлимит
         return user.premium_limit || parseInt(getSetting('daily_limit_plus') || '30', 10);
     }
     
@@ -200,6 +207,8 @@ async function isDownloadLimitReached(ctx, userId) {
 
     const user = await getUser(userId);
     if (!user) return false;
+
+    if (isUserUnlimited(user)) return false;
 
     const downloadsToday = user.downloads_today || 0;
     const userLimit = getUserLimit(user);
@@ -238,7 +247,7 @@ function getTariffName(limit) {
     const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 
-    if (limit >= 10000) return 'Unlimited — 💎';
+    if (limit === null || limit === undefined || limit >= 10000) return 'Unlimited — 💎';
     if (limit >= limitPro) return `Pro — ${limitPro} 💪`;
     if (limit >= limitPlus) return `Plus — ${limitPlus} 🎯`;
     return `🆓 Free — ${limitFree} 🟢`;
@@ -264,10 +273,11 @@ function formatMenuMessage(user, botUsername) {
     const referralLink = `https://t.me/${botUsername}?start=ref_${user.id}`;
     
     // 2. Собираем основной блок статистики (он нередактируемый, т.к. это данные)
+    const limitText = userLimit === null ? '∞' : userLimit;
     const statsBlock = [
         `💼 <b>Тариф:</b> <i>${tariffLabel}</i>`,
         `⏳ <b>Осталось дней подписки:</b> <i>${daysLeft}</i>`,
-        `🎧 <b>Сегодня скачано:</b> <i>${downloadsToday}</i> из <i>${userLimit}</i>`
+        `🎧 <b>Сегодня скачано:</b> <i>${downloadsToday}</i> из <i>${limitText}</i>`
     ].join('\n');
     
     // 3. Берем шаблоны из T() и заменяем плейсхолдеры
@@ -301,11 +311,11 @@ function formatMenuMessage(user, botUsername) {
 
 // --- Инициализация Telegraf ---
 const telegrafOptions = { handlerTimeout: 300_000 };
-// if (PROXY_URL) {
-   //  const agent = new HttpsProxyAgent(PROXY_URL);
-   //  telegrafOptions.telegram = { agent };
-   //  console.log('[App] Использую прокси для подключения к Telegram API.');
-// }
+if (process.env.TELEGRAM_TEST_ENV === 'true') {
+    telegrafOptions.telegram = telegrafOptions.telegram || {};
+    telegrafOptions.telegram.testEnv = true;
+    console.log('🧪 [App] Запуск Telegraf в тестовом окружении Telegram (testEnv: true).');
+}
 export const bot = new Telegraf(BOT_TOKEN, telegrafOptions);
 
 // --- Telegram API Rate Limiting (предотвращает 429 ошибки при массовой отправке) ---
@@ -479,6 +489,14 @@ bot.use(async (ctx, next) => {
     
     await resetDailyLimitIfNeeded(ctx.from.id);
     await resetExpiredPremiumIfNeeded(ctx.from.id);
+
+    try {
+        const { analyticsService } = await import('./services/analyticsService.js');
+        await analyticsService.handleSessionAndActivity(ctx.from.id, user, ctx);
+    } catch (e) {
+        console.error('[Analytics] Middleware error:', e.message);
+    }
+
     return next();
 });
 
@@ -1205,11 +1223,42 @@ const helpHandler = (ctx) => ctx.reply(T('helpInfo'), {
         [Markup.button.callback('✉️ Написать в поддержку', 'support_enter')]
     ])
 });
-const upgradeHandler = (ctx) => ctx.reply(T('upgradeInfo'), { 
-    parse_mode: 'HTML', 
-    disable_web_page_preview: true,
-    ...getMainKeyboard()
-});
+const upgradeHandler = async (ctx) => {
+    try {
+        const text = `<b>💎 Увеличение лимитов скачивания</b>\n\n` +
+            `Выберите тарифный план для мгновенной автоматической активации с помощью <b>Telegram Stars</b>:\n\n` +
+            `⭐️ <b>Plus</b> — 30 скачиваний в день (79 Stars / 30 дней)\n` +
+            `⭐️ <b>Pro</b> — 100 скачиваний в день (129 Stars / 30 дней)\n` +
+            `⭐️ <b>Unlimited</b> — безлимитные скачивания (199 Stars / 30 дней)\n\n` +
+            `<i>Если у вас возникли вопросы или вы хотите оплатить другим способом (Т-Банк, СБП, Boosty), вы можете связаться с поддержкой.</i>`;
+
+        await ctx.reply(text, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+                [
+                    Markup.button.callback('⭐️ Plus (79 Stars)', 'buy_plan_plus'),
+                    Markup.button.callback('⭐️ Pro (129 Stars)', 'buy_plan_pro')
+                ],
+                [
+                    Markup.button.callback('💎 Unlimited (199 Stars)', 'buy_plan_unlim')
+                ],
+                [
+                    Markup.button.callback('❓ Проблемы с оплатой / Связаться с поддержкой', 'support_enter')
+                ]
+            ])
+        });
+
+        const userId = ctx.from?.id;
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'star_payment_option_shown', 'monetization', {
+                placement: 'upgrade_menu'
+            }, ctx);
+        }
+    } catch (e) {
+        console.error('[Bot] Error in upgradeHandler:', e.message);
+    }
+};
 
 bot.hears(T('menu'), menuHandler);
 bot.hears('🆔 Распознать', recognizeHandler);
@@ -2314,5 +2363,181 @@ bot.on('text', async (ctx) => {
             '• YouTube (youtube.com)\n\n' +
             'Просто отправь ссылку!'
         );
+    }
+});
+
+// === TELEGRAM STARS PAYMENTS FLOW ===
+
+bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
+    const plan = ctx.match[1];
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    try {
+        await ctx.answerCbQuery().catch(() => {});
+
+        // Импортируем тарифную сетку
+        const { TARIFFS } = await import('./config/tariffs.js');
+        const tariff = TARIFFS[plan];
+        if (!tariff) return ctx.reply('Ошибка: неверный тарифный план.');
+
+        // Создаем платежный предзаказ
+        const { createPaymentOrder } = await import('./db.js');
+        const order = await createPaymentOrder({
+            userId,
+            plan,
+            amountMinor: tariff.priceXtr,
+            currency: 'XTR',
+            placement: 'bot_tariffs_menu',
+            campaignId: null,
+            periodDays: tariff.periodDays
+        });
+
+        const title = `Тариф ${tariff.name}`;
+        const description = `Активация тарифа ${tariff.name} на ${tariff.periodDays} дней. Лимит: ${tariff.dailyLimit === null ? 'безлимитно' : tariff.dailyLimit + ' скачиваний в день'}.`;
+        const payload = order.id.toString(); // UUID заказа передаем в payload
+        const currency = 'XTR';
+
+        const prices = [{
+            label: tariff.name,
+            amount: tariff.priceXtr // XTR (Stars) в целых единицах
+        }];
+
+        // Выставляем счет
+        await ctx.replyWithInvoice(title, description, payload, '', currency, prices).catch(async (err) => {
+            console.error('[Payment] Error sending Stars invoice:', err.message);
+            await ctx.reply('⚠️ Не удалось выставить счет. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.');
+        });
+
+        // Отслеживаем выбор плана и способа оплаты
+        const { analyticsService } = await import('./services/analyticsService.js');
+        await analyticsService.trackEventSafe(userId, 'subscription_plan_clicked', 'monetization', {
+            plan,
+            price_xtr: tariff.priceXtr,
+            placement: 'bot_tariffs_menu',
+            order_id: order.id
+        }, ctx);
+
+        await analyticsService.trackEventSafe(userId, 'payment_method_selected', 'monetization', {
+            plan,
+            price_xtr: tariff.priceXtr,
+            payment_method: 'telegram_stars',
+            order_id: order.id
+        }, ctx);
+
+    } catch (e) {
+        console.error('[PaymentAction] Error:', e.message);
+    }
+});
+
+bot.on('pre_checkout_query', async (ctx) => {
+    const orderId = ctx.preCheckoutQuery.invoice_payload;
+    try {
+        const { getPaymentOrder } = await import('./db.js');
+        const order = await getPaymentOrder(orderId);
+
+        if (!order) {
+            return ctx.answerPreCheckoutQuery(false, 'Счет не найден в базе данных бота. Попробуйте еще раз.').catch(() => {});
+        }
+
+        if (order.status !== 'pending') {
+            return ctx.answerPreCheckoutQuery(false, 'Этот счет уже обработан. Пожалуйста, выберите тариф заново.').catch(() => {});
+        }
+
+        const expiry = new Date(order.expires_at).getTime();
+        if (expiry <= Date.now()) {
+            return ctx.answerPreCheckoutQuery(false, 'Срок действия счета истек. Пожалуйста, выберите тариф заново.').catch(() => {});
+        }
+
+        if (Number(order.amount_minor) !== Number(ctx.preCheckoutQuery.total_amount)) {
+            return ctx.answerPreCheckoutQuery(false, 'Ошибка: несовпадение суммы платежа.').catch(() => {});
+        }
+
+        if (ctx.preCheckoutQuery.currency !== 'XTR') {
+            return ctx.answerPreCheckoutQuery(false, 'Ошибка: поддерживается только валюта Stars.').catch(() => {});
+        }
+
+        // Разрешаем оплату
+        await ctx.answerPreCheckoutQuery(true).catch(() => {});
+    } catch (e) {
+        console.error('[Payment] PreCheckoutQuery error:', e.message);
+        await ctx.answerPreCheckoutQuery(false, 'Внутренняя ошибка сервера. Попробуйте позже.').catch(() => {});
+    }
+});
+
+bot.on('successful_payment', async (ctx) => {
+    const payment = ctx.message.successful_payment;
+    const orderId = payment.invoice_payload;
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    try {
+        const { processStarsPayment } = await import('./db.js');
+        
+        const result = await processStarsPayment({
+            userId,
+            orderId,
+            telegramPaymentChargeId: payment.telegram_payment_charge_id,
+            providerPaymentChargeId: payment.provider_payment_charge_id || null,
+            amountMinor: payment.total_amount,
+            currency: payment.currency,
+            invoicePayload: orderId
+        });
+
+        if (result && result.status === 'success') {
+            const { TARIFFS } = await import('./config/tariffs.js');
+            const tariff = TARIFFS[result.plan];
+            const name = tariff ? tariff.name : result.plan;
+            
+            const expDate = new Date(result.new_premium_until).toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow' });
+            let msgText = `<b>🎉 Оплата успешно подтверждена!</b>\n\n` +
+                `Вам начислен тариф <b>${name}</b>.\n` +
+                `Срок действия продлен до: <b>${expDate} (МСК)</b>.\n\n`;
+            
+            if (result.op_type === 'renewal') {
+                msgText += `<i>Поскольку у вас уже была активна подписка, новый тариф активирован сразу, а оставшиеся дни старого тарифа были сохранены и добавлены к общему сроку!</i>`;
+            } else {
+                msgText += `<i>Дневные лимиты обновлены. Приятного пользования!</i>`;
+            }
+
+            await ctx.reply(msgText, { parse_mode: 'HTML' });
+        } else if (result && result.status === 'already_processed') {
+            await ctx.reply('Этот платеж уже был успешно обработан ранее.');
+        } else {
+            const errorReason = result ? result.reason : 'unknown_error';
+            console.error('[Payment] Stars payment process failed:', result);
+            
+            // Записываем ошибку в unprocessed_payments_log
+            try {
+                const { query } = await import('./db.js');
+                await query(
+                    `INSERT INTO public.unprocessed_payments_log 
+                     (user_id, order_id, telegram_payment_charge_id, provider_payment_charge_id, amount_minor, currency, error_message, status)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, 'unprocessed')`,
+                    [userId, orderId, payment.telegram_payment_charge_id, payment.provider_payment_charge_id || null, payment.total_amount, payment.currency, `status=${result ? result.status : 'error'} reason=${errorReason}`]
+                );
+            } catch (logErr) {
+                console.error('[Payment] Error logging unprocessed payment:', logErr.message);
+            }
+
+            await ctx.reply('⚠️ Произошел технический сбой при автоматической активации тарифа. Не волнуйтесь, мы сохранили данные вашего платежа. Администратор активирует подписку вручную в ближайшее время.');
+        }
+    } catch (e) {
+        console.error('[Payment] Error in successful_payment handler:', e.message);
+        
+        // Записываем критическую ошибку в базу
+        try {
+            const { query } = await import('./db.js');
+            await query(
+                `INSERT INTO public.unprocessed_payments_log 
+                 (user_id, order_id, telegram_payment_charge_id, provider_payment_charge_id, amount_minor, currency, error_message, status)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'unprocessed')`,
+                [userId, orderId, payment.telegram_payment_charge_id, payment.provider_payment_charge_id || null, payment.total_amount, payment.currency, e.message]
+            );
+        } catch (logErr) {
+            console.error('[Payment] Error logging unprocessed payment:', logErr.message);
+        }
+
+        await ctx.reply('⚠️ Произошла непредвиденная ошибка при активации тарифа. Пожалуйста, напишите в техподдержку (кнопка в разделе Помощь) с указанием ID транзакции.');
     }
 });

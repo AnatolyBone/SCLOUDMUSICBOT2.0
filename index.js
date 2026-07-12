@@ -1604,18 +1604,26 @@ res.redirect('/dashboard?resetExpired=err');
   });
 
 app.post('/set-tariff', requireAuth, async (req, res) => {
-  const { userId, limit, days, applyMode } = req.body;
+  const { userId, limit, days, applyMode, opType, comment } = req.body;
   try {
     const newLimit = parseInt(limit, 10);
     const nDays = parseInt(days, 10) || 30;
     const mode = applyMode === 'extend' ? 'extend' : 'set';
 
-    const updated = await setTariffAdmin(userId, newLimit, nDays, { mode });
+    const updated = await setTariffAdmin(userId, newLimit, nDays, { 
+      mode,
+      opType: opType || 'adjustment',
+      performedByType: 'admin',
+      performedByUserId: 0, // ID администратора (системный)
+      comment: comment || null
+    });
 
     await logUserAction(userId, 'tariff_changed_by_admin', {
       new_limit: newLimit,
       days: nDays,
-      mode
+      mode,
+      op_type: opType || 'adjustment',
+      comment: comment || null
     });
 
     const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
@@ -1650,6 +1658,57 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
   const referer = req.get('Referer') || '';
   if (referer.includes('/user/')) {
     res.redirect(`/user/${userId}?tariffUpdated=1`);
+  } else {
+    res.redirect('/users');
+  }
+});
+
+app.post('/register-manual-payment', requireAuth, async (req, res) => {
+  const adminId = 0; // Системный ID или ID сессии админа
+  const { userId, plan, amountMinor, currency, paymentMethod, periodDays, comment } = req.body;
+
+  try {
+    const { processManualPayment } = await import('./db.js');
+    const result = await processManualPayment({
+      adminId,
+      userId: parseInt(userId, 10),
+      plan,
+      amountMinor: parseInt(amountMinor, 10),
+      currency: currency || 'RUB',
+      paymentMethod,
+      periodDays: parseInt(periodDays, 10) || 30,
+      comment: comment || null
+    });
+
+    if (result && result.status === 'success') {
+      // Отправляем уведомление пользователю в Telegram
+      const { TARIFFS } = await import('./config/tariffs.js');
+      const tariff = TARIFFS[plan];
+      const name = tariff ? tariff.name : plan;
+      const untilText = new Date(result.new_premium_until).toLocaleString('ru-RU', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow'
+      });
+
+      const message =
+        `🎉 Администратор подтвердил ваш ручной платёж!\n\n` +
+        `Вам активирован тариф: *${name}*.\n` +
+        `Срок действия: *${untilText} (МСК)*.\n\n` +
+        `_Спасибо за поддержку проекта! Приятного скачивания!_`;
+
+      await bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' }).catch((err) => {
+        console.error('[Admin] Не удалось отправить уведомление пользователю:', err.message);
+      });
+    } else {
+      console.error('[Admin] Ошибка регистрации платежа:', result);
+    }
+  } catch (error) {
+    console.error('[Admin] Ошибка в /register-manual-payment:', error.message);
+  }
+
+  const referer = req.get('Referer') || '';
+  if (referer.includes('/user/')) {
+    res.redirect(`/user/${userId}?paymentRegistered=1`);
   } else {
     res.redirect('/users');
   }

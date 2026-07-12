@@ -112,15 +112,24 @@ export async function resetDailyLimitIfNeeded(userId) {
   if (!rows.length) return false;
 
   const lastReset = rows[0].last_reset_date; // может быть null
-  // если ещё никогда не сбрасывали или дата < текущей даты — сбрасываем
-  if (!lastReset || new Date(lastReset).toDateString() !== new Date().toDateString()) {
+  const todayMsk = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  
+  let lastResetStr = null;
+  if (lastReset) {
+    lastResetStr = lastReset instanceof Date
+      ? lastReset.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' })
+      : new Date(lastReset).toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  }
+
+  // если ещё никогда не сбрасывали или дата < текущей даты по МСК — сбрасываем
+  if (!lastResetStr || lastResetStr !== todayMsk) {
     await query(
       `UPDATE users
        SET downloads_today = 0,
            tracks_today = '[]'::jsonb,
-           last_reset_date = CURRENT_DATE
+           last_reset_date = $2::date
        WHERE id = $1`,
-      [userId]
+      [userId, todayMsk]
     );
     return true;
   }
@@ -131,31 +140,113 @@ export async function resetDailyLimitIfNeeded(userId) {
 
 // Админская функция выдачи/продления тарифа
 // mode: 'set' — установить заново от NOW(); 'extend' — прибавить дни к текущей дате (если активна) или от NOW()
-export async function setTariffAdmin(userId, limit, days, { mode = 'set' } = {}) {
-  const sql = `
-    UPDATE users
-    SET
-      premium_limit = $2,
-      premium_until = CASE
-        WHEN $2 <= 5 THEN NULL
-        WHEN $4 = 'extend' THEN
-          (CASE
-             WHEN premium_until IS NOT NULL AND premium_until > NOW()
-               THEN premium_until
-             ELSE NOW()
-           END) + make_interval(days => $3::int)
-        ELSE
-          NOW() + make_interval(days => $3::int)
-      END,
-      -- сбрасываем флаги уведомлений, чтобы в новом периоде снова шли напоминания
-      notified_about_expiration = FALSE,
-      notified_exp_3d = FALSE,
-      notified_exp_1d = FALSE,
-      notified_exp_0d = FALSE
-    WHERE id = $1
-    RETURNING id, premium_limit, premium_until
-  `;
-  const { rows } = await query(sql, [userId, Number(limit), Number(days), mode]);
+export async function setTariffAdmin(userId, limit, days, { mode = 'set', opType = 'adjustment', performedByType = 'system', performedByUserId = null, comment = null } = {}) {
+  // Получаем текущие данные пользователя перед обновлением
+  const userQuery = await query(
+    'SELECT premium_limit, premium_until FROM users WHERE id = $1',
+    [userId]
+  );
+  
+  let prevLimit = 3;
+  let prevPremiumUntil = null;
+  
+  if (userQuery.rowCount > 0) {
+    prevLimit = userQuery.rows[0].premium_limit;
+    prevPremiumUntil = userQuery.rows[0].premium_until;
+  }
+  
+  const getPlanName = (lim, until) => {
+    const isPrem = until && new Date(until) > new Date();
+    if (!isPrem) return 'free';
+    if (lim === null) return 'unlim';
+    if (lim >= 100) return 'pro';
+    return 'plus';
+  };
+  
+  const prevPlan = getPlanName(prevLimit, prevPremiumUntil);
+  const prevIsUnlim = (prevLimit === null && prevPremiumUntil && new Date(prevPremiumUntil) > new Date());
+
+  // Определяем значение лимита для базы данных
+  let dbLimit = null;
+  if (limit !== null && limit !== undefined && limit !== 'unlim' && limit !== 'unlimited') {
+    dbLimit = parseInt(limit, 10);
+    if (isNaN(dbLimit)) dbLimit = 3;
+  }
+  
+  let sql;
+  let params;
+  
+  if (dbLimit !== null && dbLimit <= 5) {
+    sql = `
+      UPDATE users
+      SET premium_limit = $2,
+          premium_until = NULL,
+          notified_about_expiration = FALSE,
+          notified_exp_3d = FALSE,
+          notified_exp_1d = FALSE,
+          notified_exp_0d = FALSE
+      WHERE id = $1
+      RETURNING id, premium_limit, premium_until
+    `;
+    params = [userId, dbLimit];
+  } else {
+    sql = `
+      UPDATE users
+      SET premium_limit = $2,
+          premium_until = CASE
+            WHEN $4 = 'extend' THEN
+              (CASE
+                 WHEN premium_until IS NOT NULL AND premium_until > NOW()
+                   THEN premium_until
+                 ELSE NOW()
+               END) + make_interval(days => $3::int)
+            ELSE
+              NOW() + make_interval(days => $3::int)
+          END,
+          notified_about_expiration = FALSE,
+          notified_exp_3d = FALSE,
+          notified_exp_1d = FALSE,
+          notified_exp_0d = FALSE
+      WHERE id = $1
+      RETURNING id, premium_limit, premium_until
+    `;
+    params = [userId, dbLimit, Number(days), mode];
+  }
+
+  const { rows } = await query(sql, params);
+  const updatedUser = rows[0];
+
+  if (updatedUser) {
+    const newPlan = getPlanName(updatedUser.premium_limit, updatedUser.premium_until);
+    const newIsUnlim = (updatedUser.premium_limit === null && updatedUser.premium_until !== null);
+
+    // Записываем нефинансовую операцию в базу
+    try {
+      await query(
+        `INSERT INTO public.subscription_operations (
+          user_id, payment_id, op_type,
+          previous_plan, new_plan,
+          previous_limit, new_limit,
+          previous_premium_until, new_premium_until,
+          previous_is_unlimited, new_is_unlimited,
+          performed_by_type, performed_by_user_id,
+          comment
+         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          userId, opType,
+          prevPlan, newPlan,
+          prevLimit, updatedUser.premium_limit,
+          prevPremiumUntil, updatedUser.premium_until,
+          prevIsUnlim, newIsUnlim,
+          performedByType, performedByUserId,
+          comment
+        ]
+      );
+    } catch (e) {
+      console.error('[DB] Ошибка логирования операции подписки:', e.message);
+    }
+  }
+
   return rows[0];
 }
 
@@ -915,7 +1006,7 @@ export async function getCacheStats() {
 
 /* ========================= Логирование ========================= */
 
-export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, url, source = null) {
+export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, url, source = null, isCacheHit = false) {
   const newTrack = { title: trackName, fileId, url };
   const res = await query(
     `UPDATE users
@@ -924,12 +1015,12 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
          downloads_count  = COALESCE(downloads_count, 0) + 1,
          yandex_promo_progress = COALESCE(yandex_promo_progress, 0) + 1,
          tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
-     WHERE id = $2 AND downloads_today < premium_limit
+     WHERE id = $2 AND (premium_limit IS NULL OR downloads_today < premium_limit)
      RETURNING *`,
     [newTrack, userId]
   );
   if (res.rowCount > 0) {
-    await logDownload(userId, trackName, url, source);
+    await logDownload(userId, trackName, url, source, isCacheHit);
     // Инкрементируем прогресс для всех активных кастомных РК
     try {
       await query(
@@ -956,10 +1047,8 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
 // =========================================================
 // ИСПРАВЛЕННАЯ ФУНКЦИЯ (SQL вместо Supabase Client)
 // =========================================================
-export async function logDownload(userId, trackTitle, url, source = null) {
+export async function logDownload(userId, trackTitle, url, source = null, isCacheHit = false) {
   try {
-    const downloadedAt = new Date().toISOString();
-    
     // Определяем источник, если он не передан
     let detectedSource = source;
     if (!detectedSource) {
@@ -969,17 +1058,36 @@ export async function logDownload(userId, trackTitle, url, source = null) {
       else detectedSource = 'other';
     }
 
-    // 🔥 ИСПОЛЬЗУЕМ SQL ВМЕСТО SUPABASE CLIENT
-    // Это гарантирует запись, даже если RLS настроен криво или отключен
-    await query(
+    const dlRes = await query(
       `INSERT INTO downloads_log (user_id, track_title, url, source, downloaded_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [userId, trackTitle, url, detectedSource, downloadedAt]
+       VALUES ($1, $2, $3, $4, timezone('utc', now()))
+       RETURNING id`,
+      [userId, trackTitle, url, detectedSource]
     );
 
-    console.log(`[DownloadLog] ✅ Запись (SQL): user=${userId}, source=${detectedSource}`);
+    const downloadLogId = dlRes.rowCount > 0 ? dlRes.rows[0].id : null;
+    console.log(`[DownloadLog] ✅ Запись (SQL): user=${userId}, source=${detectedSource}, id=${downloadLogId}`);
+
+    // Логируем аналитическое событие
+    try {
+      const { analyticsService } = await import('./services/analyticsService.js');
+      const dedupKey = downloadLogId ? `download_log:${downloadLogId}` : null;
+      await analyticsService.trackEventSafe(userId, 'track_download_success', 'downloads', {
+        title: trackTitle,
+        url,
+        source: detectedSource,
+        delivery_source: isCacheHit ? 'cache' : 'download',
+        download_log_id: downloadLogId,
+        deduplication_key: dedupKey
+      });
+    } catch (ae) {
+      console.error('[Analytics] Error tracking download success:', ae.message);
+    }
+    
+    return downloadLogId;
   } catch (e) {
     console.error('❌ Ошибка записи logDownload (SQL):', e.message);
+    return null;
   }
 }
 
@@ -1779,7 +1887,7 @@ export async function incrementDownloadsAndLogPg(userId, trackTitle, fileId, url
            downloads_count  = COALESCE(downloads_count, 0) + 1,
            yandex_promo_progress = COALESCE(yandex_promo_progress, 0) + 1,
            tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
-       WHERE id = $2 AND downloads_today < premium_limit
+       WHERE id = $2 AND (premium_limit IS NULL OR downloads_today < premium_limit)
        RETURNING id`,
       [newTrack, userId]
     );
@@ -2543,6 +2651,247 @@ export async function logKaraokeInvitation(telegramId, username, firstName) {
     await karaokeQuery(sql, [telegramId, username, firstName]);
   } catch (e) {
     console.error('[DB] logKaraokeInvitation error:', e.message);
+  }
+}
+
+// === TELEGRAM STARS & MANUAL PAYMENTS INTEGRATION ===
+
+export async function processStarsPayment({ userId, orderId, telegramPaymentChargeId, providerPaymentChargeId, amountMinor, currency, invoicePayload }) {
+  const { rows } = await query(
+    `SELECT public.process_stars_payment($1, $2, $3, $4, $5, $6, $7, 'telegram_stars_rpc', NULL) AS result`,
+    [userId, orderId, telegramPaymentChargeId, providerPaymentChargeId, amountMinor, currency, invoicePayload]
+  );
+  return rows[0]?.result || null;
+}
+
+export async function processManualPayment({ adminId, userId, plan, amountMinor, currency, paymentMethod, periodDays, comment }) {
+  const { rows } = await query(
+    `SELECT public.process_manual_payment($1, $2, $3, $4, $5, $6, $7, $8) AS result`,
+    [adminId, userId, plan, amountMinor, currency, paymentMethod, periodDays, comment]
+  );
+  return rows[0]?.result || null;
+}
+
+export async function createPaymentOrder({ userId, plan, amountMinor, currency, placement, campaignId, periodDays }) {
+  const expiresAt = new Date(Date.now() + 2 * 3600 * 1000); // Expires in 2 hours
+  const { rows } = await query(
+    `INSERT INTO payment_orders (user_id, plan, amount_minor, currency, placement, campaign_id, period_days, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING *`,
+    [userId, plan, amountMinor, currency, placement, campaignId, periodDays, expiresAt]
+  );
+  return rows[0];
+}
+
+export async function getPaymentOrder(orderId) {
+  const { rows } = await query(
+    `SELECT * FROM payment_orders WHERE id = $1`,
+    [orderId]
+  );
+  return rows[0] || null;
+}
+
+// === АГРЕГАЦИЯ АНАЛИТИКИ (ВРЕМЕННАЯ ЗОНА EUROPE/MOSCOW) ===
+
+export async function aggregateDailyStats(targetDayStr = null) {
+  // Получаем текущую дату по московскому времени
+  const day = targetDayStr || new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+
+  try {
+    console.log(`[Analytics/Aggregate] Запуск агрегации за день (Europe/Moscow): ${day}`);
+
+    // Границы суток МСК в формате ISO со смещением +03:00
+    const mskStart = `${day}T00:00:00+03:00`;
+    const mskEnd = `${day}T23:59:59.999+03:00`;
+
+    // 1. DAU: Уникальные пользователи, совершившие live-действия (исключая системные)
+    const dauRes = await query(
+      `SELECT COUNT(DISTINCT user_id)::int AS dau 
+       FROM analytics_events 
+       WHERE created_at BETWEEN $1 AND $2 
+         AND event_origin = 'live'
+         AND event_name NOT IN ('session_started')`,
+      [mskStart, mskEnd]
+    );
+    const dau = dauRes.rows[0].dau || 0;
+
+    // 2. WAU (скользящие 7 дней)
+    const wskStart = new Date(new Date(mskStart).getTime() - 6 * 86400000).toISOString();
+    const wauRes = await query(
+      `SELECT COUNT(DISTINCT user_id)::int AS wau 
+       FROM analytics_events 
+       WHERE created_at BETWEEN $1 AND $2 
+         AND event_origin = 'live'
+         AND event_name NOT IN ('session_started')`,
+      [wskStart, mskEnd]
+    );
+    const wau = wauRes.rows[0].wau || 0;
+
+    // 3. MAU (скользящие 30 дней)
+    const mskStart30 = new Date(new Date(mskStart).getTime() - 29 * 86400000).toISOString();
+    const mauRes = await query(
+      `SELECT COUNT(DISTINCT user_id)::int AS mau 
+       FROM analytics_events 
+       WHERE created_at BETWEEN $1 AND $2 
+         AND event_origin = 'live'
+         AND event_name NOT IN ('session_started')`,
+      [mskStart30, mskEnd]
+    );
+    const mau = mauRes.rows[0].mau || 0;
+
+    // 4. Новые регистрации
+    const regRes = await query(
+      `SELECT COUNT(*)::int AS count 
+       FROM users 
+       WHERE created_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const registrations = regRes.rows[0].count || 0;
+
+    // 5. Успешные загрузки из downloads_log (источник истины)
+    const dlTotalRes = await query(
+      `SELECT COUNT(*)::int AS total 
+       FROM downloads_log 
+       WHERE downloaded_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const downloadsTotal = dlTotalRes.rows[0].total || 0;
+
+    // Скачивания из кэша
+    const cacheHitsRes = await query(
+      `SELECT COUNT(*)::int AS cache_hits 
+       FROM analytics_events 
+       WHERE event_name = 'track_download_success' 
+         AND event_data->>'delivery_source' = 'cache'
+         AND created_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const cacheHits = cacheHitsRes.rows[0].cache_hits || 0;
+    const downloadsNew = Math.max(downloadsTotal - cacheHits, 0);
+
+    // 6. Достижения лимита
+    const limitsRes = await query(
+      `SELECT COUNT(*)::int AS count 
+       FROM analytics_events 
+       WHERE event_name = 'daily_limit_reached' 
+         AND created_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const limitsReached = limitsRes.rows[0].count || 0;
+
+    // 7. Поведенческие предложения и клики тарифов
+    const shownRes = await query(
+      `SELECT COUNT(*)::int AS count 
+       FROM analytics_events 
+       WHERE event_name = 'star_payment_option_shown' 
+         AND created_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const tariffsShown = shownRes.rows[0].count || 0;
+
+    const clickedRes = await query(
+      `SELECT COUNT(*)::int AS count 
+       FROM analytics_events 
+       WHERE event_name = 'subscription_plan_clicked' 
+         AND created_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const tariffsClicked = clickedRes.rows[0].count || 0;
+
+    // 8. Финансовый воронка
+    const payStartedRes = await query(
+      `SELECT COUNT(*)::int AS count 
+       FROM analytics_events 
+       WHERE event_name = 'payment_method_selected' 
+         AND created_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const paymentsStarted = payStartedRes.rows[0].count || 0;
+
+    const payCompletedRes = await query(
+      `SELECT COUNT(*)::int AS count 
+       FROM payments 
+       WHERE payment_status = 'completed' 
+         AND paid_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const paymentsCompleted = payCompletedRes.rows[0].count || 0;
+
+    // 9. Выручка RUB (в копейках) и XTR (Stars)
+    const revRubRes = await query(
+      `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum 
+       FROM payments 
+       WHERE payment_status = 'completed' 
+         AND currency = 'RUB' 
+         AND paid_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const revenueRub = revRubRes.rows[0].sum || 0;
+
+    const revXtrRes = await query(
+      `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum 
+       FROM payments 
+       WHERE payment_status = 'completed' 
+         AND currency = 'XTR' 
+         AND paid_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const revenueXtr = revXtrRes.rows[0].sum || 0;
+
+    // 10. Вставка агрегированных данных за день
+    await query(
+      `INSERT INTO analytics_daily (
+        day, dau, wau, mau, registrations, downloads_total, downloads_from_cache, downloads_new,
+        limits_reached, tariffs_shown, tariffs_clicked, payments_started, payments_completed,
+        revenue_rub_minor, revenue_xtr, updated_at, aggregation_version
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, timezone('utc', now()), 1)
+      ON CONFLICT (day) DO UPDATE
+      SET dau = EXCLUDED.dau,
+          wau = EXCLUDED.wau,
+          mau = EXCLUDED.mau,
+          registrations = EXCLUDED.registrations,
+          downloads_total = EXCLUDED.downloads_total,
+          downloads_from_cache = EXCLUDED.downloads_from_cache,
+          downloads_new = EXCLUDED.downloads_new,
+          limits_reached = EXCLUDED.limits_reached,
+          tariffs_shown = EXCLUDED.tariffs_shown,
+          tariffs_clicked = EXCLUDED.tariffs_clicked,
+          payments_started = EXCLUDED.payments_started,
+          payments_completed = EXCLUDED.payments_completed,
+          revenue_rub_minor = EXCLUDED.revenue_rub_minor,
+          revenue_xtr = EXCLUDED.revenue_xtr,
+          updated_at = timezone('utc', now()),
+          aggregation_version = analytics_daily.aggregation_version + 1`,
+      [
+        day, dau, wau, mau, registrations, downloadsTotal, cacheHits, downloadsNew,
+        limitsReached, tariffsShown, tariffsClicked, paymentsStarted, paymentsCompleted,
+        revenueRub, revenueXtr
+      ]
+    );
+
+    // 11. Заполнение детальной пользовательской активности за эти сутки
+    await query(
+      `INSERT INTO analytics_user_daily (day, user_id, downloads_count, searches_count, limits_reached_count, primary_source)
+       SELECT 
+         $1::date,
+         u.id,
+         COALESCE((SELECT COUNT(*) FROM downloads_log dl WHERE dl.user_id = u.id AND dl.downloaded_at BETWEEN $2 AND $3), 0)::int,
+         COALESCE((SELECT COUNT(*) FROM analytics_events ae WHERE ae.user_id = u.id AND ae.event_name = 'track_search_started' AND ae.created_at BETWEEN $2 AND $3), 0)::int,
+         COALESCE((SELECT COUNT(*) FROM analytics_events ae WHERE ae.user_id = u.id AND ae.event_name = 'daily_limit_reached' AND ae.created_at BETWEEN $2 AND $3), 0)::int,
+         u.referral_source
+       FROM users u
+       WHERE u.last_active BETWEEN $2 AND $3
+       ON CONFLICT (day, user_id) DO UPDATE
+       SET downloads_count = EXCLUDED.downloads_count,
+           searches_count = EXCLUDED.searches_count,
+           limits_reached_count = EXCLUDED.limits_reached_count,
+           primary_source = EXCLUDED.primary_source`,
+      [day, mskStart, mskEnd]
+    );
+
+    console.log(`[Analytics/Aggregate] Успешно завершено за день ${day}.`);
+  } catch (e) {
+    console.error(`[Analytics/Aggregate] Ошибка агрегации за день ${day}:`, e.message);
   }
 }
 
