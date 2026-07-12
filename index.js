@@ -124,6 +124,25 @@ async function startApp() {
     await redisService.connect();
     await loadSettings();
     
+    try {
+        console.log('[DEBUG] Querying table schemas...');
+        const schemaRes = await pool.query(`
+            SELECT table_name, column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' 
+              AND table_name IN ('users', 'downloads_log', 'user_actions_log')
+            ORDER BY table_name, ordinal_position;
+        `);
+        console.log('[DEBUG] Schema columns:', JSON.stringify(schemaRes.rows, null, 2));
+
+        console.log('[DEBUG] Querying user_actions_log samples...');
+        const samplesRes = await pool.query(`
+            SELECT * FROM user_actions_log ORDER BY created_at DESC LIMIT 15;
+        `);
+        console.log('[DEBUG] user_actions_log samples:', JSON.stringify(samplesRes.rows, null, 2));
+    } catch (e) {
+        console.error('[DEBUG] Schema query failed:', e.message);
+    }
 
     await initializeDownloadManager();
     
