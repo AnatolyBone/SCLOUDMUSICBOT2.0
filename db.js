@@ -80,7 +80,7 @@ pool.on('error', (err) => {
   console.error('⚠️ [Pool] Ошибка idle-клиента:', err.message);
 });
 
-async function query(text, params) {
+export async function query(text, params) {
   try {
     return await pool.query(text, params);
   } catch (e) {
