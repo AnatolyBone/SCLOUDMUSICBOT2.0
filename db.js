@@ -3520,9 +3520,9 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   const tariffsRes = await query(
     `SELECT 
        paid_at::date::text AS day,
-       COUNT(*) FILTER (WHERE plan_id = 'plus')::int AS plus,
-       COUNT(*) FILTER (WHERE plan_id = 'pro')::int AS pro,
-       COUNT(*) FILTER (WHERE plan_id = 'unlim')::int AS unlim
+       COUNT(*) FILTER (WHERE plan = 'plus')::int AS plus,
+       COUNT(*) FILTER (WHERE plan = 'pro')::int AS pro,
+       COUNT(*) FILTER (WHERE plan = 'unlim')::int AS unlim
      FROM payments
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
      GROUP BY paid_at::date
@@ -3538,11 +3538,11 @@ export async function getExcelAnalyticsData(startDate, endDate) {
        payment_method AS method,
        currency,
        CASE WHEN currency = 'RUB' THEN amount_minor / 100.0 ELSE amount_minor END AS amount,
-       plan_id AS plan,
+       plan,
        COUNT(*)::int AS count
      FROM payments
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
-     GROUP BY paid_at::date, payment_method, currency, amount_minor, plan_id
+     GROUP BY paid_at::date, payment_method, currency, amount_minor, plan
      ORDER BY date DESC`,
     [mskStart, mskEnd]
   );
