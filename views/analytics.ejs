@@ -1,4 +1,4 @@
-<%# views/analytics.ejs %>
+<%- contentFor('body') %>
 
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
   <div>
@@ -18,6 +18,11 @@
       </div>
       <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-filter me-1"></i>Показать</button>
     </form>
+    
+    <a href="/admin/analytics/export?startDate=<%= startDate %>&endDate=<%= endDate %>" class="btn btn-sm btn-success text-white">
+      <i class="bi bi-file-earmark-excel me-1"></i>Экспорт XLSX
+    </a>
+    
     <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#aggregation-panel" title="Агрегация данных">
       <i class="bi bi-gear me-1"></i>Агрегация
     </button>
@@ -26,55 +31,70 @@
 
 <div class="collapse mb-3" id="aggregation-panel">
   <div class="card card-body bg-light border-0 shadow-sm">
-    <div class="d-flex gap-3 align-items-end flex-wrap">
-      <div>
-        <p class="mb-1 fw-semibold">Запустить агрегацию вручную</p>
-        <p class="text-muted small mb-2">Оставьте дату пустой для сегодня, или укажите конкретный день для восстановления исторических данных.</p>
-        <form id="agg-form" class="d-flex gap-2 align-items-end">
-          <div>
-            <label class="form-label small text-muted mb-1">Дата (YYYY-MM-DD)</label>
-            <input type="date" id="agg-date" class="form-control form-control-sm" style="width:180px">
+    <div class="row g-3">
+      
+      <!-- Блок 1: Агрегация одного дня -->
+      <div class="col-md-4 border-end">
+        <h6 class="fw-semibold text-warning mb-2"><i class="bi bi-calendar-day me-1"></i>Агрегация одного дня</h6>
+        <p class="text-muted small mb-2">Пересчитать конкретные сутки при пропусках данных.</p>
+        <form id="agg-day-form" class="d-flex gap-2 align-items-end">
+          <div class="flex-grow-1">
+            <input type="date" id="agg-day-date" class="form-control form-control-sm" required>
           </div>
-          <button type="submit" class="btn btn-sm btn-warning" id="agg-btn">
-            <i class="bi bi-play-fill me-1"></i>Запустить
+          <button type="submit" class="btn btn-sm btn-warning" id="agg-day-btn">
+            <i class="bi bi-play-fill"></i> Запустить
           </button>
-          <span id="agg-status" class="text-muted small"></span>
         </form>
       </div>
+
+      <!-- Блок 2: Агрегация за период -->
+      <div class="col-md-5 border-end">
+        <h6 class="fw-semibold text-primary mb-2"><i class="bi bi-calendar-range me-1"></i>Пересчитать период</h6>
+        <p class="text-muted small mb-2">Агрегирует данные последовательно за диапазон дней.</p>
+        <form id="agg-period-form" class="d-flex gap-2 align-items-end">
+          <div>
+            <label class="form-label small text-muted mb-1">С даты</label>
+            <input type="date" id="agg-period-start" class="form-control form-control-sm" required>
+          </div>
+          <div>
+            <label class="form-label small text-muted mb-1">По дату</label>
+            <input type="date" id="agg-period-end" class="form-control form-control-sm" required>
+          </div>
+          <button type="submit" class="btn btn-sm btn-primary" id="agg-period-btn">
+            <i class="bi bi-play-fill"></i> Запустить
+          </button>
+        </form>
+      </div>
+
+      <!-- Блок 3: Восстановление пропусков -->
+      <div class="col-md-3">
+        <h6 class="fw-semibold text-success mb-2"><i class="bi bi-tools me-1"></i>Инструменты</h6>
+        <p class="text-muted small mb-2">Заполнить дыры за последние 7 дней.</p>
+        <button type="button" id="btn-backfill" class="btn btn-sm btn-success w-100">
+          <i class="bi bi-arrow-repeat"></i> Восстановить пропущенные
+        </button>
+      </div>
+
     </div>
+
+    <!-- Информатор прогресса -->
+    <div id="agg-progress-container" class="mt-3 p-3 bg-white rounded border d-none">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <span class="fw-semibold text-primary" id="agg-progress-title">Выполняется агрегация...</span>
+        <span class="badge bg-primary" id="agg-progress-pct">0%</span>
+      </div>
+      <div class="progress mb-2" style="height: 12px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" id="agg-progress-bar" role="progressbar" style="width: 0%;"></div>
+      </div>
+      <div class="d-flex justify-content-between small text-muted">
+        <span id="agg-progress-status">Выполнено: 0 / 0 дней</span>
+        <span id="agg-progress-current">Текущий день: —</span>
+      </div>
+    </div>
+
+    <div id="agg-general-status" class="mt-2 small"></div>
   </div>
 </div>
-
-<script>
-document.getElementById('agg-form')?.addEventListener('submit', async function(e) {
-  e.preventDefault();
-  const btn = document.getElementById('agg-btn');
-  const status = document.getElementById('agg-status');
-  const dateVal = document.getElementById('agg-date').value;
-  btn.disabled = true;
-  status.textContent = '⏳ Выполняется...';
-  try {
-    const r = await fetch('/admin/run-aggregation', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ targetDate: dateVal || undefined })
-    });
-    const d = await r.json();
-    if (d.ok) {
-      status.textContent = `✅ Готово: ${d.aggregated}`;
-      status.className = 'text-success small';
-    } else {
-      status.textContent = `❌ Ошибка: ${d.error}`;
-      status.className = 'text-danger small';
-    }
-  } catch(err) {
-    status.textContent = `❌ ${err.message}`;
-    status.className = 'text-danger small';
-  }
-  btn.disabled = false;
-});
-</script>
-
 
 <%# Summary Cards %>
 <div class="row g-3 mb-4">
@@ -244,8 +264,148 @@ document.getElementById('agg-form')?.addEventListener('submit', async function(e
 <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
 
 <script>
+  let statusInterval = null;
+
+  // Функция для запроса статуса агрегации
+  async function checkAggregationStatus() {
+    try {
+      const response = await fetch('/admin/analytics/status');
+      if (!response.ok) return;
+      const state = await response.json();
+      
+      const dayBtn = document.getElementById('agg-day-btn');
+      const periodBtn = document.getElementById('agg-period-btn');
+      const backfillBtn = document.getElementById('btn-backfill');
+      const progressContainer = document.getElementById('agg-progress-container');
+      const generalStatus = document.getElementById('agg-general-status');
+      
+      if (state.active) {
+        // Выключаем кнопки управления
+        if (dayBtn) dayBtn.disabled = true;
+        if (periodBtn) periodBtn.disabled = true;
+        if (backfillBtn) backfillBtn.disabled = true;
+        
+        // Показываем прогресс-бар
+        progressContainer.classList.remove('d-none');
+        
+        const pct = state.totalDays > 0 ? Math.round((state.currentDayIndex / state.totalDays) * 100) : 0;
+        document.getElementById('agg-progress-pct').innerText = pct + '%';
+        document.getElementById('agg-progress-bar').style.width = pct + '%';
+        document.getElementById('agg-progress-status').innerText = `Выполнено: ${state.currentDayIndex} / ${state.totalDays} дней`;
+        document.getElementById('agg-progress-current').innerText = `Текущий день: ${state.currentDay || '—'}`;
+        
+        generalStatus.innerHTML = '<span class="text-warning"><i class="bi bi-hourglass-split me-1"></i>Выполняется фоновый пересчет данных...</span>';
+      } else {
+        // Включаем кнопки управления
+        if (dayBtn) dayBtn.disabled = false;
+        if (periodBtn) periodBtn.disabled = false;
+        if (backfillBtn) backfillBtn.disabled = false;
+        
+        // Прячем прогресс-бар
+        progressContainer.classList.add('d-none');
+        
+        if (state.error) {
+          generalStatus.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Ошибка фоновой агрегации: ${state.error}</span>`;
+        } else if (generalStatus.innerHTML.includes('выполняется')) {
+          generalStatus.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Агрегация успешно завершена!</span>';
+        }
+      }
+    } catch (e) {
+      console.error('[Status Polling] Error:', e);
+    }
+  }
+
+  // Запуск фонового опроса
+  function startStatusPolling() {
+    checkAggregationStatus();
+    statusInterval = setInterval(checkAggregationStatus, 2000);
+  }
+
+  // Блок 1: Агрегация одного дня
+  document.getElementById('agg-day-form')?.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('agg-day-btn');
+    const status = document.getElementById('agg-general-status');
+    const targetDate = document.getElementById('agg-day-date').value;
+    
+    btn.disabled = true;
+    status.innerHTML = '⏳ Выполняется агрегация дня...';
+    
+    try {
+      const response = await fetch('/admin/analytics/aggregate-day', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetDate })
+      });
+      const data = await response.json();
+      if (data.ok) {
+        status.innerHTML = `<span class="text-success">✅ Успешно агрегировано за ${data.aggregated}! Обновите страницу.</span>`;
+      } else {
+        status.innerHTML = `<span class="text-danger">❌ Ошибка: ${data.error}</span>`;
+      }
+    } catch (err) {
+      status.innerHTML = `<span class="text-danger">❌ ${err.message}</span>`;
+    }
+    btn.disabled = false;
+  });
+
+  // Блок 2: Агрегация за период
+  document.getElementById('agg-period-form')?.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('agg-period-btn');
+    const status = document.getElementById('agg-general-status');
+    const startDate = document.getElementById('agg-period-start').value;
+    const endDate = document.getElementById('agg-period-end').value;
+    
+    btn.disabled = true;
+    status.innerHTML = '⏳ Запуск пересчета периода...';
+    
+    try {
+      const response = await fetch('/admin/analytics/aggregate-period', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate, endDate })
+      });
+      const data = await response.json();
+      if (data.ok) {
+        status.innerHTML = `<span class="text-primary">⏳ Фоновая агрегация периода запущена. Прогресс отображается ниже.</span>`;
+        checkAggregationStatus();
+      } else {
+        status.innerHTML = `<span class="text-danger">❌ Ошибка: ${data.error}</span>`;
+        btn.disabled = false;
+      }
+    } catch (err) {
+      status.innerHTML = `<span class="text-danger">❌ ${err.message}</span>`;
+      btn.disabled = false;
+    }
+  });
+
+  // Блок 3: Восстановление пропущенных дней
+  document.getElementById('btn-backfill')?.addEventListener('click', async function(e) {
+    const btn = document.getElementById('btn-backfill');
+    const status = document.getElementById('agg-general-status');
+    
+    btn.disabled = true;
+    status.innerHTML = '⏳ Проверка и восстановление пропущенных дней...';
+    
+    try {
+      const response = await fetch('/admin/analytics/backfill', { method: 'POST' });
+      const data = await response.json();
+      if (data.ok) {
+        status.innerHTML = '<span class="text-success">✅ Восстановление дней запущено в фоновом режиме.</span>';
+      } else {
+        status.innerHTML = `<span class="text-danger">❌ Ошибка: ${data.error}</span>`;
+      }
+    } catch (err) {
+      status.innerHTML = `<span class="text-danger">❌ ${err.message}</span>`;
+    }
+    btn.disabled = false;
+  });
+
   // Будет вызвано после загрузки Bootstrap и Chart.js
   window.initializePage = function() {
+    startStatusPolling();
+
     const rawData = <%- JSON.stringify(dailyRows) %>;
     const labels = rawData.map(r => new Date(r.day).toLocaleDateString('ru-RU', { timeZone: 'UTC' })).reverse();
     const dauData = rawData.map(r => r.dau).reverse();

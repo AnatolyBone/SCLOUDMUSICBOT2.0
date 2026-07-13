@@ -2119,6 +2119,149 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
     res.status(500).send('Ошибка загрузки аналитики: ' + error.message);
   }
 });
+
+let aggregationState = {
+  active: false,
+  totalDays: 0,
+  currentDayIndex: 0,
+  currentDay: null,
+  error: null
+};
+
+async function runPeriodAggregationInBackground(startDateStr, endDateStr) {
+  if (aggregationState.active) return;
+  aggregationState.active = true;
+  aggregationState.error = null;
+
+  try {
+    const start = new Date(startDateStr);
+    const end = new Date(endDateStr);
+    
+    const dates = [];
+    let current = new Date(start);
+    while (current <= end) {
+      dates.push(current.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' }));
+      current.setDate(current.getDate() + 1);
+    }
+
+    aggregationState.totalDays = dates.length;
+    aggregationState.currentDayIndex = 0;
+
+    const { aggregateDailyStats } = await import('./db.js');
+
+    for (const dateStr of dates) {
+      aggregationState.currentDay = dateStr;
+      console.log(`[Period Aggregation] Progress: ${aggregationState.currentDayIndex + 1}/${dates.length} (${dateStr})`);
+      await aggregateDailyStats(dateStr);
+      aggregationState.currentDayIndex++;
+    }
+    
+    console.log(`[Period Aggregation] Completed successfully for ${dates.length} days.`);
+  } catch (err) {
+    console.error('[Period Aggregation] Failed:', err);
+    aggregationState.error = err.message;
+  } finally {
+    aggregationState.active = false;
+    aggregationState.currentDay = null;
+  }
+}
+
+app.post('/admin/analytics/aggregate-day', requireAuth, async (req, res) => {
+  if (aggregationState.active) {
+    return res.status(400).json({ ok: false, error: 'Агрегация уже выполняется.' });
+  }
+  const { targetDate } = req.body;
+  if (!targetDate) {
+    return res.status(400).json({ ok: false, error: 'Укажите дату YYYY-MM-DD.' });
+  }
+
+  try {
+    const { aggregateDailyStats } = await import('./db.js');
+    await aggregateDailyStats(targetDate);
+    res.json({ ok: true, aggregated: targetDate });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/admin/analytics/aggregate-period', requireAuth, async (req, res) => {
+  if (aggregationState.active) {
+    return res.status(400).json({ ok: false, error: 'Агрегация уже выполняется.' });
+  }
+  const { startDate, endDate } = req.body;
+  if (!startDate || !endDate) {
+    return res.status(400).json({ ok: false, error: 'Укажите дату начала и окончания периода.' });
+  }
+
+  runPeriodAggregationInBackground(startDate, endDate);
+  res.json({ ok: true, message: 'Агрегация периода запущена в фоновом режиме.' });
+});
+
+app.post('/admin/analytics/backfill', requireAuth, async (req, res) => {
+  if (aggregationState.active) {
+    return res.status(400).json({ ok: false, error: 'Агрегация уже выполняется.' });
+  }
+  try {
+    const { backfillMissingDays } = await import('./db.js');
+    backfillMissingDays().catch(console.error);
+    res.json({ ok: true, message: 'Восстановление пропущенных дней запущено.' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/admin/analytics/status', requireAuth, (req, res) => {
+  res.json(aggregationState);
+});
+
+app.get('/admin/analytics/export', requireAuth, async (req, res) => {
+  const { startDate, endDate } = req.query;
+  if (!startDate || !endDate) {
+    return res.status(400).send('Укажите startDate и endDate в параметрах запроса.');
+  }
+
+  try {
+    const { getExcelAnalyticsData } = await import('./db.js');
+    const data = await getExcelAnalyticsData(startDate, endDate);
+
+    const { exec } = await import('child_process');
+    const { default: path } = await import('path');
+    const { default: fs } = await import('fs');
+    const os = await import('os');
+
+    const tempDir = os.tmpdir();
+    const rand = Math.floor(Math.random() * 1000000);
+    const jsonPath = path.join(tempDir, `analytics_data_${rand}.json`);
+    const xlsxPath = path.join(tempDir, `SCloudMusic_Analytics_${startDate}_${endDate}_${rand}.xlsx`);
+
+    fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf8');
+
+    const scriptPath = path.join(process.cwd(), 'scripts', 'generate_excel_report.py');
+    const cmd = `python "${scriptPath}" "${jsonPath}" "${xlsxPath}"`;
+
+    console.log('[Analytics Export] Запуск Python скрипта:', cmd);
+    exec(cmd, (err, stdout, stderr) => {
+      try { fs.unlinkSync(jsonPath); } catch (_) {}
+
+      if (err) {
+        console.error('[Analytics Export] Python error:', stderr || err.message);
+        return res.status(500).send('Ошибка генерации Excel отчета: ' + (stderr || err.message));
+      }
+
+      console.log('[Analytics Export] Успешно сгенерировано:', stdout);
+      
+      res.download(xlsxPath, `SCloudMusic_Analytics_${startDate}_${endDate}.xlsx`, (downloadErr) => {
+        try { fs.unlinkSync(xlsxPath); } catch (_) {}
+        if (downloadErr) {
+          console.error('[Analytics Export] Download error:', downloadErr);
+        }
+      });
+    });
+  } catch (error) {
+    console.error('[Analytics Export] Error:', error.message);
+    res.status(500).send('Ошибка экспорта: ' + error.message);
+  }
+});
   app.post('/reset-bonus', requireAuth, async (req, res) => {
     const { userId } = req.body;
     if (userId) { await updateUserField(userId, 'subscribed_bonus_used', false); }

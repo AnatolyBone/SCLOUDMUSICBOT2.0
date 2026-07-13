@@ -3420,3 +3420,229 @@ export async function getBroadcastTaskStats(broadcastId) {
   };
 }
 
+export async function getExcelAnalyticsData(startDate, endDate) {
+  const mskStart = `${startDate}T00:00:00+03:00`;
+  const mskEnd = `${endDate}T23:59:59.999+03:00`;
+
+  // 1. Summary from analytics_daily & payments
+  const totalUsersRes = await query(`SELECT COUNT(*)::int FROM users`);
+  const totalUsers = totalUsersRes.rows[0].count || 0;
+
+  const newUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2`, [mskStart, mskEnd]);
+  const newUsers = newUsersRes.rows[0].count || 0;
+
+  const dailyAggRes = await query(
+    `SELECT 
+       COALESCE(AVG(dau), 0)::int AS avg_dau,
+       COALESCE(AVG(wau), 0)::int AS avg_wau,
+       COALESCE(AVG(mau), 0)::int AS avg_mau,
+       COALESCE(SUM(downloads_total), 0)::int AS total_downloads
+     FROM analytics_daily
+     WHERE day BETWEEN $1 AND $2`,
+    [startDate, endDate]
+  );
+  const dailyAgg = dailyAggRes.rows[0];
+
+  const revRubRes = await query(
+    `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum, COUNT(*)::int AS count
+     FROM payments
+     WHERE payment_status = 'completed' AND currency = 'RUB' AND paid_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const revenueRub = (revRubRes.rows[0].sum || 0) / 100.0;
+  const paymentsRubCount = revRubRes.rows[0].count || 0;
+
+  const revStarsRes = await query(
+    `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum, COUNT(*)::int AS count
+     FROM payments
+     WHERE payment_status = 'completed' AND currency = 'XTR' AND paid_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const revenueStars = revStarsRes.rows[0].sum || 0;
+  const paymentsStarsCount = revStarsRes.rows[0].count || 0;
+
+  const totalPayments = paymentsRubCount + paymentsStarsCount;
+
+  // 2. Funnel
+  const searchedUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
+     WHERE event_name = 'track_search_started' AND created_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const searchedUsers = searchedUsersRes.rows[0].count || 0;
+
+  const downloadedUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM downloads_log 
+     WHERE downloaded_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const downloadedUsers = downloadedUsersRes.rows[0].count || 0;
+
+  const reachedLimitUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
+     WHERE event_name = 'daily_limit_reached' AND created_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const reachedLimitUsers = reachedLimitUsersRes.rows[0].count || 0;
+
+  const openedTariffsUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
+     WHERE event_name = 'star_payment_option_shown' AND created_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const openedTariffsUsers = openedTariffsUsersRes.rows[0].count || 0;
+
+  const startedPaymentUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
+     WHERE event_name IN ('payment_method_selected', 'star_invoice_created') AND created_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const startedPaymentUsers = startedPaymentUsersRes.rows[0].count || 0;
+
+  const paidUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM payments 
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const paidUsers = paidUsersRes.rows[0].count || 0;
+
+  const funnel = [
+    { stage: 'Открыли бота', count: totalUsers },
+    { stage: 'Искали треки', count: searchedUsers },
+    { stage: 'Скачивали', count: downloadedUsers },
+    { stage: 'Достигли лимита', count: reachedLimitUsers },
+    { stage: 'Открыли тарифы', count: openedTariffsUsers },
+    { stage: 'Начали оплату', count: startedPaymentUsers },
+    { stage: 'Оплатили', count: paidUsers }
+  ];
+
+  // 3. Tariffs (Plus, Pro, Unlimited) daily counts
+  const tariffsRes = await query(
+    `SELECT 
+       paid_at::date::text AS day,
+       COUNT(*) FILTER (WHERE plan_id = 'plus')::int AS plus,
+       COUNT(*) FILTER (WHERE plan_id = 'pro')::int AS pro,
+       COUNT(*) FILTER (WHERE plan_id = 'unlim')::int AS unlim
+     FROM payments
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+     GROUP BY paid_at::date
+     ORDER BY day ASC`,
+    [mskStart, mskEnd]
+  );
+  const tariffs = tariffsRes.rows;
+
+  // 4. Payments list
+  const paymentsRes = await query(
+    `SELECT 
+       paid_at::date::text AS date,
+       payment_method AS method,
+       currency,
+       CASE WHEN currency = 'RUB' THEN amount_minor / 100.0 ELSE amount_minor END AS amount,
+       plan_id AS plan,
+       COUNT(*)::int AS count
+     FROM payments
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+     GROUP BY paid_at::date, payment_method, currency, amount_minor, plan_id
+     ORDER BY date DESC`,
+    [mskStart, mskEnd]
+  );
+  const paymentsList = paymentsRes.rows;
+
+  // 5. Campaigns (Рассылки)
+  const campaignsRes = await query(
+    `SELECT 
+       t.id,
+       t.campaign_name AS name,
+       t.campaign_tag AS tag,
+       t.scheduled_at::date::text AS date,
+       t.total_count AS recipients,
+       t.sent_count AS delivered,
+       COALESCE((SELECT COUNT(*)::int FROM broadcast_clicks WHERE broadcast_id = t.id), 0) AS clicks,
+       COALESCE((
+         SELECT COUNT(DISTINCT p.user_id)::int
+         FROM broadcast_log l
+         JOIN payments p ON p.user_id = l.user_id AND p.payment_status = 'completed'
+         WHERE l.broadcast_id = t.id AND l.status = 'sent' AND p.paid_at BETWEEN l.updated_at AND (l.updated_at + interval '24 hours')
+       ), 0) AS conversions_24h
+     FROM broadcast_tasks t
+     WHERE t.scheduled_at BETWEEN $1 AND $2
+     ORDER BY t.scheduled_at DESC`,
+    [mskStart, mskEnd]
+  );
+  const campaigns = campaignsRes.rows;
+
+  // 6. Language Segments
+  const languagesRes = await query(
+    `WITH user_segments AS (
+       SELECT 
+         id,
+         CASE 
+           WHEN language_source IN ('user_selected', 'admin_changed') THEN 
+             CASE WHEN language_code IN ('ru', 'en') THEN UPPER(language_code) ELSE 'UNKNOWN' END
+           WHEN COALESCE(language_source, 'legacy_default') = 'legacy_default' THEN 
+             CASE WHEN language_code IN ('ru', 'en') THEN UPPER(language_code) ELSE 'UNKNOWN' END
+           WHEN language_source = 'telegram_auto' THEN 
+             CASE 
+               WHEN language_code IN ('ru', 'en') AND (
+                 telegram_language_code IS NULL OR 
+                 LOWER(SPLIT_PART(telegram_language_code, '-', 1)) IN ('ru', 'uk', 'be', 'kk', 'en')
+               ) THEN UPPER(language_code)
+               ELSE 'UNKNOWN' 
+             END
+           ELSE 'UNKNOWN'
+         END AS segment,
+         last_active,
+         (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.id AND p.payment_status = 'completed' AND p.paid_at BETWEEN $1 AND $2) AS has_payment
+       FROM users u
+     )
+     SELECT 
+       segment AS language,
+       COUNT(*)::int AS users,
+       COUNT(*) FILTER (WHERE last_active BETWEEN $1 AND $2)::int AS active,
+       COUNT(*) FILTER (WHERE has_payment > 0)::int AS payments
+     FROM user_segments
+     GROUP BY segment`,
+    [mskStart, mskEnd]
+  );
+  const languages = languagesRes.rows;
+
+  // 7. Daily Stats
+  const dailyStatsRes = await query(
+    `SELECT 
+       day::text AS day,
+       dau, wau, mau, registrations,
+       downloads_total AS downloads,
+       limits_reached AS limits,
+       (revenue_rub_minor / 100.0) AS revenue_rub,
+       revenue_xtr AS revenue_stars
+     FROM analytics_daily
+     WHERE day BETWEEN $1 AND $2
+     ORDER BY day ASC`,
+    [startDate, endDate]
+  );
+  const dailyStats = dailyStatsRes.rows;
+
+  return {
+    startDate,
+    endDate,
+    summary: {
+      total_users: totalUsers,
+      new_users: newUsers,
+      avg_dau: Math.round(dailyAgg.avg_dau),
+      avg_wau: Math.round(dailyAgg.avg_wau),
+      avg_mau: Math.round(dailyAgg.avg_mau),
+      total_downloads: dailyAgg.total_downloads,
+      revenue_rub: revenueRub,
+      revenue_stars: revenueStars,
+      payments_count: totalPayments
+    },
+    funnel,
+    tariffs,
+    payments: paymentsList,
+    campaigns,
+    languages,
+    daily_stats: dailyStats
+  };
+}
+
+
