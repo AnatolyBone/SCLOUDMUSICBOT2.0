@@ -2003,6 +2003,26 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
        ORDER BY day DESC`,
       [startDate, endDate]
     );
+    
+    // Получаем информацию о последней агрегации
+    let lastAggregation = { lastUpdate: null, minDay: null, maxDay: null };
+    try {
+      const lastAggRes = await query(
+        `SELECT 
+           MAX(updated_at) AS last_update, 
+           MIN(day) AS min_day, 
+           MAX(day) AS max_day 
+         FROM public.analytics_daily`
+      );
+      if (lastAggRes.rows[0]) {
+        const row = lastAggRes.rows[0];
+        lastAggregation.lastUpdate = row.last_update ? new Date(row.last_update).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' МСК' : '—';
+        lastAggregation.minDay = row.min_day ? new Date(row.min_day).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) : '—';
+        lastAggregation.maxDay = row.max_day ? new Date(row.max_day).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) : '—';
+      }
+    } catch (aggInfoErr) {
+      console.error('[Analytics] Error getting last aggregation info:', aggInfoErr.message);
+    }
     const dailyRows = dailyRowsRes.rows;
 
     // 2. Агрегированные суммы воронки
@@ -2124,6 +2144,7 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
       paidAfterLimit,
       returnedNextDay,
       churnedAfterLimit,
+      lastAggregation,
       unreadSupportCount: res.locals.unreadSupportCount || 0
     });
   } catch (error) {
@@ -2263,7 +2284,7 @@ app.get('/admin/analytics/export', requireAuth, async (req, res) => {
 
       console.log('[Analytics Export] Успешно сгенерировано:', stdout);
       
-      res.download(xlsxPath, `SCloudMusic_Analytics_${startDate}_${endDate}.xlsx`, (downloadErr) => {
+      res.download(xlsxPath, `SCM_Analytics_${startDate}_${endDate}.xlsx`, (downloadErr) => {
         try { fs.unlinkSync(xlsxPath); } catch (_) {}
         if (downloadErr) {
           console.error('[Analytics Export] Download error:', downloadErr);

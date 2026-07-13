@@ -4,6 +4,16 @@
   <div>
     <h1 class="h3 mb-0 text-gray-800"><i class="bi bi-bar-chart-fill me-2 text-primary"></i>Сквозная аналитика</h1>
     <p class="text-muted mb-0">Показатели воронки, выручки и лимитов (Временная зона: Europe/Moscow)</p>
+    <% if (typeof lastAggregation !== 'undefined' && lastAggregation && lastAggregation.lastUpdate) { %>
+      <div class="text-muted small mt-1">
+        <span class="me-3">
+          <i class="bi bi-clock-history me-1 text-primary"></i>Последнее обновление данных: <strong><%= lastAggregation.lastUpdate %></strong>
+        </span>
+        <span>
+          <i class="bi bi-calendar-check me-1 text-primary"></i>Агрегированный период в базе: <strong><%= lastAggregation.minDay %> — <%= lastAggregation.maxDay %></strong>
+        </span>
+      </div>
+    <% } %>
   </div>
   
   <div class="d-flex gap-2 align-items-end flex-wrap">
@@ -265,6 +275,7 @@
 
 <script>
   let statusInterval = null;
+  let wasActive = false;
 
   // Функция для запроса статуса агрегации
   async function checkAggregationStatus() {
@@ -280,6 +291,7 @@
       const generalStatus = document.getElementById('agg-general-status');
       
       if (state.active) {
+        wasActive = true;
         // Выключаем кнопки управления
         if (dayBtn) dayBtn.disabled = true;
         if (periodBtn) periodBtn.disabled = true;
@@ -306,8 +318,20 @@
         
         if (state.error) {
           generalStatus.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Ошибка фоновой агрегации: ${state.error}</span>`;
-        } else if (generalStatus.innerHTML.includes('выполняется')) {
-          generalStatus.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Агрегация успешно завершена!</span>';
+          wasActive = false;
+        } else if (wasActive) {
+          wasActive = false;
+          generalStatus.innerHTML = `
+            <div class="alert alert-success d-flex align-items-center justify-content-between mt-2 mb-0 py-2">
+              <span>
+                <i class="bi bi-check-circle-fill me-2"></i><strong>Агрегация успешно завершена!</strong> 
+                Обработано дней: ${state.currentDayIndex} / ${state.totalDays}. Данные в базе обновлены.
+              </span>
+              <button class="btn btn-sm btn-success text-white py-1" onclick="window.location.reload()">
+                <i class="bi bi-arrow-clockwise me-1"></i>Обновить графики и данные
+              </button>
+            </div>
+          `;
         }
       }
     } catch (e) {
