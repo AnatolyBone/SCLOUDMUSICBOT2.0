@@ -3244,6 +3244,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
       } catch (_rollbackErr) {}
     }
     console.error(`[Analytics/Aggregate] Ошибка агрегации за день ${day}:`, e.message);
+    throw e;
   } finally {
     if (client) {
       client.release();

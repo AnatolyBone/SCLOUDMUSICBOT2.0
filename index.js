@@ -2248,8 +2248,9 @@ app.get('/admin/analytics/export', requireAuth, async (req, res) => {
 
     fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf8');
 
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
     const scriptPath = path.join(process.cwd(), 'scripts', 'generate_excel_report.py');
-    const cmd = `python "${scriptPath}" "${jsonPath}" "${xlsxPath}"`;
+    const cmd = `${pythonCmd} "${scriptPath}" "${jsonPath}" "${xlsxPath}"`;
 
     console.log('[Analytics Export] Запуск Python скрипта:', cmd);
     exec(cmd, (err, stdout, stderr) => {
