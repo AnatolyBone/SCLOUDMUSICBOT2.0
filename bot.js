@@ -195,7 +195,7 @@ export function getUserLimit(user) {
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
     if (isPremium) {
         if (user.premium_limit === null) return null; // Безлимит
-        return user.premium_limit || parseInt(getSetting('daily_limit_plus') || '30', 10);
+        return user.premium_limit ?? parseInt(getSetting('daily_limit_plus') || '30', 10);
     }
     
     return parseInt(getSetting('daily_limit_free') || '3', 10);

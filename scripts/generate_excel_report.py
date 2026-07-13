@@ -4,6 +4,16 @@ import json
 import os
 import xlsxwriter
 
+def number(value, default=0):
+    """Normalize PostgreSQL bigint/numeric JSON strings and NULL for xlsxwriter."""
+    if value is None or value == '':
+        return default
+    try:
+        parsed = float(value)
+        return int(parsed) if parsed.is_integer() else parsed
+    except (TypeError, ValueError):
+        return default
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: python generate_excel_report.py <input_json_path> <output_xlsx_path>")
@@ -102,11 +112,11 @@ def main():
         dash.write(row + 1, col, val, card_val_fmt)
         # Apply formatting if it is currency/stars
         if fmt == num_currency:
-            dash.write_number(row + 1, col, val, workbook.add_format({'bold':True, 'size':14, 'font_color':'#2e75b6', 'bg_color':'#f2f2f2', 'align':'center', 'num_format':'#,##0.00" ₽"', 'border':1, 'border_color':'#d9d9d9'}))
+            dash.write_number(row + 1, col, number(val), workbook.add_format({'bold':True, 'size':14, 'font_color':'#2e75b6', 'bg_color':'#f2f2f2', 'align':'center', 'num_format':'#,##0.00" ₽"', 'border':1, 'border_color':'#d9d9d9'}))
         elif fmt == num_stars:
-            dash.write_number(row + 1, col, val, workbook.add_format({'bold':True, 'size':14, 'font_color':'#e2b13c', 'bg_color':'#f2f2f2', 'align':'center', 'num_format':'⭐️ #,##0', 'border':1, 'border_color':'#d9d9d9'}))
+            dash.write_number(row + 1, col, number(val), workbook.add_format({'bold':True, 'size':14, 'font_color':'#e2b13c', 'bg_color':'#f2f2f2', 'align':'center', 'num_format':'⭐️ #,##0', 'border':1, 'border_color':'#d9d9d9'}))
         else:
-            dash.write_number(row + 1, col, val, card_val_fmt)
+            dash.write_number(row + 1, col, number(val), card_val_fmt)
 
     # We will insert charts from Sheet 7 (Daily Stats) onto the Dashboard
     # Chart 1: DAU / WAU / MAU
@@ -185,22 +195,24 @@ def main():
     fun.write_row('B5', ['Этап воронки', 'Количество', 'Конверсия от входа', 'Конверсия от пред.'], header_fmt)
     
     funnel_data = data['funnel']
-    total_entered = funnel_data[0]['count'] if len(funnel_data) > 0 and funnel_data[0]['count'] > 0 else 1
+    first_funnel_count = number(funnel_data[0].get('count')) if len(funnel_data) > 0 else 0
+    total_entered = first_funnel_count if first_funnel_count > 0 else 1
     
     prev_count = total_entered
     for i, row in enumerate(funnel_data):
         curr_row = 6 + i
         fun.write(f'B{curr_row}', row['stage'], cell_left)
-        fun.write_number(f'C{curr_row}', row['count'], num_integer)
+        fun.write_number(f'C{curr_row}', number(row.get('count')), num_integer)
         
         # formulas for conversions
-        pct_of_total = row['count'] / total_entered
-        pct_of_prev = row['count'] / prev_count if prev_count > 0 else 0
+        current_count = number(row.get('count'))
+        pct_of_total = current_count / total_entered
+        pct_of_prev = current_count / prev_count if prev_count > 0 else 0
         
         fun.write_number(f'D{curr_row}', pct_of_total, num_pct)
         fun.write_number(f'E{curr_row}', pct_of_prev, num_pct)
         
-        prev_count = row['count']
+        prev_count = current_count
 
     # Add Funnel Bar Chart
     fchart = workbook.add_chart({'type': 'bar'})
@@ -229,9 +241,9 @@ def main():
     for idx, row in enumerate(tariff_rows):
         curr_row = 6 + idx
         tar.write(f'B{curr_row}', row['day'], cell_center)
-        tar.write_number(f'C{curr_row}', row['plus'], num_integer)
-        tar.write_number(f'D{curr_row}', row['pro'], num_integer)
-        tar.write_number(f'E{curr_row}', row['unlim'], num_integer)
+        tar.write_number(f'C{curr_row}', number(row.get('plus')), num_integer)
+        tar.write_number(f'D{curr_row}', number(row.get('pro')), num_integer)
+        tar.write_number(f'E{curr_row}', number(row.get('unlim')), num_integer)
 
     # Tariff chart
     tchart = workbook.add_chart({'type': 'line'})
@@ -277,12 +289,12 @@ def main():
         pay.write(f'D{curr_row}', row['currency'], cell_center)
         
         if row['currency'] == 'RUB':
-            pay.write_number(f'E{curr_row}', row['amount'], num_currency)
+            pay.write_number(f'E{curr_row}', number(row.get('amount')), num_currency)
         else:
-            pay.write_number(f'E{curr_row}', row['amount'], num_stars)
+            pay.write_number(f'E{curr_row}', number(row.get('amount')), num_stars)
             
         pay.write(f'F{curr_row}', (row['plan'] or '—').upper(), cell_center)
-        pay.write_number(f'G{curr_row}', row['count'], num_integer)
+        pay.write_number(f'G{curr_row}', number(row.get('count')), num_integer)
 
     # Summary table: RUB vs Stars
     pay.write('I5', 'Тип валюты', header_fmt)
@@ -312,17 +324,17 @@ def main():
     campaigns = data['campaigns']
     for idx, row in enumerate(campaigns):
         curr_row = 6 + idx
-        camp.write_number(f'B{curr_row}', row['id'], num_integer)
+        camp.write_number(f'B{curr_row}', number(row.get('id')), num_integer)
         camp.write(f'C{curr_row}', row['name'] or 'Без названия', cell_left)
         camp.write(f'D{curr_row}', row['tag'] or '—', cell_center)
         camp.write(f'E{curr_row}', row['date'], cell_center)
-        camp.write_number(f'F{curr_row}', row['recipients'] or 0, num_integer)
-        camp.write_number(f'G{curr_row}', row['delivered'] or 0, num_integer)
-        camp.write_number(f'H{curr_row}', row['clicks'] or 0, num_integer)
+        camp.write_number(f'F{curr_row}', number(row.get('recipients')), num_integer)
+        camp.write_number(f'G{curr_row}', number(row.get('delivered')), num_integer)
+        camp.write_number(f'H{curr_row}', number(row.get('clicks')), num_integer)
         
         # CTR formula: clicks / delivered
         camp.write_formula(f'I{curr_row}', f'=IF(G{curr_row}>0, H{curr_row}/G{curr_row}, 0)', num_pct)
-        camp.write_number(f'J{curr_row}', row['conversions_24h'] or 0, num_integer)
+        camp.write_number(f'J{curr_row}', number(row.get('conversions_24h')), num_integer)
 
     # ====================================================
     # SHEET 6: Языковые сегменты
@@ -339,9 +351,9 @@ def main():
     for idx, row in enumerate(lang_rows):
         curr_row = 6 + idx
         langs.write(f'B{curr_row}', row['language'], cell_center)
-        langs.write_number(f'C{curr_row}', row['users'], num_integer)
-        langs.write_number(f'D{curr_row}', row['active'], num_integer)
-        langs.write_number(f'E{curr_row}', row['payments'], num_integer)
+        langs.write_number(f'C{curr_row}', number(row.get('users')), num_integer)
+        langs.write_number(f'D{curr_row}', number(row.get('active')), num_integer)
+        langs.write_number(f'E{curr_row}', number(row.get('payments')), num_integer)
 
     # Add Pie Chart for languages
     lchart = workbook.add_chart({'type': 'pie'})
@@ -367,14 +379,14 @@ def main():
     for idx, row in enumerate(daily_stats):
         curr_row = 2 + idx
         ds.write(f'A{curr_row}', row['day'], cell_center)
-        ds.write_number(f'B{curr_row}', row['dau'], num_integer)
-        ds.write_number(f'C{curr_row}', row['wau'], num_integer)
-        ds.write_number(f'D{curr_row}', row['mau'], num_integer)
-        ds.write_number(f'E{curr_row}', row['registrations'], num_integer)
-        ds.write_number(f'F{curr_row}', row['downloads'], num_integer)
-        ds.write_number(f'G{curr_row}', row['limits'], num_integer)
-        ds.write_number(f'H{curr_row}', row['revenue_rub'], num_currency)
-        ds.write_number(f'I{curr_row}', row['revenue_stars'], num_stars)
+        ds.write_number(f'B{curr_row}', number(row.get('dau')), num_integer)
+        ds.write_number(f'C{curr_row}', number(row.get('wau')), num_integer)
+        ds.write_number(f'D{curr_row}', number(row.get('mau')), num_integer)
+        ds.write_number(f'E{curr_row}', number(row.get('registrations')), num_integer)
+        ds.write_number(f'F{curr_row}', number(row.get('downloads')), num_integer)
+        ds.write_number(f'G{curr_row}', number(row.get('limits')), num_integer)
+        ds.write_number(f'H{curr_row}', number(row.get('revenue_rub')), num_currency)
+        ds.write_number(f'I{curr_row}', number(row.get('revenue_stars')), num_stars)
 
     # Close workbook
     workbook.close()

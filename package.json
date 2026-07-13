@@ -5,7 +5,10 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "check:schema": "node scripts/schema-preflight.js",
+    "smoke:analytics": "node scripts/smoke-analytics.js",
+    "test": "node --test --test-isolation=none"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.6",

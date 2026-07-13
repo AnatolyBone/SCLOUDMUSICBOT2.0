@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const isDev = process.env.NODE_ENV !== 'production';
+const isDatabaseTool = process.env.CONFIG_SCOPE === 'database';
 
 // ========================= HELPER FUNCTIONS =========================
 
@@ -97,11 +98,11 @@ function validateEnv() {
   const errors = [];
   
   // --- Обязательные всегда ---
-  if (!process.env.BOT_TOKEN) {
+  if (!isDatabaseTool && !process.env.BOT_TOKEN) {
     errors.push('BOT_TOKEN - токен Telegram бота');
   }
   
-  if (!process.env.ADMIN_ID || isNaN(Number(process.env.ADMIN_ID))) {
+  if (!isDatabaseTool && (!process.env.ADMIN_ID || isNaN(Number(process.env.ADMIN_ID)))) {
     errors.push('ADMIN_ID - Telegram ID администратора (должен быть числом)');
   }
   
@@ -112,7 +113,7 @@ function validateEnv() {
   }
   
   // --- Обязательные только в production ---
-  if (!isDev) {
+  if (!isDev && !isDatabaseTool) {
     if (!process.env.WEBHOOK_URL) {
       errors.push('WEBHOOK_URL - обязателен в production (например: https://yourdomain.com)');
     }
@@ -148,6 +149,7 @@ function validateEnv() {
  * Выводит предупреждения о неполной конфигурации (некритичные, но важные)
  */
 function warnOptionalVars() {
+  if (isDatabaseTool) return;
   const warnings = [];
   
   if (!process.env.REDIS_URL) {
@@ -190,19 +192,19 @@ warnOptionalVars();
  */
 export const CONFIG = Object.freeze({
   // --- Основные ---
-  BOT_TOKEN: getRequired('BOT_TOKEN'),
-  ADMIN_ID: getRequiredInt('ADMIN_ID'),
+  BOT_TOKEN: isDatabaseTool ? (process.env.BOT_TOKEN || 'database-tool') : getRequired('BOT_TOKEN'),
+  ADMIN_ID: isDatabaseTool ? getOptionalInt('ADMIN_ID', 0) : getRequiredInt('ADMIN_ID'),
   DATABASE_URL: getRequired('DATABASE_URL'),
   
   // --- Сервер ---
-  WEBHOOK_URL: isDev ? '' : getRequired('WEBHOOK_URL'),
+  WEBHOOK_URL: (isDev || isDatabaseTool) ? '' : getRequired('WEBHOOK_URL'),
   WEBHOOK_PATH: process.env.WEBHOOK_PATH || '/telegram',
   PORT: getOptionalInt('PORT', 3000),
   
   // --- Безопасность ---
-  SESSION_SECRET: isDev ? 'dev-secret-key-do-not-use-in-production' : getRequired('SESSION_SECRET'),
-  ADMIN_LOGIN: isDev ? 'admin' : getRequired('ADMIN_LOGIN'),
-  ADMIN_PASSWORD: isDev ? 'admin' : getRequired('ADMIN_PASSWORD'),
+  SESSION_SECRET: (isDev || isDatabaseTool) ? 'database-tool-not-for-http' : getRequired('SESSION_SECRET'),
+  ADMIN_LOGIN: (isDev || isDatabaseTool) ? 'admin' : getRequired('ADMIN_LOGIN'),
+  ADMIN_PASSWORD: (isDev || isDatabaseTool) ? 'admin' : getRequired('ADMIN_PASSWORD'),
   
   // --- Внешние сервисы ---
   REDIS_URL: process.env.REDIS_URL || null,

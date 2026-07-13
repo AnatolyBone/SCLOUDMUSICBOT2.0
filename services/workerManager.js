@@ -181,9 +181,9 @@ function startBroadcastWorker() {
           });
 
           // 3. ОБНОВЛЯЕМ ПРОГРЕСС-БАР
-          const { total, sent } = await getBroadcastProgress(task.id, task.target_audience);
-          const percent = total > 0 ? ((sent / total) * 100).toFixed(1) : '0';
-          const bar = drawProgressBar(sent, total);
+          const { total, processed } = await getBroadcastProgress(task.id, task.target_audience);
+          const percent = total > 0 ? ((processed / total) * 100).toFixed(1) : '0';
+          const bar = drawProgressBar(processed, total);
 
           try {
             await botInstance.telegram.editMessageText(
@@ -192,7 +192,7 @@ function startBroadcastWorker() {
               null,
               `⏳ <b>Выполнение рассылки #${task.id}</b>\n\n` +
               `${bar} <b>${percent}%</b>\n\n` +
-              `📦 Отправлено: <b>${sent} / ${total}</b>\n` +
+              `📦 Обработано: <b>${processed} / ${total}</b>\n` +
               `👤 Аудитория: <code>${task.target_audience}</code>`,
               { parse_mode: 'HTML' }
             );
@@ -207,13 +207,13 @@ function startBroadcastWorker() {
           await updateBroadcastStatus(task.id, 'completed');
           
           // 4. Финальный отчет (редактируем то же сообщение)
-          const { total, sent } = await getBroadcastProgress(task.id, task.target_audience);
+          const { total, processed } = await getBroadcastProgress(task.id, task.target_audience);
           const duration = Math.round((Date.now() - startTime) / 1000);
           
           const completedReport =
             `✅ <b>Рассылка #${task.id} завершена!</b>\n` +
             `──────────────────\n` +
-            `${drawProgressBar(sent, total)} <b>100%</b>\n\n` +
+            `${drawProgressBar(processed, total)} <b>100%</b>\n\n` +
             `👥 Всего обработано: <b>${total}</b>\n\n` +
             `✅ Успешно: <b>${successCount}</b>\n` +
             `🚫 Заблокировали бота: <b>${blockedCount}</b>\n` +

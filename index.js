@@ -93,6 +93,8 @@ import {
 } from './config.js';
 import { loadTexts, setText, getEditableTexts } from './config/texts.js';
 import { downloadQueue, initializeDownloadManager } from './services/downloadManager.js';
+import { runAnalyticsSmokeTest } from './services/analyticsSmokeTest.js';
+import { generateExcelReport } from './services/excelReportService.js';
 
 const app = express();
 
@@ -120,14 +122,12 @@ async function startApp() {
   const forcePolling = process.env.FORCE_POLLING === '1';
 
   try {
-    // Запускаем сервер и настраиваем Express СРАЗУ, чтобы Render.com определил порт
-    const server = app.listen(PORT, () => console.log(`✅ [App] Сервер запущен на порту ${PORT}.`));
     setupExpress();
     await runSupportSystemMigration();
     await runAnalyticsSystemMigration();
     await runMultilangSystemMigration();
     await runPreflightFixesMigration();
-    await checkSchemaPreflight();
+    await checkSchemaPreflight({ throwOnMissing: true });
 
     // Историческая миграция лимитов (удалена, чтобы настройки пользователя не перезаписывались при старте)
     
@@ -140,6 +140,9 @@ async function startApp() {
     backfillMissingDays().catch(e => console.error('[Startup/Backfill] Ошибка:', e.message));
 
     await initializeDownloadManager();
+
+    // Не открываем HTTP-порт, пока критичный контракт PostgreSQL не подтверждён.
+    const server = app.listen(PORT, () => console.log(`✅ [App] Сервер запущен на порту ${PORT}.`));
     
     let lastUpdateTs = Date.now();
     bot.use((ctx, next) => { lastUpdateTs = Date.now(); return next(); });
@@ -444,6 +447,7 @@ app.get('/r', async (req, res) => {
     const buttonIndex = parseInt(payload.b, 10);
     
     let destUrl = payload.url;
+    let redirectUser = null;
 
     // Если это реальная рассылка (campaignId > 0), URL назначения нужно извлечь из кнопки задачи
     if (!destUrl && campaignId > 0) {
@@ -451,8 +455,8 @@ app.get('/r', async (req, res) => {
       if (task) {
         let lang = task.fallback_language || 'ru';
         if (userId) {
-          const user = await getUserById(userId);
-          if (user?.language_code) lang = user.language_code;
+          redirectUser = await getUserById(userId);
+          if (redirectUser?.language_code) lang = redirectUser.language_code;
         }
         
         const langData = task.messages_json?.[lang] || task.messages_json?.[task.fallback_language || 'ru'] || task.messages_json?.['ru'] || {};
@@ -472,11 +476,12 @@ app.get('/r', async (req, res) => {
 
     // Логируем клик в broadcast_clicks
     if (campaignId > 0 && userId) {
+      if (!redirectUser) redirectUser = await getUserById(userId);
       await pool.query(
-        `INSERT INTO broadcast_clicks (campaign_id, user_id, button_index, clicked_at)
-         VALUES ($1, $2, $3, NOW())
+        `INSERT INTO broadcast_clicks (campaign_id, user_id, button_index, clicked_at, user_agent, language_code)
+         VALUES ($1, $2, $3, NOW(), $4, $5)
          ON CONFLICT DO NOTHING`,
-        [campaignId, userId, buttonIndex]
+        [campaignId, userId, buttonIndex, req.get('user-agent') || null, redirectUser?.language_code || null]
       ).catch(err => {
         console.error('[Redirect] Error logging click:', err.message);
       });
@@ -747,12 +752,7 @@ app.post('/settings/update', requireAuth, async (req, res) => {
   try {
     console.log('[Settings/Update] Получены данные:', JSON.stringify(req.body, null, 2));
     
-    // Получаем старые суточные лимиты до обновления
-    const oldFree = parseInt(getSetting('daily_limit_free') || '3', 10);
-    const oldPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
-    const oldPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
-
-    // 1. Сохраняем новые настройки
+    // Лимиты являются настройками продукта; пользователей массово не перезаписываем.
     for (const [key, value] of Object.entries(req.body)) {
       console.log(`[Settings/Update] Сохраняю: ${key} = ${value}`);
       await setAppSetting(key, value);
@@ -761,59 +761,12 @@ app.post('/settings/update', requireAuth, async (req, res) => {
     await loadSettings(); // Обновляем кеш
     console.log('[Settings/Update] ✅ Настройки сохранены и кеш обновлён');
 
-    // 2. Запускаем фоновое обновление (без await, чтобы не ждать)
-    applyLimitsToUsers(req.body, { oldFree, oldPlus, oldPro }).catch(err => {
-        console.error('❌ Ошибка в фоновом обновлении лимитов:', err);
-    });
-
     res.redirect('/settings?success=true');
   } catch (e) {
     console.error('Ошибка сохранения настроек:', e);
     res.status(500).send('Ошибка сохранения настроек');
   }
 });
-
-// === ОТДЕЛЬНАЯ ФУНКЦИЯ ДЛЯ МАССОВОГО ОБНОВЛЕНИЯ ===
-async function applyLimitsToUsers(body, oldLimits) {
-    const { daily_limit_free, daily_limit_plus, daily_limit_pro } = body;
-    const { oldFree, oldPlus, oldPro } = oldLimits;
-
-    console.log('🔄 Начинаю фоновое обновление суточных лимитов...');
-    const start = Date.now();
-
-    // 1. Free
-    if (daily_limit_free) {
-        const newLimit = parseInt(daily_limit_free, 10);
-        await pool.query(`ALTER TABLE users ALTER COLUMN premium_limit SET DEFAULT ${newLimit}`);
-        await pool.query(`
-            UPDATE users 
-            SET premium_limit = $1 
-            WHERE (premium_limit = $2 OR premium_limit IS NULL) 
-              AND (premium_until IS NULL OR premium_until < NOW())
-        `, [newLimit, oldFree]);
-    }
-
-    // 2. Plus
-    if (daily_limit_plus) {
-        const newLimit = parseInt(daily_limit_plus, 10);
-        await pool.query(`
-            UPDATE users SET premium_limit = $1 
-            WHERE premium_limit = $2 AND premium_until > NOW()
-        `, [newLimit, oldPlus]);
-    }
-
-    // 3. Pro
-    if (daily_limit_pro) {
-        const newLimit = parseInt(daily_limit_pro, 10);
-        await pool.query(`
-            UPDATE users SET premium_limit = $1 
-            WHERE premium_limit = $2 AND premium_until > NOW()
-        `, [newLimit, oldPro]);
-    }
-
-    const duration = (Date.now() - start) / 1000;
-    console.log(`✅ Суточные лимиты обновлены. Заняло: ${duration} сек.`);
-}
 
 // ==================================================================
 // ДАШБОРД
@@ -869,17 +822,20 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       pool.query(`
         SELECT
           COUNT(*) FILTER (
-            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
-               OR (premium_until IS NOT NULL AND premium_until < NOW())
-               OR (premium_limit IS NULL AND premium_until IS NULL)
+            WHERE premium_until IS NULL
+               OR premium_until < NOW()
+               OR (
+                 premium_limit IS NOT NULL
+                 AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+               )
           ) AS free,
           COUNT(*) FILTER (
             WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)
-              AND (premium_until IS NULL OR premium_until >= NOW())
+              AND premium_until IS NOT NULL AND premium_until >= NOW()
           ) AS plus,
           COUNT(*) FILTER (
             WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100)
-              AND (premium_until IS NULL OR premium_until >= NOW())
+              AND premium_until IS NOT NULL AND premium_until >= NOW()
           ) AS pro,
           COUNT(*) FILTER (
             WHERE (premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) OR premium_limit IS NULL)
@@ -898,7 +854,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
         )
         AND premium_limit IS NOT NULL
-        AND (premium_until IS NULL OR premium_until >= NOW())
+        AND premium_until IS NOT NULL AND premium_until >= NOW()
       `),
       // Истёкшие
       pool.query(`
@@ -1944,7 +1900,11 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
 app.post('/set-tariff', requireAuth, async (req, res) => {
   const { userId, limit, days, applyMode, opType, comment } = req.body;
   try {
-    const newLimit = parseInt(limit, 10);
+    const isUnlimited = limit === 'unlim' || limit === 'unlimited';
+    const newLimit = isUnlimited ? null : parseInt(limit, 10);
+    if (!isUnlimited && (!Number.isInteger(newLimit) || newLimit < 0)) {
+      return res.status(400).send('Некорректный лимит тарифа.');
+    }
     const nDays = parseInt(days, 10) || 30;
     const mode = applyMode === 'extend' ? 'extend' : 'set';
 
@@ -1969,7 +1929,8 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
     const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 
     let tariffName = '';
-    if (newLimit <= limitFree) tariffName = 'Free';
+    if (newLimit === null) tariffName = 'Unlimited';
+    else if (newLimit <= limitFree) tariffName = 'Free';
     else if (newLimit <= limitPlus) tariffName = 'Plus';
     else if (newLimit <= limitPro) tariffName = 'Pro';
     else tariffName = 'Unlimited';
@@ -1983,7 +1944,7 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
 
     const message =
       `🎉 Ваш тариф был обновлен администратором!\n\n` +
-      `Новый тариф: *${tariffName}* (${newLimit} загрузок/день).\n` +
+      `Новый тариф: *${tariffName}* (${newLimit === null ? 'без лимита' : `${newLimit} загрузок/день`}).\n` +
       `Срок действия: *${untilText}* ` +
       (mode === 'extend' ? '(продлён).' : '(установлен заново).');
 
@@ -2321,46 +2282,18 @@ app.get('/admin/analytics/status', requireAuth, (req, res) => {
   res.json(aggregationState);
 });
 
-app.get('/admin/analytics/smoke-test', requireAuth, async (req, res) => {
-  const results = [];
-  const runTest = async (name, fn, ...args) => {
-    try {
-      const start = Date.now();
-      await fn(...args);
-      results.push({ name, status: 'OK', durationMs: Date.now() - start });
-    } catch (err) {
-      results.push({ name, status: 'FAILED', error: err.message });
-    }
-  };
-
+app.post('/admin/analytics/smoke-test', requireAuth, async (req, res) => {
   try {
-    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
-    const { 
-      getExcelAnalyticsData, 
-      getPeriodComparisonData, 
-      getCohortRetentionData, 
-      getRevenueDashboardData, 
-      getAIRecommendationsData,
-      getAllBroadcastTasks,
-      getBroadcastTaskStats
-    } = await import('./db.js');
-
-    await runTest('getExcelAnalyticsData', getExcelAnalyticsData, todayStr, todayStr);
-    await runTest('getPeriodComparisonData', getPeriodComparisonData, todayStr, todayStr, todayStr, todayStr);
-    await runTest('getCohortRetentionData', getCohortRetentionData);
-    await runTest('getRevenueDashboardData', getRevenueDashboardData, todayStr, todayStr);
-    await runTest('getAIRecommendationsData', getAIRecommendationsData);
-    await runTest('getAllBroadcastTasks', getAllBroadcastTasks);
-    await runTest('getBroadcastTaskStats', getBroadcastTaskStats, 0);
-
-    const hasFailed = results.some(r => r.status === 'FAILED');
-    res.json({
-      success: !hasFailed,
-      timestamp: new Date().toISOString(),
-      results
+    const result = await runAnalyticsSmokeTest();
+    res.status(result.ok ? 200 : 500).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      summary: { passed: 0, failed: 1 },
+      tests: {
+        smoke_runner: { status: 'error', error: error.message }
+      }
     });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -2373,44 +2306,22 @@ app.get('/admin/analytics/export', requireAuth, async (req, res) => {
   try {
     const { getExcelAnalyticsData } = await import('./db.js');
     const data = await getExcelAnalyticsData(startDate, endDate);
+    const artifact = await generateExcelReport(data, { startDate, endDate });
 
-    const { exec } = await import('child_process');
-    const { default: path } = await import('path');
-    const { default: fs } = await import('fs');
-    const os = await import('os');
-
-    const tempDir = os.tmpdir();
-    const rand = Math.floor(Math.random() * 1000000);
-    const jsonPath = path.join(tempDir, `analytics_data_${rand}.json`);
-    const xlsxPath = path.join(tempDir, `SCloudMusic_Analytics_${startDate}_${endDate}_${rand}.xlsx`);
-
-    fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf8');
-
-    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const scriptPath = path.join(process.cwd(), 'scripts', 'generate_excel_report.py');
-    const cmd = `${pythonCmd} "${scriptPath}" "${jsonPath}" "${xlsxPath}"`;
-
-    console.log('[Analytics Export] Запуск Python скрипта:', cmd);
-    exec(cmd, (err, stdout, stderr) => {
-      try { fs.unlinkSync(jsonPath); } catch (_) {}
-
-      if (err) {
-        console.error('[Analytics Export] Python error:', stderr || err.message);
-        return res.status(500).send('Ошибка генерации Excel отчета: ' + (stderr || err.message));
+    console.log(`[Analytics Export] XLSX generated (${artifact.size} bytes).`);
+    res.download(
+      artifact.xlsxPath,
+      `SCM_Analytics_${startDate}_${endDate}.xlsx`,
+      async (downloadError) => {
+        await artifact.cleanup().catch(cleanupError => {
+          console.error('[Analytics Export] Cleanup error:', cleanupError.message);
+        });
+        if (downloadError) console.error('[Analytics Export] Download error:', downloadError.message);
       }
-
-      console.log('[Analytics Export] Успешно сгенерировано:', stdout);
-      
-      res.download(xlsxPath, `SCM_Analytics_${startDate}_${endDate}.xlsx`, (downloadErr) => {
-        try { fs.unlinkSync(xlsxPath); } catch (_) {}
-        if (downloadErr) {
-          console.error('[Analytics Export] Download error:', downloadErr);
-        }
-      });
-    });
+    );
   } catch (error) {
-    console.error('[Analytics Export] Error:', error.message);
-    res.status(500).send('Ошибка экспорта: ' + error.message);
+    console.error('[Analytics Export] Error:', error.details || error.message);
+    if (!res.headersSent) res.status(500).send('Ошибка экспорта: ' + (error.details || error.message));
   }
 });
 

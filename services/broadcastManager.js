@@ -166,10 +166,10 @@ function drawProgressBar(current, total) {
  */
 export async function sendAdminReport(bot, taskId, task, isFinal = true) {
   try {
-    const { total, sent } = await getBroadcastProgress(taskId, task.target_audience);
+    const { total, processed, sent, failed, blocked, pending } = await getBroadcastProgress(taskId, task.target_audience);
     
-    const percent = total > 0 ? ((sent / total) * 100).toFixed(1) : '0.0';
-    const progressBar = drawProgressBar(sent, total);
+    const percent = total > 0 ? ((processed / total) * 100).toFixed(1) : '0.0';
+    const progressBar = drawProgressBar(processed, total);
     
     const statusEmoji = isFinal ? '✅' : '⏳';
     const statusText = isFinal ? 'завершена' : 'в процессе';
@@ -179,8 +179,10 @@ export async function sendAdminReport(bot, taskId, task, isFinal = true) {
       `📌 Название: <b>${task.campaign_name || 'Без названия'}</b>\n` +
       `🏷 Тип: <code>${task.broadcast_type || 'marketing'}</code>\n\n` +
       `${progressBar} <b>${percent}%</b>\n\n` +
-      `📦 Отправлено: <b>${sent}</b>\n` +
-      `👥 Всего в снимке: <b>${total}</b>\n` +
+      `📦 Обработано: <b>${processed}</b>\n` +
+      `✅ Доставлено: <b>${sent}</b>\n` +
+      `❌ Ошибки: <b>${failed}</b> · 🚫 Блокировки: <b>${blocked}</b> · ⏳ Ожидают: <b>${pending}</b>\n` +
+      `👥 Targeted (snapshot): <b>${total}</b>\n` +
       `👤 Аудитория: <code>${task.target_audience}</code>`;
     
     await bot.telegram.sendMessage(ADMIN_ID, reportMessage, { parse_mode: 'HTML' });

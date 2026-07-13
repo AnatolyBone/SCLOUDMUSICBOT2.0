@@ -11,15 +11,17 @@ import { SUPPORTED_LANGUAGES } from './config/languages.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-export const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_KEY,
-  {
-    realtime: {
-      transport: ws
-    }
-  }
-);
+export const supabase = (SUPABASE_URL && SUPABASE_KEY)
+  ? createClient(
+      SUPABASE_URL,
+      SUPABASE_KEY,
+      {
+        realtime: {
+          transport: ws
+        }
+      }
+    )
+  : null;
 export const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -27,14 +29,6 @@ export const pool = new Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
   allowExitOnIdle: false
-});
-
-// Автоматическая миграция схемы для campaign_tag и campaign_name
-pool.query('ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS campaign_tag VARCHAR(100) NULL').catch(err => {
-  console.error('[DB Schema] Error adding campaign_tag column:', err.message);
-});
-pool.query('ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS campaign_name VARCHAR(100) NULL').catch(err => {
-  console.error('[DB Schema] Error adding campaign_name column:', err.message);
 });
 
 // --- KARAOKE LRC MAKER SEPARATE CONNECTION POOL & CLIENT ---
@@ -150,13 +144,21 @@ export async function resetDailyLimitIfNeeded(userId) {
 // Админская функция выдачи/продления тарифа
 // mode: 'set' — установить заново от NOW(); 'extend' — прибавить дни к текущей дате (если активна) или от NOW()
 export async function setTariffAdmin(userId, limit, days, { mode = 'set', opType = 'adjustment', performedByType = 'system', performedByUserId = null, comment = null } = {}) {
+  const freeLimitResult = await query(
+    `SELECT COALESCE(
+       (SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'),
+       3
+     )::int AS free_limit`
+  );
+  const freeLimit = Number(freeLimitResult.rows[0]?.free_limit ?? 3);
+
   // Получаем текущие данные пользователя перед обновлением
   const userQuery = await query(
     'SELECT premium_limit, premium_until FROM users WHERE id = $1',
     [userId]
   );
   
-  let prevLimit = 5;
+  let prevLimit = freeLimit;
   let prevPremiumUntil = null;
   
   if (userQuery.rowCount > 0) {
@@ -179,13 +181,15 @@ export async function setTariffAdmin(userId, limit, days, { mode = 'set', opType
   let dbLimit = null;
   if (limit !== null && limit !== undefined && limit !== 'unlim' && limit !== 'unlimited') {
     dbLimit = parseInt(limit, 10);
-    if (isNaN(dbLimit)) dbLimit = 5;
+    if (!Number.isInteger(dbLimit) || dbLimit < 0) {
+      throw new Error('Некорректный дневной лимит тарифа.');
+    }
   }
   
   let sql;
   let params;
   
-  if (dbLimit !== null && dbLimit <= 5) {
+  if (dbLimit !== null && dbLimit <= freeLimit) {
     sql = `
       UPDATE users
       SET premium_limit = $2,
@@ -277,7 +281,10 @@ export async function resetExpiredPremiumIfNeeded(userId) {
     WHERE id = $1
       AND premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+      AND (
+        premium_limit IS NULL
+        OR premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+      )
     RETURNING id
   `;
   try {
@@ -302,7 +309,10 @@ export async function resetExpiredPremiumsBulk() {
       notified_exp_0d = FALSE
     WHERE premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+      AND (
+        premium_limit IS NULL
+        OR premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+      )
   `;
   try {
     const { rowCount } = await query(sql);
@@ -555,7 +565,7 @@ export async function getPaginatedUsers(options) {
     i++;
   }
 
- // 4. ТАРИФЫ (Обновленная логика под 5/30/100/10000)
+ // 4. Тарифы: Free всегда берётся из app_settings, Unlimited хранится как NULL.
   if (tariff) {
     const now = "NOW()"; 
 
@@ -687,7 +697,7 @@ export async function getUsersAsCsv(options = {}) {
 
   // тариф
   if (tariff) {
-    if (tariff === 'Free') whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until < NOW()`);
+    if (tariff === 'Free') whereClauses.push(`(premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until < NOW())`);
     else if (tariff === 'Plus') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30) AND premium_until >= NOW()`);
     else if (tariff === 'Pro') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) AND premium_until >= NOW()`);
     else if (tariff === 'Unlimited') whereClauses.push(`(premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) OR premium_limit IS NULL) AND premium_until >= NOW()`);
@@ -712,7 +722,7 @@ export async function getUsersAsCsv(options = {}) {
     } else if (premium === 'expired') {
       whereClauses.push(`(premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL) AND premium_until IS NOT NULL AND premium_until < NOW()`);
     } else if (premium === 'free') {
-      whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until < NOW()`);
+      whereClauses.push(`(premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until < NOW())`);
     }
   }
 
@@ -1031,7 +1041,15 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
          downloads_count  = COALESCE(downloads_count, 0) + 1,
          yandex_promo_progress = COALESCE(yandex_promo_progress, 0) + 1,
          tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
-     WHERE id = $2 AND (premium_limit IS NULL OR downloads_today < premium_limit)
+     WHERE id = $2
+       AND (
+         (premium_until IS NOT NULL AND premium_until >= NOW() AND premium_limit IS NULL)
+         OR downloads_today < CASE
+           WHEN premium_until IS NOT NULL AND premium_until >= NOW()
+             THEN premium_limit
+           ELSE COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+         END
+       )
      RETURNING *`,
     [newTrack, userId]
   );
@@ -1852,22 +1870,29 @@ export async function logBroadcastSent(broadcastId, userId, status = 'sent', aud
 
 export async function getBroadcastProgress(broadcastId, audience) {
   try {
-    const sentResult = await query(
-      `SELECT COUNT(*) as count FROM broadcast_log WHERE broadcast_id = $1 AND status IN ('sent', 'blocked', 'failed')`, 
+    const result = await query(
+      `SELECT
+         COUNT(*)::int AS targeted,
+         COUNT(*) FILTER (WHERE status = 'sent')::int AS sent,
+         COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+         COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked,
+         COUNT(*) FILTER (WHERE status = 'pending')::int AS pending
+       FROM broadcast_log
+       WHERE broadcast_id = $1`,
       [broadcastId]
     );
-    const sent = parseInt(sentResult.rows[0]?.count || 0, 10);
+    const counts = result.rows[0] || {};
+    const targeted = Number(counts.targeted || 0);
+    const sent = Number(counts.sent || 0);
+    const failed = Number(counts.failed || 0);
+    const blocked = Number(counts.blocked || 0);
+    const pending = Number(counts.pending || 0);
+    const processed = sent + failed + blocked;
 
-    const totalResult = await query(
-      `SELECT COUNT(*) as count FROM broadcast_log WHERE broadcast_id = $1`,
-      [broadcastId]
-    );
-    const total = parseInt(totalResult.rows[0]?.count || 0, 10);
-
-    return { total, sent };
+    return { total: targeted, targeted, processed, sent, failed, blocked, pending };
   } catch (err) {
     console.error('[DB] Ошибка в getBroadcastProgress:', err);
-    return { total: 0, sent: 0 };
+    throw err;
   }
 }
 
@@ -1904,15 +1929,19 @@ export async function findAndInterruptActiveBroadcast() {
   }
 }
 
-export async function getAllBroadcastTasks() {
+export async function getAllBroadcastTasks({ limit = null } = {}) {
+  const safeLimit = limit == null ? null : Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 5));
   const { rows } = await query(`
     SELECT 
       t.*, 
-      
-      -- Подсчёт уже отправленных сообщений (попыток отправки)
-      (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id AND status IN ('sent', 'blocked', 'failed'))::int AS sent_count,
-      
-      -- Подсчёт всей целевой аудитории (только активные и подписанные на рассылки)
+      COALESCE(log_counts.targeted_count, 0)::int AS targeted_count,
+      COALESCE(log_counts.sent_count, 0)::int AS sent_count,
+      COALESCE(log_counts.failed_count, 0)::int AS failed_count,
+      COALESCE(log_counts.blocked_count, 0)::int AS blocked_count,
+      COALESCE(log_counts.pending_count, 0)::int AS pending_count,
+      COALESCE(log_counts.processed_count, 0)::int AS processed_count,
+
+      -- Оценка до создания snapshot; после старта источником targeted является broadcast_log.
       (
         SELECT COUNT(*) 
         FROM users u 
@@ -1923,11 +1952,23 @@ export async function getAllBroadcastTasks() {
             (t.target_audience = 'free_users' AND (u.premium_until IS NULL OR u.premium_until < NOW() OR (u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND u.premium_limit IS NOT NULL))) OR
             (t.target_audience = 'premium_users' AND (u.premium_until IS NOT NULL AND u.premium_until >= NOW() AND (u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR u.premium_limit IS NULL)))
           )
-      )::int AS total_count
-      
+      )::int AS estimated_count
+
     FROM broadcast_tasks t
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*)::int AS targeted_count,
+        COUNT(*) FILTER (WHERE status = 'sent')::int AS sent_count,
+        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count,
+        COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_count,
+        COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+        COUNT(*) FILTER (WHERE status IN ('sent', 'failed', 'blocked'))::int AS processed_count
+      FROM broadcast_log l
+      WHERE l.broadcast_id = t.id
+    ) log_counts ON TRUE
     ORDER BY t.scheduled_at DESC
-  `);
+    ${safeLimit == null ? '' : 'LIMIT $1'}
+  `, safeLimit == null ? [] : [safeLimit]);
   
   // Парсим JSON-поле report (если оно есть)
   return rows.map(row => {
@@ -2218,7 +2259,15 @@ export async function incrementDownloadsAndLogPg(userId, trackTitle, fileId, url
            downloads_count  = COALESCE(downloads_count, 0) + 1,
            yandex_promo_progress = COALESCE(yandex_promo_progress, 0) + 1,
            tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
-       WHERE id = $2 AND (premium_limit IS NULL OR downloads_today < premium_limit)
+       WHERE id = $2
+         AND (
+           (premium_until IS NOT NULL AND premium_until >= NOW() AND premium_limit IS NULL)
+           OR downloads_today < CASE
+             WHEN premium_until IS NOT NULL AND premium_until >= NOW()
+               THEN premium_limit
+             ELSE COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+           END
+         )
        RETURNING id`,
       [newTrack, userId]
     );
@@ -2773,6 +2822,7 @@ export async function runAnalyticsSystemMigration() {
     console.log('✅ [DB] Автоматическая миграция аналитики и платежей Stars выполнена успешно.');
   } catch (err) {
     console.error('❌ [DB] Ошибка автоматической миграции аналитики и платежей Stars:', err.message);
+    throw err;
   }
 }
 
@@ -2784,17 +2834,19 @@ export async function runMultilangSystemMigration() {
     console.log('✅ [DB] Автоматическая миграция мультиязычности и рассылок (007) выполнена успешно.');
   } catch (err) {
     console.error('❌ [DB] Ошибка автоматической миграции мультиязычности и рассылок (007):', err.message);
+    throw err;
   }
 }
 
 export async function runPreflightFixesMigration() {
   try {
-    const migrationPath = path.join(__dirname, 'migrations', '008_analytics_preflight_fixes.sql');
+    const migrationPath = path.join(__dirname, 'migrations', '009_schema_contract_reconciliation.sql');
     const sql = fs.readFileSync(migrationPath, 'utf8');
     await query(sql);
-    console.log('✅ [DB] Автоматическая миграция исправлений (008) выполнена успешно.');
+    console.log('✅ [DB] Сверочная миграция контракта схемы (009) выполнена успешно.');
   } catch (err) {
-    console.error('❌ [DB] Ошибка автоматической миграции исправлений (008):', err.message);
+    console.error('❌ [DB] Ошибка сверочной миграции контракта схемы (009):', err.message);
+    throw err;
   }
 }
 
@@ -3426,14 +3478,13 @@ export async function getBroadcastTaskStats(broadcastId) {
 
   // 5. Оплаты (Payments) в течение 24 часов
   const paymentRes = await query(
-    `SELECT COUNT(DISTINCT o.user_id)::int AS count
-     FROM payment_orders o
-     JOIN broadcast_log l ON o.user_id = l.user_id
+    `SELECT COUNT(DISTINCT p.user_id)::int AS count
+     FROM payments p
+     JOIN broadcast_log l ON p.user_id = l.user_id
      WHERE l.broadcast_id = $1 
        AND l.status = 'sent'
-       AND o.status = 'success'
-       AND o.updated_at >= l.sent_at 
-       AND o.updated_at <= l.sent_at + INTERVAL '24 hours'`,
+       AND p.payment_status = 'completed'
+       AND p.paid_at BETWEEN l.sent_at AND l.sent_at + INTERVAL '24 hours'`,
     [broadcastId]
   );
   const paymentsAfterSent = paymentRes.rows[0]?.count || 0;
@@ -3782,34 +3833,35 @@ export async function getCohortRetentionData() {
         DATE_TRUNC('month', created_at)::date AS cohort_month
       FROM users
     ),
-    cohort_sizes AS (
-      SELECT 
-        cohort_month,
-        COUNT(*)::int AS cohort_size
-      FROM cohorts
-      GROUP BY cohort_month
-    ),
     retention AS (
       SELECT 
         c.cohort_month,
+        COUNT(DISTINCT c.user_id)::int AS cohort_size,
+        COUNT(DISTINCT CASE WHEN CURRENT_DATE >= c.reg_date + 1 THEN c.user_id END)::int AS day_1_eligible,
+        COUNT(DISTINCT CASE WHEN CURRENT_DATE >= c.reg_date + 7 THEN c.user_id END)::int AS day_7_eligible,
+        COUNT(DISTINCT CASE WHEN CURRENT_DATE >= c.reg_date + 30 THEN c.user_id END)::int AS day_30_eligible,
+        COUNT(DISTINCT CASE WHEN CURRENT_DATE >= c.reg_date + 90 THEN c.user_id END)::int AS day_90_eligible,
         COUNT(DISTINCT CASE WHEN aud.day = c.reg_date + 1 THEN c.user_id END)::int AS day_1_active,
-        COUNT(DISTINCT CASE WHEN aud.day BETWEEN c.reg_date + 6 AND c.reg_date + 8 THEN c.user_id END)::int AS day_7_active,
-        COUNT(DISTINCT CASE WHEN aud.day BETWEEN c.reg_date + 28 AND c.reg_date + 32 THEN c.user_id END)::int AS day_30_active,
-        COUNT(DISTINCT CASE WHEN aud.day BETWEEN c.reg_date + 85 AND c.reg_date + 95 THEN c.user_id END)::int AS day_90_active
+        COUNT(DISTINCT CASE WHEN aud.day = c.reg_date + 7 THEN c.user_id END)::int AS day_7_active,
+        COUNT(DISTINCT CASE WHEN aud.day = c.reg_date + 30 THEN c.user_id END)::int AS day_30_active,
+        COUNT(DISTINCT CASE WHEN aud.day = c.reg_date + 90 THEN c.user_id END)::int AS day_90_active
       FROM cohorts c
       LEFT JOIN analytics_user_daily aud ON aud.user_id = c.user_id
       GROUP BY c.cohort_month
     )
     SELECT 
-      TO_CHAR(cs.cohort_month, 'YYYY-MM') AS cohort,
-      cs.cohort_size AS size,
+      TO_CHAR(r.cohort_month, 'YYYY-MM') AS cohort,
+      r.cohort_size AS size,
+      r.day_1_eligible,
+      r.day_7_eligible,
+      r.day_30_eligible,
+      r.day_90_eligible,
       r.day_1_active,
       r.day_7_active,
       r.day_30_active,
       r.day_90_active
-    FROM cohort_sizes cs
-    JOIN retention r ON r.cohort_month = cs.cohort_month
-    ORDER BY cs.cohort_month DESC
+    FROM retention r
+    ORDER BY r.cohort_month DESC
     LIMIT 12
   `;
   const { rows } = await query(sql);
@@ -3817,8 +3869,13 @@ export async function getCohortRetentionData() {
 }
 
 export async function getRevenueDashboardData(startDate, endDate) {
-  const { getSetting } = await import('./services/settingsManager.js');
-  const rate = parseFloat(getSetting('xtr_rub_rate') || '2.00');
+  const rateResult = await query(
+    `SELECT COALESCE(
+       (SELECT value::numeric FROM app_settings WHERE key = 'xtr_rub_rate'),
+       2.00
+     )::float8 AS rate`
+  );
+  const rate = Number(rateResult.rows[0]?.rate ?? 2);
 
   const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
   const mskStart = `${startDate}T00:00:00+03:00`;
@@ -4033,62 +4090,81 @@ export async function getAIRecommendationsData() {
   };
 }
 
-export async function checkSchemaPreflight() {
-  console.log('[Schema Check] Запуск preflight проверки...');
-  const expectedSchema = {
-    users: ['id', 'username', 'first_name', 'lang', 'downloads_today', 'premium_limit', 'premium_until', 'created_at', 'last_active'],
-    payments: ['id', 'user_id', 'plan', 'amount_minor', 'currency', 'payment_method', 'payment_status', 'paid_at'],
-    broadcast_tasks: ['id', 'message', 'file_id', 'target_audience', 'disable_notification', 'scheduled_at', 'status', 'report', 'created_at', 'completed_at', 'keyboard', 'disable_web_page_preview', 'file_mime_type', 'started_at', 'target_languages', 'unknown_language_policy', 'messages_json', 'language_source_filter', 'message_version', 'broadcast_type', 'campaign_tag', 'campaign_name', 'fallback_language'],
-    broadcast_log: ['id', 'broadcast_id', 'user_id', 'sent_at', 'audience_language_segment', 'delivered_language', 'status'],
-    broadcast_clicks: ['id', 'campaign_id', 'user_id', 'button_index', 'clicked_at'],
-    analytics_events: ['id', 'user_id', 'event_name', 'event_category', 'event_data', 'created_at'],
-    analytics_daily: ['day', 'dau', 'wau', 'mau', 'registrations', 'downloads_total', 'limits_reached', 'revenue_rub_minor', 'revenue_xtr'],
-    analytics_user_daily: ['day', 'user_id', 'downloads_count', 'searches_count', 'limits_reached_count'],
-    app_settings: ['key', 'value']
+export const REQUIRED_SCHEMA = Object.freeze({
+  broadcast_tasks: ['id', 'message', 'file_id', 'target_audience', 'disable_notification', 'scheduled_at', 'status', 'report', 'created_at', 'completed_at', 'keyboard', 'disable_web_page_preview', 'file_mime_type', 'started_at', 'target_languages', 'unknown_language_policy', 'messages_json', 'language_source_filter', 'message_version', 'broadcast_type', 'campaign_tag', 'campaign_name', 'fallback_language'],
+  broadcast_log: ['id', 'broadcast_id', 'user_id', 'sent_at', 'audience_language_segment', 'delivered_language', 'status'],
+  broadcast_clicks: ['id', 'campaign_id', 'user_id', 'button_index', 'clicked_at', 'user_agent', 'language_code'],
+  language_history: ['id', 'user_id', 'previous_language', 'new_language', 'previous_source', 'new_source', 'changed_by_type', 'changed_by_user_id', 'created_at'],
+  analytics_events: ['id', 'user_id', 'event_name', 'event_category', 'event_data', 'session_id', 'event_origin', 'acquisition_source', 'event_source', 'placement', 'campaign_id', 'language_code', 'deduplication_key', 'created_at'],
+  analytics_daily: ['day', 'dau', 'wau', 'mau', 'registrations', 'downloads_total', 'downloads_from_cache', 'downloads_new', 'limits_reached', 'tariffs_shown', 'tariffs_clicked', 'payments_started', 'payments_completed', 'revenue_rub_minor', 'revenue_xtr', 'updated_at', 'aggregation_version'],
+  analytics_user_daily: ['day', 'user_id', 'downloads_count', 'searches_count', 'limits_reached_count', 'primary_source'],
+  payments: ['id', 'user_id', 'plan', 'amount_minor', 'currency', 'payment_method', 'payment_status', 'telegram_payment_charge_id', 'provider_payment_charge_id', 'invoice_payload', 'is_recurring', 'is_first_recurring', 'subscription_expiration_date', 'period_days', 'comment', 'metadata', 'created_at', 'paid_at'],
+  users: ['id', 'username', 'first_name', 'active', 'can_receive_broadcasts', 'downloads_today', 'total_downloads', 'tracks_today', 'premium_limit', 'premium_until', 'created_at', 'last_active', 'last_reset_date', 'lang', 'telegram_language_code', 'language_code', 'language_source', 'language_updated_at', 'notified_about_expiration', 'notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d'],
+  app_settings: ['key', 'value']
+});
+
+export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
+  const tableNames = Object.keys(REQUIRED_SCHEMA);
+  const requiredColumnCount = Object.values(REQUIRED_SCHEMA).reduce((sum, columns) => sum + columns.length, 0);
+
+  console.log('[Schema Check] Running schema contract preflight...');
+  const res = await query(
+    `SELECT table_name, column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = ANY($1::text[])`,
+    [tableNames]
+  );
+
+  const actualSchema = new Map();
+  for (const row of res.rows) {
+    if (!actualSchema.has(row.table_name)) actualSchema.set(row.table_name, new Set());
+    actualSchema.get(row.table_name).add(row.column_name);
+  }
+
+  const missingTables = [];
+  const missingColumns = [];
+  for (const [table, columns] of Object.entries(REQUIRED_SCHEMA)) {
+    const actualColumns = actualSchema.get(table);
+    if (!actualColumns) missingTables.push(table);
+    for (const column of columns) {
+      if (!actualColumns?.has(column)) missingColumns.push(`${table}.${column}`);
+    }
+  }
+
+  const report = {
+    ok: missingTables.length === 0 && missingColumns.length === 0,
+    summary: {
+      requiredTables: tableNames.length,
+      requiredColumns: requiredColumnCount,
+      missingTables: missingTables.length,
+      missingColumns: missingColumns.length
+    },
+    missing: {
+      tables: missingTables.sort(),
+      columns: missingColumns.sort()
+    }
   };
 
-  try {
-    const res = await query(`
-      SELECT table_name, column_name 
-      FROM information_schema.columns 
-      WHERE table_schema = 'public' 
-        AND table_name IN (${Object.keys(expectedSchema).map(t => `'${t}'`).join(', ')})
-    `);
-    
-    // Group columns by table
-    const actualSchema = {};
-    for (const row of res.rows) {
-      const table = row.table_name;
-      if (!actualSchema[table]) actualSchema[table] = new Set();
-      actualSchema[table].add(row.column_name);
-    }
-    
-    const missing = [];
-    
-    for (const [table, columns] of Object.entries(expectedSchema)) {
-      if (!actualSchema[table]) {
-        missing.push(`Table public.${table} is MISSING entirely.`);
-        continue;
-      }
-      for (const col of columns) {
-        if (!actualSchema[table].has(col)) {
-          missing.push(`Column public.${table}.${col} is MISSING.`);
-        }
-      }
-    }
-    
-    if (missing.length > 0) {
-      console.warn('\n⚠️ [Schema Check] ❌ ОБНАРУЖЕНЫ ОТСУТСТВУЮЩИЕ ТАБЛИЦЫ ИЛИ КОЛОНКИ:');
-      for (const item of missing) {
-        console.warn(`  - ${item}`);
-      }
-      console.warn('⚠️ [Schema Check] Пожалуйста, примените миграции (006, 007, 008) или обновите БД!\n');
-    } else {
-      console.log('✅ [Schema Check] Все обязательные таблицы и колонки аналитики присутствуют в БД.');
-    }
-  } catch (err) {
-    console.error('❌ [Schema Check] Ошибка во время preflight проверки:', err.message);
+  if (report.ok) {
+    console.log(`[Schema Check] OK: ${tableNames.length} tables, ${requiredColumnCount} required columns`);
+    return report;
   }
+
+  console.error('[Schema Check] Missing:');
+  for (const table of report.missing.tables) console.error(`- ${table}`);
+  for (const column of report.missing.columns) console.error(`- ${column}`);
+
+  if (throwOnMissing) {
+    const error = new Error(
+      `Database schema is incompatible: ${missingTables.length} tables and ${missingColumns.length} required columns are missing.`
+    );
+    error.code = 'SCHEMA_CONTRACT_MISMATCH';
+    error.schemaReport = report;
+    throw error;
+  }
+
+  return report;
 }
 
 

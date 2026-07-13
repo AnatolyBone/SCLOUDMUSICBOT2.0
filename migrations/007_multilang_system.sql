@@ -1,5 +1,34 @@
 -- migrations/007_multilang_system.sql
 
+-- Базовые таблицы рассылок могли быть созданы до появления каталога миграций.
+-- Определяем их здесь, чтобы чистая установка имела тот же контракт.
+CREATE TABLE IF NOT EXISTS public.broadcast_tasks (
+    id BIGSERIAL PRIMARY KEY,
+    message TEXT,
+    file_id TEXT,
+    target_audience VARCHAR(50) NOT NULL DEFAULT 'all',
+    disable_notification BOOLEAN NOT NULL DEFAULT FALSE,
+    scheduled_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    status VARCHAR(30) NOT NULL DEFAULT 'pending',
+    report JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP WITH TIME ZONE,
+    keyboard JSONB,
+    disable_web_page_preview BOOLEAN NOT NULL DEFAULT FALSE,
+    file_mime_type VARCHAR(150),
+    started_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE TABLE IF NOT EXISTS public.broadcast_log (
+    id BIGSERIAL PRIMARY KEY,
+    broadcast_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    sent_at TIMESTAMP WITH TIME ZONE,
+    audience_language_segment VARCHAR(10),
+    delivered_language VARCHAR(10),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending'
+);
+
 -- 1. Таблица кликов по рассылкам
 CREATE TABLE IF NOT EXISTS public.broadcast_clicks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -43,10 +72,20 @@ WHERE language_source IS NULL OR language_source = 'default';
 -- 4. Внешние ключи и индексы для таблицы кликов и лога
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'fk_broadcast_clicks_campaign') THEN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_schema = 'public'
+          AND table_name = 'broadcast_clicks'
+          AND constraint_name = 'fk_broadcast_clicks_campaign'
+    ) THEN
         ALTER TABLE public.broadcast_clicks ADD CONSTRAINT fk_broadcast_clicks_campaign FOREIGN KEY (campaign_id) REFERENCES public.broadcast_tasks(id) ON DELETE CASCADE;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'fk_broadcast_clicks_user') THEN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_schema = 'public'
+          AND table_name = 'broadcast_clicks'
+          AND constraint_name = 'fk_broadcast_clicks_user'
+    ) THEN
         ALTER TABLE public.broadcast_clicks ADD CONSTRAINT fk_broadcast_clicks_user FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
     END IF;
 END $$;

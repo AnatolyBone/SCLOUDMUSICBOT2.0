@@ -1,18 +1,5 @@
 -- migrations/006_analytics_system.sql
 
--- 0. Очистка пустой некорректной таблицы payments, если она существовала ранее
-DO $$
-DECLARE
-    v_count INTEGER;
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'payments') THEN
-        EXECUTE 'SELECT COUNT(*)::int FROM public.payments' INTO v_count;
-        IF v_count = 0 THEN
-            DROP TABLE public.payments CASCADE;
-        END IF;
-    END IF;
-END $$;
-
 -- 1. Создание таблицы предварительных заказов платежей
 CREATE TABLE IF NOT EXISTS public.payment_orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -523,12 +510,16 @@ BEGIN
         ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS is_first_recurring BOOLEAN DEFAULT FALSE;
         ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS subscription_expiration_date TIMESTAMP WITH TIME ZONE;
         
-        -- Попытка добавить unique constraint на telegram_payment_charge_id, если его нет
-        BEGIN
-            ALTER TABLE public.payments ADD CONSTRAINT uq_telegram_payment_charge_id UNIQUE (telegram_payment_charge_id);
-        EXCEPTION
-            WHEN duplicate_table OR duplicate_object THEN
-                -- Игнорируем, если ограничение уже существует
-        END;
+        -- Constraint проверяется в рамках конкретной schema/table.
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.table_constraints
+            WHERE table_schema = 'public'
+              AND table_name = 'payments'
+              AND constraint_name = 'uq_telegram_payment_charge_id'
+        ) THEN
+            ALTER TABLE public.payments
+                ADD CONSTRAINT uq_telegram_payment_charge_id UNIQUE (telegram_payment_charge_id);
+        END IF;
     END IF;
 END $$;

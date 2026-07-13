@@ -439,7 +439,7 @@
       <div class="col-md-4">
         <div class="card shadow-sm border-0 border-start border-primary border-4 h-100">
           <div class="card-body">
-            <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">MRR (Выручка за последние 30 дней)</div>
+            <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Выручка за последние 30 дней</div>
             <div class="h4 mb-0 font-weight-bold text-gray-800" id="rev-mrr-val">—</div>
             <div class="text-muted text-xs mt-1">Всех успешных транзакций</div>
           </div>
@@ -795,14 +795,15 @@
         }
         
         res.data.forEach(c => {
-          const pct = (active, size) => size > 0 ? (active / size * 100).toFixed(1) : '0.0';
+          const pct = (active, eligible) => eligible > 0 ? Number((active / eligible * 100).toFixed(1)) : null;
           
-          const p1 = parseFloat(pct(c.day_1_active, c.size));
-          const p7 = parseFloat(pct(c.day_7_active, c.size));
-          const p30 = parseFloat(pct(c.day_30_active, c.size));
-          const p90 = parseFloat(pct(c.day_90_active, c.size));
+          const p1 = pct(c.day_1_active, c.day_1_eligible);
+          const p7 = pct(c.day_7_active, c.day_7_eligible);
+          const p30 = pct(c.day_30_active, c.day_30_eligible);
+          const p90 = pct(c.day_90_active, c.day_90_eligible);
           
           const getHeatColorStyle = (val) => {
+            if (val === null) return 'background-color: #f8f9fa; color: #adb5bd;';
             if (val === 0) return 'background-color: #f8f9fa; color: #6c757d;';
             if (val < 10) return 'background-color: rgba(13, 110, 253, 0.1); color: #0f3d7a; font-weight: 500;';
             if (val < 20) return 'background-color: rgba(13, 110, 253, 0.3); color: #0d468e; font-weight: 500;';
@@ -815,10 +816,10 @@
             <tr>
               <td class="fw-bold text-gray-800">${c.cohort}</td>
               <td class="fw-bold font-monospace bg-light">${c.size.toLocaleString('ru-RU')}</td>
-              <td style="${getHeatColorStyle(p1)}">${p1}%</td>
-              <td style="${getHeatColorStyle(p7)}">${p7}%</td>
-              <td style="${getHeatColorStyle(p30)}">${p30}%</td>
-              <td style="${getHeatColorStyle(p90)}">${p90}%</td>
+              <td style="${getHeatColorStyle(p1)}">${p1 === null ? '—' : `${p1}%`}</td>
+              <td style="${getHeatColorStyle(p7)}">${p7 === null ? '—' : `${p7}%`}</td>
+              <td style="${getHeatColorStyle(p30)}">${p30 === null ? '—' : `${p30}%`}</td>
+              <td style="${getHeatColorStyle(p90)}">${p90 === null ? '—' : `${p90}%`}</td>
             </tr>
           `;
         });

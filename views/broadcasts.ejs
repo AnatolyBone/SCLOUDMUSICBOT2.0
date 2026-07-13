@@ -183,9 +183,11 @@
           };
           const audience = audienceMap[task.target_audience] || (task.target_audience ? task.target_audience.replace('_', ' ') : '');
           
-          const sent = task.sent_count || 0;
-          const total = task.total_count || 0;
-          const progress = total > 0 ? Math.round((sent / total) * 100) : 0;
+          const processed = task.processed_count || 0;
+          const targeted = task.targeted_count || 0;
+          const estimated = task.estimated_count || 0;
+          const total = targeted > 0 ? targeted : estimated;
+          const progress = total > 0 ? Math.round((processed / total) * 100) : 0;
         %>
           <tr data-id="<%= task.id %>"
               data-status="<%= task.status %>"
