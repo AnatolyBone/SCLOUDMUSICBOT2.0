@@ -3560,7 +3560,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   // 5. Campaigns (Рассылки)
   const campaignsRes = await query(
     `SELECT 
-       t.id,
+       t.id::int AS id,
        t.campaign_name AS name,
        t.campaign_tag AS tag,
        t.scheduled_at::date::text AS date,
