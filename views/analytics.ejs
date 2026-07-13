@@ -106,85 +106,218 @@
   </div>
 </div>
 
-<%# Summary Cards %>
-<div class="row g-3 mb-4">
-  <div class="col-md-3">
-    <div class="card shadow-sm border-0 border-start border-primary border-4 h-100">
-      <div class="card-body">
-        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Средний DAU</div>
-        <div class="h5 mb-0 font-weight-bold text-gray-800"><%= avgDau %></div>
+<!-- AI Growth Assistant Recommendations Alert Box -->
+<% if (typeof growthData !== 'undefined' && growthData && growthData.recommendations && growthData.recommendations.length > 0) { %>
+  <div class="card shadow-sm border-0 border-start border-4 border-warning mb-4 bg-light">
+    <div class="card-body py-3">
+      <div class="d-flex align-items-center mb-2">
+        <i class="bi bi-cpu text-warning fs-4 me-2"></i>
+        <h5 class="card-title h6 fw-bold mb-0 text-gray-800">Growth Assistant (Аналитические рекомендации)</h5>
+      </div>
+      <div class="d-flex flex-column gap-2 small">
+        <% growthData.recommendations.forEach(rec => { %>
+          <div class="p-2 bg-white rounded border-start border-3 <%= rec.type === 'warning' ? 'border-danger' : (rec.type === 'success' ? 'border-success' : 'border-info') %>">
+            <div class="fw-semibold text-gray-800 mb-1">
+              <% if (rec.type === 'warning') { %>
+                <span class="text-danger">⚠️ <%= rec.title %></span>
+              <% } else if (rec.type === 'success') { %>
+                <span class="text-success">✅ <%= rec.title %></span>
+              <% } else { %>
+                <span class="text-info">💡 <%= rec.title %></span>
+              <% } %>
+            </div>
+            <div class="text-muted"><%= rec.text %></div>
+          </div>
+        <% }) %>
       </div>
     </div>
   </div>
-  <div class="col-md-3">
-    <div class="card shadow-sm border-0 border-start border-success border-4 h-100">
-      <div class="card-body">
-        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Выручка RUB (СБП/Т-Банк)</div>
-        <div class="h5 mb-0 font-weight-bold text-gray-800"><%= (totalRevRub / 100).toFixed(2) %> ₽</div>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card shadow-sm border-0 border-start border-warning border-4 h-100">
-      <div class="card-body">
-        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Выручка XTR (Stars)</div>
-        <div class="h5 mb-0 font-weight-bold text-gray-800">⭐️ <%= totalRevXtr %> Stars</div>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card shadow-sm border-0 border-start border-info border-4 h-100">
-      <div class="card-body">
-        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Всего скачиваний</div>
-        <div class="h5 mb-0 font-weight-bold text-gray-800"><%= totalDownloads %></div>
-      </div>
-    </div>
-  </div>
-</div>
+<% } %>
 
-<%# Charts Section %>
-<div class="row g-4 mb-4">
-  <div class="col-lg-8">
-    <div class="card shadow-sm h-100">
-      <div class="card-header bg-white fw-bold"><i class="bi bi-activity me-2 text-primary"></i>Динамика активности (DAU / WAU / MAU)</div>
-      <div class="card-body">
-        <canvas id="activeUsersChart" height="280"></canvas>
-      </div>
-    </div>
-  </div>
-  <div class="col-lg-4">
-    <div class="card shadow-sm h-100">
-      <div class="card-header bg-white fw-bold"><i class="bi bi-funnel-fill me-2 text-warning"></i>Воронка продаж тарифов</div>
-      <div class="card-body">
-        <canvas id="funnelChart" height="280"></canvas>
-      </div>
-    </div>
-  </div>
-</div>
+<!-- Вкладки управления (Tabs) -->
+<ul class="nav nav-pills mb-4 gap-2 bg-light p-2 rounded shadow-sm border" id="analyticsTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active py-2 px-3 fw-bold" id="dashboard-tab" data-bs-toggle="tab" data-bs-target="#dashboard-pane" type="button" role="tab" aria-controls="dashboard-pane" aria-selected="true">
+      <i class="bi bi-speedometer2 me-1"></i> Активность
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link py-2 px-3 fw-bold" id="compare-tab" data-bs-toggle="tab" data-bs-target="#compare-pane" type="button" role="tab" aria-controls="compare-pane" aria-selected="false">
+      <i class="bi bi-arrow-left-right me-1"></i> Сравнение периодов
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link py-2 px-3 fw-bold" id="cohorts-tab" data-bs-toggle="tab" data-bs-target="#cohorts-pane" type="button" role="tab" aria-controls="cohorts-pane" aria-selected="false">
+      <i class="bi bi-grid-3x3-gap me-1"></i> Когортный анализ
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link py-2 px-3 fw-bold" id="revenue-tab" data-bs-toggle="tab" data-bs-target="#revenue-pane" type="button" role="tab" aria-controls="revenue-pane" aria-selected="false">
+      <i class="bi bi-cash-coin me-1"></i> Мониторинг денег
+    </button>
+  </li>
+</ul>
 
-<%# Cohort Limit Analysis %>
-<div class="card shadow-sm mb-4">
-  <div class="card-header bg-white fw-bold text-primary"><i class="bi bi-bar-chart-steps me-2"></i>Глубокий анализ лимита Free</div>
-  <div class="card-body">
-    <div class="row g-4">
-      <div class="col-md-6 border-end">
-        <h5 class="card-title h6 fw-semibold mb-3">Распределение скачиваний пользователей (за период)</h5>
+<div class="tab-content" id="analyticsTabsContent">
+  <!-- Вкладка 1: Дашборд активности -->
+  <div class="tab-pane fade show active" id="dashboard-pane" role="tabpanel" aria-labelledby="dashboard-tab">
+    
+    <%# Summary Cards %>
+    <div class="row g-3 mb-4">
+      <div class="col-md-3">
+        <div class="card shadow-sm border-0 border-start border-primary border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Средний DAU</div>
+            <div class="h5 mb-0 font-weight-bold text-gray-800"><%= avgDau %></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card shadow-sm border-0 border-start border-success border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Выручка RUB (СБП/Т-Банк)</div>
+            <div class="h5 mb-0 font-weight-bold text-gray-800"><%= (totalRevRub / 100).toFixed(2) %> ₽</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card shadow-sm border-0 border-start border-warning border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Выручка XTR (Stars)</div>
+            <div class="h5 mb-0 font-weight-bold text-gray-800">⭐️ <%= totalRevXtr %> Stars</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card shadow-sm border-0 border-start border-info border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Всего скачиваний</div>
+            <div class="h5 mb-0 font-weight-bold text-gray-800"><%= totalDownloads %></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <%# Charts Section %>
+    <div class="row g-4 mb-4">
+      <div class="col-lg-8">
+        <div class="card shadow-sm h-100">
+          <div class="card-header bg-white fw-bold"><i class="bi bi-activity me-2 text-primary"></i>Динамика активности (DAU / WAU / MAU)</div>
+          <div class="card-body">
+            <canvas id="activeUsersChart" height="280"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4">
+        <div class="card shadow-sm h-100">
+          <div class="card-header bg-white fw-bold"><i class="bi bi-funnel-fill me-2 text-warning"></i>Воронка продаж тарифов</div>
+          <div class="card-body">
+            <canvas id="funnelChart" height="280"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <%# Cohort Limit Analysis %>
+    <div class="card shadow-sm mb-4">
+      <div class="card-header bg-white fw-bold text-primary"><i class="bi bi-bar-chart-steps me-2"></i>Глубокий анализ лимита Free</div>
+      <div class="card-body">
+        <div class="row g-4">
+          <div class="col-md-6 border-end">
+            <h5 class="card-title h6 fw-semibold mb-3">Распределение скачиваний пользователей (за период)</h5>
+            <div class="table-responsive">
+              <table class="table table-sm table-hover align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th>Кол-во треков в день</th>
+                    <th class="text-end">Пользователей</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (limitDistribution.length === 0) { %>
+                    <tr><td colspan="2" class="text-center text-muted">Нет данных</td></tr>
+                  <% } else { %>
+                    <% limitDistribution.forEach(row => { %>
+                      <tr>
+                        <td><%= row.downloads_count %> трек(ов)</td>
+                        <td class="text-end fw-bold text-primary"><%= row.users_count %></td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
+          <div class="col-md-6">
+            <h5 class="card-title h6 fw-semibold mb-3">Конверсия и отток после лимита (за период)</h5>
+            <ul class="list-group list-group-flush">
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Достигли лимита (Free / Plus / Pro):</span>
+                <span class="badge bg-danger rounded-pill"><%= reachedLimit %></span>
+              </li>
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Пытались скачать сверх лимита (6-й+ трек):</span>
+                <span class="badge bg-warning text-dark rounded-pill"><%= attemptedOverLimit %></span>
+              </li>
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Открыли меню тарифов после лимита:</span>
+                <span class="badge bg-info rounded-pill"><%= openedOffersAfterLimit %></span>
+              </li>
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Оплатили тариф после лимита:</span>
+                <span class="badge bg-success rounded-pill"><%= paidAfterLimit %></span>
+              </li>
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Вернулись на следующий день после лимита:</span>
+                <span class="badge bg-primary rounded-pill"><%= returnedNextDay %></span>
+              </li>
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Прекратили активность (Churmed) после лимита:</span>
+                <span class="badge bg-secondary rounded-pill"><%= churnedAfterLimit %></span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <%# Historical Data Table %>
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-bold"><i class="bi bi-table me-2 text-secondary"></i>Детальная статистика по дням</div>
+      <div class="card-body p-0">
         <div class="table-responsive">
-          <table class="table table-sm table-hover align-middle">
-            <thead class="table-light">
+          <table class="table table-hover table-striped align-middle mb-0">
+            <thead class="table-dark">
               <tr>
-                <th>Кол-во треков в день</th>
-                <th class="text-end">Пользователей</th>
+                <th>Дата</th>
+                <th class="text-center">DAU</th>
+                <th class="text-center">WAU</th>
+                <th class="text-center">MAU</th>
+                <th class="text-center">Регистрации</th>
+                <th class="text-center">Скачиваний</th>
+                <th class="text-center">Кэш / Новые</th>
+                <th class="text-center">Лимиты</th>
+                <th class="text-end">Выручка RUB</th>
+                <th class="text-end">Выручка Stars</th>
               </tr>
             </thead>
             <tbody>
-              <% if (limitDistribution.length === 0) { %>
-                <tr><td colspan="2" class="text-center text-muted">Нет данных</td></tr>
+              <% if (dailyRows.length === 0) { %>
+                <tr><td colspan="10" class="text-center py-4 text-muted">Нет данных для отображения</td></tr>
               <% } else { %>
-                <% limitDistribution.forEach(row => { %>
+                <% dailyRows.forEach(row => { %>
                   <tr>
-                    <td><%= row.downloads_count %> трек(ов)</td>
-                    <td class="text-end fw-bold text-primary"><%= row.users_count %></td>
+                    <td class="fw-semibold"><%= new Date(row.day).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) %></td>
+                    <td class="text-center"><%= row.dau %></td>
+                    <td class="text-center text-muted"><%= row.wau %></td>
+                    <td class="text-center text-muted"><%= row.mau %></td>
+                    <td class="text-center text-success fw-bold">+<%= row.registrations %></td>
+                    <td class="text-center fw-bold"><%= row.downloads_total %></td>
+                    <td class="text-center text-muted"><%= row.downloads_from_cache %> / <%= row.downloads_new %></td>
+                    <td class="text-center text-danger"><%= row.limits_reached %></td>
+                    <td class="text-end text-success"><%= (row.revenue_rub_minor / 100).toFixed(2) %> ₽</td>
+                    <td class="text-end text-warning">⭐️ <%= row.revenue_xtr %></td>
                   </tr>
                 <% }) %>
               <% } %>
@@ -192,82 +325,169 @@
           </table>
         </div>
       </div>
-      
-      <div class="col-md-6">
-        <h5 class="card-title h6 fw-semibold mb-3">Конверсия и отток после лимита (за период)</h5>
-        <ul class="list-group list-group-flush">
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>Достигли лимита (Free / Plus / Pro):</span>
-            <span class="badge bg-danger rounded-pill"><%= reachedLimit %></span>
-          </li>
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>Пытались скачать сверх лимита (6-й+ трек):</span>
-            <span class="badge bg-warning text-dark rounded-pill"><%= attemptedOverLimit %></span>
-          </li>
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>Открыли меню тарифов после лимита:</span>
-            <span class="badge bg-info rounded-pill"><%= openedOffersAfterLimit %></span>
-          </li>
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>Оплатили тариф после лимита:</span>
-            <span class="badge bg-success rounded-pill"><%= paidAfterLimit %></span>
-          </li>
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>Вернулись на следующий день после лимита:</span>
-            <span class="badge bg-primary rounded-pill"><%= returnedNextDay %></span>
-          </li>
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>Прекратили активность (Churmed) после лимита:</span>
-            <span class="badge bg-secondary rounded-pill"><%= churnedAfterLimit %></span>
-          </li>
-        </ul>
+    </div>
+
+  </div>
+
+  <!-- Вкладка 2: Сравнение периодов -->
+  <div class="tab-pane fade" id="compare-pane" role="tabpanel" aria-labelledby="compare-tab">
+    <div class="card shadow-sm mb-4">
+      <div class="card-header bg-white fw-bold"><i class="bi bi-arrow-left-right me-2 text-primary"></i>Настройка сравнения периодов</div>
+      <div class="card-body">
+        <form id="comparison-form" class="row g-3 align-items-end">
+          <div class="col-md-5">
+            <label class="form-label fw-semibold text-muted">Период A</label>
+            <div class="d-flex gap-2">
+              <input type="date" id="comp-start-A" class="form-control form-control-sm" required>
+              <input type="date" id="comp-end-A" class="form-control form-control-sm" required>
+            </div>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label fw-semibold text-muted">Период Б</label>
+            <div class="d-flex gap-2">
+              <input type="date" id="comp-start-B" class="form-control form-control-sm" required>
+              <input type="date" id="comp-end-B" class="form-control form-control-sm" required>
+            </div>
+          </div>
+          <div class="col-md-2">
+            <button type="submit" class="btn btn-sm btn-primary w-100 py-2" id="btn-run-compare">Сравнить</button>
+          </div>
+          
+          <!-- Пресеты -->
+          <div class="col-12 mt-2">
+            <span class="text-muted small me-2">Быстрые пресеты:</span>
+            <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 small me-2" onclick="setPreset('7d')">7 дней vs Предыдущие 7 дней</button>
+            <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 small me-2" onclick="setPreset('30d')">Текущий месяц vs Прошлый месяц</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Результаты сравнения -->
+    <div class="card shadow-sm d-none" id="compare-results-card">
+      <div class="card-header bg-white fw-bold"><i class="bi bi-grid-3x3 me-2 text-success"></i>Сравнительная таблица</div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover table-striped mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Показатель (Бизнес-метрика)</th>
+                <th class="text-center" id="lbl-period-A">Период А</th>
+                <th class="text-center" id="lbl-period-B">Период Б</th>
+                <th class="text-end">Абсолютное изменение</th>
+                <th class="text-end">Процентное изменение</th>
+              </tr>
+            </thead>
+            <tbody id="compare-tbody">
+              <!-- Сюда подставится JS данные -->
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
-</div>
 
-<%# Historical Data Table %>
-<div class="card shadow-sm">
-  <div class="card-header bg-white fw-bold"><i class="bi bi-table me-2 text-secondary"></i>Детальная статистика по дням</div>
-  <div class="card-body p-0">
-    <div class="table-responsive">
-      <table class="table table-hover table-striped align-middle mb-0">
-        <thead class="table-dark">
-          <tr>
-            <th>Дата</th>
-            <th class="text-center">DAU</th>
-            <th class="text-center">WAU</th>
-            <th class="text-center">MAU</th>
-            <th class="text-center">Регистрации</th>
-            <th class="text-center">Скачиваний</th>
-            <th class="text-center">Кэш / Новые</th>
-            <th class="text-center">Лимиты</th>
-            <th class="text-end">Выручка RUB</th>
-            <th class="text-end">Выручка Stars</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% if (dailyRows.length === 0) { %>
-            <tr><td colspan="10" class="text-center py-4 text-muted">Нет данных для отображения</td></tr>
-          <% } else { %>
-            <% dailyRows.forEach(row => { %>
+  <!-- Вкладка 3: Когортный анализ -->
+  <div class="tab-pane fade" id="cohorts-pane" role="tabpanel" aria-labelledby="cohorts-tab">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-bold d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-grid-3x3-gap me-2 text-primary"></i>Месячные когорты удержания (Retention)</span>
+        <button class="btn btn-xs btn-primary py-1 px-3 fw-bold" onclick="loadCohorts()">
+          <i class="bi bi-arrow-clockwise me-1"></i>Загрузить когорты
+        </button>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-bordered mb-0 align-middle text-center text-nowrap">
+            <thead class="table-light">
               <tr>
-                <td class="fw-semibold"><%= new Date(row.day).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) %></td>
-                <td class="text-center"><%= row.dau %></td>
-                <td class="text-center text-muted"><%= row.wau %></td>
-                <td class="text-center text-muted"><%= row.mau %></td>
-                <td class="text-center text-success fw-bold">+<%= row.registrations %></td>
-                <td class="text-center fw-bold"><%= row.downloads_total %></td>
-                <td class="text-center text-muted"><%= row.downloads_from_cache %> / <%= row.downloads_new %></td>
-                <td class="text-center text-danger"><%= row.limits_reached %></td>
-                <td class="text-end text-success"><%= (row.revenue_rub_minor / 100).toFixed(2) %> ₽</td>
-                <td class="text-end text-warning">⭐️ <%= row.revenue_xtr %></td>
+                <th>Месяц регистрации</th>
+                <th>Размер когорты</th>
+                <th style="width: 15%;">Day 1 Retention</th>
+                <th style="width: 15%;">Day 7 Retention</th>
+                <th style="width: 15%;">Day 30 Retention</th>
+                <th style="width: 15%;">Day 90 Retention</th>
               </tr>
-            <% }) %>
-          <% } %>
-        </tbody>
-      </table>
+            </thead>
+            <tbody id="cohorts-tbody">
+              <tr>
+                <td colspan="6" class="text-center py-5 text-muted">
+                  Нажмите кнопку <b>«Загрузить когорты»</b> для построения тепловой карты удержания.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
+  </div>
+
+  <!-- Вкладка 4: Мониторинг денег -->
+  <div class="tab-pane fade" id="revenue-pane" role="tabpanel" aria-labelledby="revenue-tab">
+    
+    <!-- Финансовые карточки -->
+    <div class="row g-3 mb-4" id="revenue-cards-container">
+      <div class="col-md-4">
+        <div class="card shadow-sm border-0 border-start border-success border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Выручка сегодня</div>
+            <div class="h4 mb-0 font-weight-bold text-gray-800" id="rev-today-val">—</div>
+            <div class="text-muted text-xs mt-1" id="rev-today-sub">Заказов: —</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card shadow-sm border-0 border-start border-primary border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">MRR (Выручка за последние 30 дней)</div>
+            <div class="h4 mb-0 font-weight-bold text-gray-800" id="rev-mrr-val">—</div>
+            <div class="text-muted text-xs mt-1">Всех успешных транзакций</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card shadow-sm border-0 border-start border-info border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Средний чек (ARPPU)</div>
+            <div class="h4 mb-0 font-weight-bold text-gray-800" id="rev-arppu-val">—</div>
+            <div class="text-muted text-xs mt-1" id="rev-arppu-sub">Платящих за период: —</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card shadow-sm border-0 border-start border-warning border-4 h-100">
+          <div class="card-body">
+            <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Конверсия Free ➔ Paid (по когортам за период)</div>
+            <div class="h4 mb-0 font-weight-bold text-gray-800" id="rev-conv-val">—</div>
+            <div class="text-muted text-xs mt-1" id="rev-conv-sub">Новых регистраций: —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Детализация оплат -->
+    <div class="card shadow-sm mb-4">
+      <div class="card-header bg-white fw-bold"><i class="bi bi-credit-card-2-back-fill me-2 text-primary"></i>Распределение доходов по методам оплаты</div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover table-striped mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Метод оплаты</th>
+                <th class="text-center">Валюта</th>
+                <th class="text-center">Успешных оплат</th>
+                <th class="text-end">Сумма в валюте</th>
+                <th class="text-end">Эквивалент в RUB</th>
+              </tr>
+            </thead>
+            <tbody id="revenue-breakdown-tbody">
+              <!-- JS подгрузка -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -426,9 +646,286 @@
     btn.disabled = false;
   });
 
+  // ----------------------------------------------------
+  // Сравнение периодов (Compare logic)
+  // ----------------------------------------------------
+  function setPreset(type) {
+    const today = new Date();
+    
+    if (type === '7d') {
+      const format = (d) => d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+      
+      const endA = new Date(today);
+      const startA = new Date(today); startA.setDate(today.getDate() - 6);
+      
+      const endB = new Date(today); endB.setDate(today.getDate() - 7);
+      const startB = new Date(today); startB.setDate(today.getDate() - 13);
+      
+      document.getElementById('comp-start-A').value = format(startB);
+      document.getElementById('comp-end-A').value = format(endB);
+      document.getElementById('comp-start-B').value = format(startA);
+      document.getElementById('comp-end-B').value = format(endA);
+    } 
+    else if (type === '30d') {
+      const y = today.getFullYear();
+      const m = today.getMonth(); // 0-11
+      
+      const startOfCurrentMonth = new Date(y, m, 1);
+      const endOfCurrentMonth = new Date(y, m + 1, 0);
+      
+      const startOfLastMonth = new Date(y, m - 1, 1);
+      const endOfLastMonth = new Date(y, m, 0);
+      
+      const format = (d) => d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+      
+      document.getElementById('comp-start-A').value = format(startOfLastMonth);
+      document.getElementById('comp-end-A').value = format(endOfLastMonth);
+      document.getElementById('comp-start-B').value = format(startOfCurrentMonth);
+      document.getElementById('comp-end-B').value = format(endOfCurrentMonth);
+    }
+  }
+
+  document.getElementById('comparison-form')?.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('btn-run-compare');
+    const startA = document.getElementById('comp-start-A').value;
+    const endA = document.getElementById('comp-end-A').value;
+    const startB = document.getElementById('comp-start-B').value;
+    const endB = document.getElementById('comp-end-B').value;
+    
+    btn.disabled = true;
+    btn.innerText = 'Загрузка...';
+
+    try {
+      const response = await fetch(`/admin/analytics/compare?startA=${startA}&endA=${endA}&startB=${startB}&endB=${endB}`);
+      const res = await response.ok ? await response.json() : { ok: false, error: 'Ошибка сервера' };
+      
+      if (res.ok) {
+        document.getElementById('lbl-period-A').innerText = `${startA} — ${endA}`;
+        document.getElementById('lbl-period-B').innerText = `${startB} — ${endB}`;
+        
+        const tbody = document.getElementById('compare-tbody');
+        tbody.innerHTML = '';
+        
+        const metricLabels = {
+          registrations: 'Новые регистрации',
+          dau: 'Средний DAU',
+          wau: 'Средний WAU',
+          mau: 'Средний MAU',
+          downloads: 'Количество загрузок',
+          limits_reached: 'Пользователи, достигшие лимита',
+          tariffs_shown: 'Открытия меню тарифов',
+          tariffs_clicked: 'Клики по планам оплаты',
+          payments_started: 'Создано платежных счетов',
+          payments_completed: 'Успешных оплат',
+          revenue_rub: 'Выручка в рублях (RUB)',
+          revenue_stars: 'Выручка в Telegram Stars (XTR)',
+          paying_users: 'Уникальные платящие пользователи',
+          conversion: 'Конверсия Free ➔ Paid'
+        };
+        
+        for (const [key, label] of Object.entries(metricLabels)) {
+          const m = res.data[key];
+          if (!m) continue;
+          
+          let valA = m.valA;
+          let valB = m.valB;
+          let diff = m.diff;
+          let pct = m.pct;
+          
+          // Форматирование значений
+          if (key === 'revenue_rub') {
+            valA = valA.toFixed(2) + ' ₽';
+            valB = valB.toFixed(2) + ' ₽';
+            diff = (diff >= 0 ? '+' : '') + diff.toFixed(2) + ' ₽';
+          } else if (key === 'revenue_stars') {
+            valA = '⭐️ ' + valA;
+            valB = '⭐️ ' + valB;
+            diff = (diff >= 0 ? '+' : '') + diff;
+          } else if (key === 'conversion') {
+            valA = valA.toFixed(2) + '%';
+            valB = valB.toFixed(2) + '%';
+            diff = (diff >= 0 ? '+' : '') + diff.toFixed(2) + '%';
+          } else {
+            diff = (diff >= 0 ? '+' : '') + diff;
+          }
+
+          const pctClass = pct >= 0 ? 'badge bg-success' : 'badge bg-danger';
+          const pctText = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+          
+          tbody.innerHTML += `
+            <tr>
+              <td class="fw-semibold text-gray-800">${label}</td>
+              <td class="text-center font-monospace">${valA}</td>
+              <td class="text-center font-monospace">${valB}</td>
+              <td class="text-end font-monospace fw-bold ${m.diff >= 0 ? 'text-success' : 'text-danger'}">${diff}</td>
+              <td class="text-end font-monospace"><span class="${pctClass}">${pctText}</span></td>
+            </tr>
+          `;
+        }
+        
+        document.getElementById('compare-results-card').classList.remove('d-none');
+      } else {
+        alert('Ошибка при расчете сравнения: ' + res.error);
+      }
+    } catch (err) {
+      alert('Ошибка при выполнении запроса: ' + err.message);
+    }
+    btn.disabled = false;
+    btn.innerText = 'Сравнить';
+  });
+
+  // ----------------------------------------------------
+  // Когортный анализ (Cohorts retention)
+  // ----------------------------------------------------
+  async function loadCohorts() {
+    const tbody = document.getElementById('cohorts-tbody');
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center py-5"><span class="spinner-border spinner-border-sm text-primary me-2"></span>Построение тепловой карты...</td></tr>';
+    
+    try {
+      const response = await fetch('/admin/analytics/cohorts');
+      const res = await response.ok ? await response.json() : { ok: false, error: 'Ошибка сервера' };
+      
+      if (res.ok) {
+        tbody.innerHTML = '';
+        
+        if (res.data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">Недостаточно данных для анализа когорт</td></tr>';
+          return;
+        }
+        
+        res.data.forEach(c => {
+          const pct = (active, size) => size > 0 ? (active / size * 100).toFixed(1) : '0.0';
+          
+          const p1 = parseFloat(pct(c.day_1_active, c.size));
+          const p7 = parseFloat(pct(c.day_7_active, c.size));
+          const p30 = parseFloat(pct(c.day_30_active, c.size));
+          const p90 = parseFloat(pct(c.day_90_active, c.size));
+          
+          const getHeatColorStyle = (val) => {
+            if (val === 0) return 'background-color: #f8f9fa; color: #6c757d;';
+            if (val < 10) return 'background-color: rgba(13, 110, 253, 0.1); color: #0f3d7a; font-weight: 500;';
+            if (val < 20) return 'background-color: rgba(13, 110, 253, 0.3); color: #0d468e; font-weight: 500;';
+            if (val < 30) return 'background-color: rgba(13, 110, 253, 0.5); color: #0a2d5c; font-weight: 600;';
+            if (val < 50) return 'background-color: rgba(13, 110, 253, 0.7); color: #071f3f; font-weight: 600;';
+            return 'background-color: rgba(13, 110, 253, 0.9); color: #ffffff; font-weight: bold;';
+          };
+          
+          tbody.innerHTML += `
+            <tr>
+              <td class="fw-bold text-gray-800">${c.cohort}</td>
+              <td class="fw-bold font-monospace bg-light">${c.size.toLocaleString('ru-RU')}</td>
+              <td style="${getHeatColorStyle(p1)}">${p1}%</td>
+              <td style="${getHeatColorStyle(p7)}">${p7}%</td>
+              <td style="${getHeatColorStyle(p30)}">${p30}%</td>
+              <td style="${getHeatColorStyle(p90)}">${p90}%</td>
+            </tr>
+          `;
+        });
+      } else {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-danger">Ошибка: ${res.error}</td></tr>`;
+      }
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-danger">Ошибка сети: ${e.message}</td></tr>`;
+    }
+  }
+
+  // ----------------------------------------------------
+  // Финансовый мониторинг (Revenue Dashboard)
+  // ----------------------------------------------------
+  async function loadRevenueDashboard() {
+    const start = '<%= startDate %>';
+    const end = '<%= endDate %>';
+    
+    try {
+      const response = await fetch(`/admin/analytics/revenue?startDate=${start}&endDate=${end}`);
+      const res = await response.ok ? await response.json() : { ok: false, error: 'Ошибка сервера' };
+      
+      if (res.ok) {
+        const d = res.data;
+        
+        // Карточки
+        document.getElementById('rev-today-val').innerText = d.today.totalRubEquivalent.toFixed(2) + ' ₽';
+        document.getElementById('rev-today-sub').innerText = `RUB: ${d.today.rub.toFixed(2)} ₽ | XTR: ⭐️ ${d.today.stars} (Заказов: ${d.today.count})`;
+        
+        document.getElementById('rev-mrr-val').innerText = d.mrr.toFixed(2) + ' ₽';
+        
+        document.getElementById('rev-arppu-val').innerText = d.arppu.toFixed(2) + ' ₽';
+        document.getElementById('rev-arppu-sub').innerText = `Платящих за период: ${d.paying_users}`;
+        
+        document.getElementById('rev-conv-val').innerText = d.conversionFreePaid.toFixed(2) + '%';
+        document.getElementById('rev-conv-sub').innerText = `Регистраций: ${d.totalRegistered}`;
+        
+        // Таблица
+        const tbody = document.getElementById('revenue-breakdown-tbody');
+        tbody.innerHTML = '';
+        
+        if (d.breakdown.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Нет оплат за выбранный период</td></tr>';
+          return;
+        }
+        
+        const methodLabels = {
+          telegram_stars: '⭐️ Telegram Stars (In-App)',
+          telegram_stars_rpc: '⭐️ Telegram Stars (In-App API)',
+          tbank: '💳 Т-Банк (Эквайринг)',
+          sbp: '📲 СБП (Быстрые платежи)',
+          yoomoney: '💸 ЮMoney',
+          boosty: '🧡 Boosty (Донаты)',
+          other_manual: '👤 Ручной перевод (Админ)'
+        };
+        
+        d.breakdown.forEach(row => {
+          const methodLabel = methodLabels[row.method] || `Другой метод (${row.method})`;
+          const formattedSum = row.currency === 'RUB' ? row.sum.toFixed(2) + ' ₽' : '⭐️ ' + row.sum;
+          
+          tbody.innerHTML += `
+            <tr>
+              <td class="fw-semibold text-gray-800">${methodLabel}</td>
+              <td class="text-center font-monospace">${row.currency}</td>
+              <td class="text-center font-monospace fw-bold text-primary">${row.count}</td>
+              <td class="text-end font-monospace">${formattedSum}</td>
+              <td class="text-end font-monospace fw-bold text-success">${row.rubEquivalent.toFixed(2)} ₽</td>
+            </tr>
+          `;
+        });
+      } else {
+        console.error('Ошибка финансов:', res.error);
+      }
+    } catch (e) {
+      console.error('Ошибка сети при загрузке финансов:', e.message);
+    }
+  }
+
   // Будет вызвано после загрузки Bootstrap и Chart.js
   window.initializePage = function() {
     startStatusPolling();
+    
+    // Восстанавливаем вкладку
+    const activeTab = sessionStorage.getItem('activeAnalyticsTab');
+    if (activeTab) {
+      const btn = document.getElementById(activeTab);
+      if (btn) {
+        const tab = new bootstrap.Tab(btn);
+        tab.show();
+        
+        // Вызываем специфичные загрузки
+        if (activeTab === 'cohorts-tab') loadCohorts();
+        if (activeTab === 'revenue-tab') loadRevenueDashboard();
+      }
+    } else {
+      // По умолчанию
+      loadRevenueDashboard(); // подгружаем деньги в фоне
+    }
+
+    // Сохраняем выбранную вкладку при клике
+    document.querySelectorAll('#analyticsTabs button').forEach(btn => {
+      btn.addEventListener('shown.bs.tab', (e) => {
+        sessionStorage.setItem('activeAnalyticsTab', e.target.id);
+        if (e.target.id === 'cohorts-tab') loadCohorts();
+        if (e.target.id === 'revenue-tab') loadRevenueDashboard();
+      });
+    });
 
     const rawData = <%- JSON.stringify(dailyRows) %>;
     const labels = rawData.map(r => new Date(r.day).toLocaleDateString('ru-RU', { timeZone: 'UTC' })).reverse();

@@ -3217,16 +3217,21 @@ export async function aggregateDailyStats(targetDayStr = null) {
 
     // 11. Заполнение детальной пользовательской активности за эти сутки
     await client.query(
-      `INSERT INTO analytics_user_daily (day, user_id, downloads_count, searches_count, limits_reached_count, primary_source)
+      `WITH active_users AS (
+         SELECT DISTINCT user_id FROM public.analytics_events WHERE created_at BETWEEN $2 AND $3
+         UNION
+         SELECT DISTINCT user_id FROM public.downloads_log WHERE downloaded_at BETWEEN $2 AND $3
+       )
+       INSERT INTO analytics_user_daily (day, user_id, downloads_count, searches_count, limits_reached_count, primary_source)
        SELECT 
          $1::date,
-         u.id,
-         COALESCE((SELECT COUNT(*) FROM downloads_log dl WHERE dl.user_id = u.id AND dl.downloaded_at BETWEEN $2 AND $3), 0)::int,
-         COALESCE((SELECT COUNT(*) FROM analytics_events ae WHERE ae.user_id = u.id AND ae.event_name = 'track_search_started' AND ae.created_at BETWEEN $2 AND $3), 0)::int,
-         COALESCE((SELECT COUNT(*) FROM analytics_events ae WHERE ae.user_id = u.id AND ae.event_name = 'daily_limit_reached' AND ae.created_at BETWEEN $2 AND $3), 0)::int,
+         au.user_id,
+         COALESCE((SELECT COUNT(*) FROM downloads_log dl WHERE dl.user_id = au.user_id AND dl.downloaded_at BETWEEN $2 AND $3), 0)::int,
+         COALESCE((SELECT COUNT(*) FROM analytics_events ae WHERE ae.user_id = au.user_id AND ae.event_name = 'track_search_started' AND ae.created_at BETWEEN $2 AND $3), 0)::int,
+         COALESCE((SELECT COUNT(*) FROM analytics_events ae WHERE ae.user_id = au.user_id AND ae.event_name = 'daily_limit_reached' AND ae.created_at BETWEEN $2 AND $3), 0)::int,
          u.referral_source
-       FROM users u
-       WHERE u.last_active BETWEEN $2 AND $3
+       FROM active_users au
+       JOIN users u ON u.id = au.user_id
        ON CONFLICT (day, user_id) DO UPDATE
        SET downloads_count = EXCLUDED.downloads_count,
            searches_count = EXCLUDED.searches_count,
@@ -3645,5 +3650,357 @@ export async function getExcelAnalyticsData(startDate, endDate) {
     daily_stats: dailyStats
   };
 }
+
+export async function getPeriodComparisonData(startA, endA, startB, endB) {
+  const getMetrics = async (start, end) => {
+    const mskStart = `${start}T00:00:00+03:00`;
+    const mskEnd = `${end}T23:59:59.999+03:00`;
+
+    // 1. Registrations
+    const regRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2`, [mskStart, mskEnd]);
+    const registrations = regRes.rows[0].count || 0;
+
+    // 2. Daily metrics from analytics_daily
+    const dailyRes = await query(
+      `SELECT 
+         COALESCE(AVG(dau), 0)::int AS dau,
+         COALESCE(AVG(wau), 0)::int AS wau,
+         COALESCE(AVG(mau), 0)::int AS mau,
+         COALESCE(SUM(downloads_total), 0)::int AS downloads,
+         COALESCE(SUM(limits_reached), 0)::int AS limits_reached,
+         COALESCE(SUM(tariffs_shown), 0)::int AS tariffs_shown,
+         COALESCE(SUM(tariffs_clicked), 0)::int AS tariffs_clicked,
+         COALESCE(SUM(payments_started), 0)::int AS payments_started,
+         COALESCE(SUM(payments_completed), 0)::int AS payments_completed
+       FROM public.analytics_daily
+       WHERE day BETWEEN $1 AND $2`,
+      [start, end]
+    );
+    const daily = dailyRes.rows[0];
+
+    // 3. Financials
+    const rubRes = await query(
+      `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum FROM payments 
+       WHERE payment_status = 'completed' AND currency = 'RUB' AND paid_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const revRub = (rubRes.rows[0].sum || 0) / 100.0;
+
+    const xtrRes = await query(
+      `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum FROM payments 
+       WHERE payment_status = 'completed' AND currency = 'XTR' AND paid_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const revStars = xtrRes.rows[0].sum || 0;
+
+    const payingUsersRes = await query(
+      `SELECT COUNT(DISTINCT user_id)::int FROM payments 
+       WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
+      [mskStart, mskEnd]
+    );
+    const payingUsers = payingUsersRes.rows[0].count || 0;
+
+    const conversion = registrations > 0 ? (payingUsers / registrations * 100) : 0.0;
+
+    return {
+      registrations,
+      dau: daily.dau,
+      wau: daily.wau,
+      mau: daily.mau,
+      downloads: daily.downloads,
+      limits_reached: daily.limits_reached,
+      tariffs_shown: daily.tariffs_shown,
+      tariffs_clicked: daily.tariffs_clicked,
+      payments_started: daily.payments_started,
+      payments_completed: daily.payments_completed,
+      revenue_rub: revRub,
+      revenue_stars: revStars,
+      paying_users: payingUsers,
+      conversion
+    };
+  };
+
+  const metricsA = await getMetrics(startA, endA);
+  const metricsB = await getMetrics(startB, endB);
+
+  // Compute diffs
+  const keys = Object.keys(metricsA);
+  const diffs = {};
+  keys.forEach(k => {
+    const valA = metricsA[k];
+    const valB = metricsB[k];
+    const diffVal = valB - valA;
+    const pct = valA > 0 ? (diffVal / valA * 100) : 0;
+    diffs[k] = {
+      valA,
+      valB,
+      diff: diffVal,
+      pct: pct
+    };
+  });
+
+  return diffs;
+}
+
+export async function getCohortRetentionData() {
+  const sql = `
+    WITH cohorts AS (
+      SELECT 
+        id AS user_id,
+        created_at::date AS reg_date,
+        DATE_TRUNC('month', created_at)::date AS cohort_month
+      FROM users
+    ),
+    cohort_sizes AS (
+      SELECT 
+        cohort_month,
+        COUNT(*)::int AS cohort_size
+      FROM cohorts
+      GROUP BY cohort_month
+    ),
+    retention AS (
+      SELECT 
+        c.cohort_month,
+        COUNT(DISTINCT CASE WHEN aud.day = c.reg_date + 1 THEN c.user_id END)::int AS day_1_active,
+        COUNT(DISTINCT CASE WHEN aud.day BETWEEN c.reg_date + 6 AND c.reg_date + 8 THEN c.user_id END)::int AS day_7_active,
+        COUNT(DISTINCT CASE WHEN aud.day BETWEEN c.reg_date + 28 AND c.reg_date + 32 THEN c.user_id END)::int AS day_30_active,
+        COUNT(DISTINCT CASE WHEN aud.day BETWEEN c.reg_date + 85 AND c.reg_date + 95 THEN c.user_id END)::int AS day_90_active
+      FROM cohorts c
+      LEFT JOIN analytics_user_daily aud ON aud.user_id = c.user_id
+      GROUP BY c.cohort_month
+    )
+    SELECT 
+      TO_CHAR(cs.cohort_month, 'YYYY-MM') AS cohort,
+      cs.cohort_size AS size,
+      r.day_1_active,
+      r.day_7_active,
+      r.day_30_active,
+      r.day_90_active
+    FROM cohort_sizes cs
+    JOIN retention r ON r.cohort_month = cs.cohort_month
+    ORDER BY cs.cohort_month DESC
+    LIMIT 12
+  `;
+  const { rows } = await query(sql);
+  return rows;
+}
+
+export async function getRevenueDashboardData(startDate, endDate) {
+  const { getSetting } = await import('./services/settingsManager.js');
+  const rate = parseFloat(getSetting('xtr_rub_rate') || '2.00');
+
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  const mskStart = `${startDate}T00:00:00+03:00`;
+  const mskEnd = `${endDate}T23:59:59.999+03:00`;
+  const todayMskStart = `${todayStr}T00:00:00+03:00`;
+  const todayMskEnd = `${todayStr}T23:59:59.999+03:00`;
+
+  // 1. Today's successful payments
+  const todayRes = await query(
+    `SELECT 
+       COUNT(*)::int AS count,
+       COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'RUB'), 0) / 100.0 AS rub,
+       COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'XTR'), 0) AS stars
+     FROM payments
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
+    [todayMskStart, todayMskEnd]
+  );
+  const today = todayRes.rows[0];
+
+  // 2. MRR (last 30 days rolling)
+  const rollingStart = new Date(Date.now() - 30 * 86400000).toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' }) + 'T00:00:00+03:00';
+  const mrrRes = await query(
+    `SELECT 
+       COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'RUB'), 0) / 100.0 AS rub,
+       COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'XTR'), 0) AS stars
+     FROM payments
+     WHERE payment_status = 'completed' AND paid_at >= $1`,
+    [rollingStart]
+  );
+  const mrrData = mrrRes.rows[0];
+  const mrr = mrrData.rub + mrrData.stars * rate;
+
+  // 3. ARPPU & conversion for selected period
+  const revenueRes = await query(
+    `SELECT 
+       COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'RUB'), 0) / 100.0 AS rub,
+       COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'XTR'), 0) AS stars,
+       COUNT(DISTINCT user_id)::int AS paying_users
+     FROM payments
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const rev = revenueRes.rows[0];
+  const totalRevenueRubEquivalent = rev.rub + rev.stars * rate;
+  const arppu = rev.paying_users > 0 ? (totalRevenueRubEquivalent / rev.paying_users) : 0;
+
+  // Conversion Free -> Paid (users registered in period who paid)
+  const regUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2`, [mskStart, mskEnd]);
+  const totalRegistered = regUsersRes.rows[0].count || 0;
+
+  const payingRegUsersRes = await query(
+    `SELECT COUNT(DISTINCT u.id)::int 
+     FROM users u
+     JOIN payments p ON p.user_id = u.id AND p.payment_status = 'completed'
+     WHERE u.created_at BETWEEN $1 AND $2`,
+    [mskStart, mskEnd]
+  );
+  const payingRegistered = payingRegUsersRes.rows[0].count || 0;
+  const conversionFreePaid = totalRegistered > 0 ? (payingRegistered / totalRegistered * 100) : 0;
+
+  // 4. Breakdown of payments
+  const breakdownRes = await query(
+    `SELECT 
+       payment_method AS method,
+       currency,
+       COUNT(*)::int AS count,
+       SUM(amount_minor) AS sum_minor
+     FROM payments
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+     GROUP BY payment_method, currency
+     ORDER BY count DESC`,
+    [mskStart, mskEnd]
+  );
+  
+  const breakdown = breakdownRes.rows.map(row => {
+    const sum = row.currency === 'RUB' ? row.sum_minor / 100.0 : Number(row.sum_minor);
+    const rubEquivalent = row.currency === 'RUB' ? sum : sum * rate;
+    return {
+      method: row.method,
+      currency: row.currency,
+      count: row.count,
+      sum,
+      rubEquivalent
+    };
+  });
+
+  return {
+    today: {
+      count: today.count,
+      rub: today.rub,
+      stars: today.stars,
+      totalRubEquivalent: today.rub + today.stars * rate
+    },
+    mrr,
+    arppu,
+    paying_users: rev.paying_users,
+    conversionFreePaid,
+    totalRegistered,
+    totalRevenueRubEquivalent,
+    breakdown,
+    rate
+  };
+}
+
+export async function getAIRecommendationsData() {
+  const getMoscowDateStrForOffset = (offsetDays) => {
+    const d = new Date(Date.now() - offsetDays * 86400000);
+    return d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  };
+
+  const endA = getMoscowDateStrForOffset(0);
+  const startA = getMoscowDateStrForOffset(13);
+  const endB = getMoscowDateStrForOffset(14);
+  const startB = getMoscowDateStrForOffset(27);
+
+  const queryMetrics = async (start, end) => {
+    const res = await query(
+      `SELECT 
+         COALESCE(AVG(dau), 0)::float AS avg_dau,
+         COALESCE(SUM(downloads_total), 0)::float AS total_downloads,
+         COALESCE(SUM(limits_reached), 0)::float AS total_limits,
+         COALESCE(SUM(revenue_rub_minor), 0)::float / 100.0 AS revenue_rub,
+         COALESCE(SUM(revenue_xtr), 0)::float AS revenue_stars
+       FROM public.analytics_daily
+       WHERE day BETWEEN $1 AND $2`,
+      [start, end]
+    );
+    return res.rows[0];
+  };
+
+  const metricsA = await queryMetrics(startA, endA);
+  const metricsB = await queryMetrics(startB, endB);
+
+  // Default rates config
+  const { getSetting } = await import('./services/settingsManager.js');
+  const rate = parseFloat(getSetting('xtr_rub_rate') || '2.00');
+
+  const revA = metricsA.revenue_rub + metricsA.revenue_stars * rate;
+  const revB = metricsB.revenue_rub + metricsB.revenue_stars * rate;
+
+  const dauChange = metricsB.avg_dau > 0 ? ((metricsA.avg_dau - metricsB.avg_dau) / metricsB.avg_dau * 100) : 0;
+  const downloadsChange = metricsB.total_downloads > 0 ? ((metricsA.total_downloads - metricsB.total_downloads) / metricsB.total_downloads * 100) : 0;
+  const limitsChange = metricsB.total_limits > 0 ? ((metricsA.total_limits - metricsB.total_limits) / metricsB.total_limits * 100) : 0;
+  const revenueChange = revB > 0 ? ((revA - revB) / revB * 100) : 0;
+
+  const recommendations = [];
+
+  if (dauChange < -15) {
+    recommendations.push({
+      type: 'warning',
+      metric: 'DAU',
+      title: `Активность пользователей снизилась на ${Math.abs(dauChange).toFixed(1)}% за последние 14 дней.`,
+      text: 'Рекомендуется проверить последние изменения в боте (например, новые ограничения или ошибки скачивания) и запустить рассылку-напоминание для возврата неактивных пользователей.'
+    });
+  }
+
+  // Active users reached limit percentage
+  const activeUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int FROM analytics_user_daily 
+     WHERE day BETWEEN $1 AND $2`,
+    [startA, endA]
+  );
+  const activeUsersCount = activeUsersRes.rows[0].count || 1;
+  const limitReachedUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int FROM analytics_user_daily 
+     WHERE day BETWEEN $1 AND $2 AND limits_reached_count > 0`,
+    [startA, endA]
+  );
+  const limitReachedUsersCount = limitReachedUsersRes.rows[0].count || 0;
+  const limitReachedPct = (limitReachedUsersCount / activeUsersCount) * 100;
+
+  if (limitReachedPct > 20) {
+    recommendations.push({
+      type: 'info',
+      metric: 'LIMITS',
+      title: `За последние 14 дней ${limitReachedPct.toFixed(1)}% активных пользователей уперлись в лимит Free.`,
+      text: 'Это отличная возможность для монетизации! Рекомендуется протестировать скидки на тариф Plus или запустить акционную рассылку со специальным предложением.'
+    });
+  } else if (limitsChange > 15) {
+    recommendations.push({
+      type: 'info',
+      metric: 'LIMITS',
+      title: `Количество достижений лимитов выросло на ${limitsChange.toFixed(1)}%.`,
+      text: 'Спрос на скачивания растет. Предложите пользователям тарифы Plus или Pro с расширенными лимитами, запустив таргетированную рассылку.'
+    });
+  }
+
+  if (revenueChange < -10) {
+    recommendations.push({
+      type: 'warning',
+      metric: 'REVENUE',
+      title: `Выручка снизилась на ${Math.abs(revenueChange).toFixed(1)}% по сравнению с предыдущими 14 днями.`,
+      text: 'Рекомендуется проверить работу платежных шлюзов (Т-Банк / СБП / Stars) на предмет сбоев и предложить временную скидку на тариф Pro для стимуляции оплат.'
+    });
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push({
+      type: 'success',
+      metric: 'OK',
+      title: 'Все ключевые метрики находятся в пределах нормы.',
+      text: 'DAU, лимиты и выручка стабильны. Рекомендуется продолжать привлекать трафик и оптимизировать конверсии.'
+    });
+  }
+
+  return {
+    dauChange,
+    downloadsChange,
+    limitsChange,
+    revenueChange,
+    recommendations
+  };
+}
+
 
 

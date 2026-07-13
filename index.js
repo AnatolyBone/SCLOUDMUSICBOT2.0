@@ -2123,6 +2123,9 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
     );
     const churnedAfterLimit = churnedAfterLimitRes.rows[0].count;
 
+    const { getAIRecommendationsData } = await import('./db.js');
+    const growthData = await getAIRecommendationsData();
+
     res.render('analytics', {
       layout: 'layout',
       page: 'analytics',
@@ -2145,6 +2148,7 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
       returnedNextDay,
       churnedAfterLimit,
       lastAggregation,
+      growthData,
       unreadSupportCount: res.locals.unreadSupportCount || 0
     });
   } catch (error) {
@@ -2294,6 +2298,44 @@ app.get('/admin/analytics/export', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[Analytics Export] Error:', error.message);
     res.status(500).send('Ошибка экспорта: ' + error.message);
+  }
+});
+
+app.get('/admin/analytics/compare', requireAuth, async (req, res) => {
+  const { startA, endA, startB, endB } = req.query;
+  if (!startA || !endA || !startB || !endB) {
+    return res.status(400).json({ ok: false, error: 'Укажите диапазоны startA, endA, startB, endB.' });
+  }
+  try {
+    const { getPeriodComparisonData } = await import('./db.js');
+    const data = await getPeriodComparisonData(startA, endA, startB, endB);
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/admin/analytics/cohorts', requireAuth, async (req, res) => {
+  try {
+    const { getCohortRetentionData } = await import('./db.js');
+    const data = await getCohortRetentionData();
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/admin/analytics/revenue', requireAuth, async (req, res) => {
+  const { startDate, endDate } = req.query;
+  if (!startDate || !endDate) {
+    return res.status(400).json({ ok: false, error: 'Укажите startDate и endDate.' });
+  }
+  try {
+    const { getRevenueDashboardData } = await import('./db.js');
+    const data = await getRevenueDashboardData(startDate, endDate);
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
   app.post('/reset-bonus', requireAuth, async (req, res) => {

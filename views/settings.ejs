@@ -370,6 +370,33 @@
     </div>
   </div>
 
+  <!-- Курс валют -->
+  <div class="col-lg-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-header fw-semibold bg-light">
+        <i class="bi bi-currency-exchange me-2 text-warning"></i>Курсы валют (для аналитики)
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Укажите внутренний курс обмена Telegram Stars (XTR) в Российский рубль (RUB) для расчета финансовых показателей и MRR.
+        </p>
+        <form action="/settings/update" method="POST">
+          <div class="mb-3">
+            <label for="xtr-rub-rate" class="form-label small text-muted">Курс: 1 Star (XTR) = N Рублей (RUB)</label>
+            <input type="number" step="0.01" min="0.01" max="100.0" class="form-control form-control-sm" id="xtr-rub-rate" name="xtr_rub_rate" 
+                   value="<%= settings.xtr_rub_rate || '2.00' %>" required>
+            <div class="form-text text-muted">
+              По умолчанию: <b>2.00 ₽</b> за 1 Star.
+            </div>
+          </div>
+          <button type="submit" class="btn btn-sm btn-primary w-100 fw-semibold">
+            <i class="bi bi-check-lg me-1"></i>Сохранить курс
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Информация о системе -->
   <div class="col-lg-6">
     <div class="card shadow-sm">
