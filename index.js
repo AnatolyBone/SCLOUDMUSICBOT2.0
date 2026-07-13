@@ -70,6 +70,9 @@ import {
   resetPromoCampaign,
   runSupportSystemMigration,
   runAnalyticsSystemMigration,
+  runMultilangSystemMigration,
+  runPreflightFixesMigration,
+  checkSchemaPreflight,
   createSupportMessage,
   getSupportTickets,
   getSupportMessages,
@@ -122,6 +125,9 @@ async function startApp() {
     setupExpress();
     await runSupportSystemMigration();
     await runAnalyticsSystemMigration();
+    await runMultilangSystemMigration();
+    await runPreflightFixesMigration();
+    await checkSchemaPreflight();
 
     // Историческая миграция лимитов (удалена, чтобы настройки пользователя не перезаписывались при старте)
     
@@ -418,6 +424,71 @@ app.get('/health', async (req, res) => {
     res.status(500).json({ status: 'error', message: e.message });
   }
 });
+
+app.get('/r', async (req, res) => {
+  try {
+    const { t } = req.query;
+    if (!t) {
+      return res.redirect('https://t.me/SCloudMusicBot');
+    }
+
+    const { verifyRedirectToken } = await import('./services/cryptoService.js');
+    const payload = verifyRedirectToken(t);
+    if (!payload) {
+      console.warn(`[Redirect] Invalid or expired token: ${t}`);
+      return res.redirect('https://t.me/SCloudMusicBot');
+    }
+
+    const campaignId = parseInt(payload.c, 10);
+    const userId = payload.u ? payload.u.toString() : null;
+    const buttonIndex = parseInt(payload.b, 10);
+    
+    let destUrl = payload.url;
+
+    // Если это реальная рассылка (campaignId > 0), URL назначения нужно извлечь из кнопки задачи
+    if (!destUrl && campaignId > 0) {
+      const task = await getBroadcastTaskById(campaignId);
+      if (task) {
+        let lang = task.fallback_language || 'ru';
+        if (userId) {
+          const user = await getUserById(userId);
+          if (user?.language_code) lang = user.language_code;
+        }
+        
+        const langData = task.messages_json?.[lang] || task.messages_json?.[task.fallback_language || 'ru'] || task.messages_json?.['ru'] || {};
+        const keyboard = langData.keyboard || task.keyboard || [];
+        const flatKeyboard = keyboard.flat();
+        const button = flatKeyboard[buttonIndex];
+        if (button && button.url) {
+          destUrl = button.url;
+        }
+      }
+    }
+
+    if (!destUrl) {
+      console.warn(`[Redirect] Destination URL not found for campaign ${campaignId}, button ${buttonIndex}`);
+      return res.redirect('https://t.me/SCloudMusicBot');
+    }
+
+    // Логируем клик в broadcast_clicks
+    if (campaignId > 0 && userId) {
+      await pool.query(
+        `INSERT INTO broadcast_clicks (campaign_id, user_id, button_index, clicked_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT DO NOTHING`,
+        [campaignId, userId, buttonIndex]
+      ).catch(err => {
+        console.error('[Redirect] Error logging click:', err.message);
+      });
+    }
+
+    return res.redirect(destUrl);
+  } catch (err) {
+    console.error('[Redirect] Error:', err.message);
+    return res.redirect('https://t.me/SCloudMusicBot');
+  }
+});
+
   app.get('/', requireAuth, (req, res) => res.redirect('/dashboard'));
 
 // === УПРАВЛЕНИЕ ПРОБЛЕМНЫМИ ТРЕКАМИ ===
@@ -2249,6 +2320,49 @@ app.post('/admin/analytics/backfill', requireAuth, async (req, res) => {
 
 app.get('/admin/analytics/status', requireAuth, (req, res) => {
   res.json(aggregationState);
+});
+
+app.get('/admin/analytics/smoke-test', requireAuth, async (req, res) => {
+  const results = [];
+  const runTest = async (name, fn, ...args) => {
+    try {
+      const start = Date.now();
+      await fn(...args);
+      results.push({ name, status: 'OK', durationMs: Date.now() - start });
+    } catch (err) {
+      results.push({ name, status: 'FAILED', error: err.message });
+    }
+  };
+
+  try {
+    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+    const { 
+      getExcelAnalyticsData, 
+      getPeriodComparisonData, 
+      getCohortRetentionData, 
+      getRevenueDashboardData, 
+      getAIRecommendationsData,
+      getAllBroadcastTasks,
+      getBroadcastTaskStats
+    } = await import('./db.js');
+
+    await runTest('getExcelAnalyticsData', getExcelAnalyticsData, todayStr, todayStr);
+    await runTest('getPeriodComparisonData', getPeriodComparisonData, todayStr, todayStr, todayStr, todayStr);
+    await runTest('getCohortRetentionData', getCohortRetentionData);
+    await runTest('getRevenueDashboardData', getRevenueDashboardData, todayStr, todayStr);
+    await runTest('getAIRecommendationsData', getAIRecommendationsData);
+    await runTest('getAllBroadcastTasks', getAllBroadcastTasks);
+    await runTest('getBroadcastTaskStats', getBroadcastTaskStats, 0);
+
+    const hasFailed = results.some(r => r.status === 'FAILED');
+    res.json({
+      success: !hasFailed,
+      timestamp: new Date().toISOString(),
+      results
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get('/admin/analytics/export', requireAuth, async (req, res) => {

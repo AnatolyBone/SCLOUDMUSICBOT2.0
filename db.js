@@ -1905,8 +1905,8 @@ export async function getAllBroadcastTasks() {
     SELECT 
       t.*, 
       
-      -- Подсчёт уже отправленных сообщений
-      (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id)::int AS sent_count,
+      -- Подсчёт уже отправленных сообщений (попыток отправки)
+      (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id AND status IN ('sent', 'blocked', 'failed'))::int AS sent_count,
       
       -- Подсчёт всей целевой аудитории (только активные и подписанные на рассылки)
       (
@@ -1916,8 +1916,8 @@ export async function getAllBroadcastTasks() {
           AND (
             t.target_audience = 'all' OR
             t.target_audience = 'all_users' OR
-            (t.target_audience = 'free_users' AND u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)) OR
-            (t.target_audience = 'premium_users' AND u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
+            (t.target_audience = 'free_users' AND (u.premium_until IS NULL OR u.premium_until < NOW() OR (u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND u.premium_limit IS NOT NULL))) OR
+            (t.target_audience = 'premium_users' AND (u.premium_until IS NOT NULL AND u.premium_until >= NOW() AND (u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) OR u.premium_limit IS NULL)))
           )
       )::int AS total_count
       
@@ -2780,6 +2780,17 @@ export async function runMultilangSystemMigration() {
   }
 }
 
+export async function runPreflightFixesMigration() {
+  try {
+    const migrationPath = path.join(__dirname, 'migrations', '008_analytics_preflight_fixes.sql');
+    const sql = fs.readFileSync(migrationPath, 'utf8');
+    await query(sql);
+    console.log('✅ [DB] Автоматическая миграция исправлений (008) выполнена успешно.');
+  } catch (err) {
+    console.error('❌ [DB] Ошибка автоматической миграции исправлений (008):', err.message);
+  }
+}
+
 export async function createSupportMessage(userId, text, sender, mediaType = 'text', fileId = null) {
   const sql = `
     INSERT INTO support_messages (user_id, message_text, sender, is_read, media_type, file_id)
@@ -3571,11 +3582,11 @@ export async function getExcelAnalyticsData(startDate, endDate) {
            AND (
              t.target_audience = 'all' OR
              t.target_audience = 'all_users' OR
-             (t.target_audience = 'free_users' AND u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)) OR
-             (t.target_audience = 'premium_users' AND u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
+             (t.target_audience = 'free_users' AND (u.premium_until IS NULL OR u.premium_until < NOW() OR (u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND u.premium_limit IS NOT NULL))) OR
+             (t.target_audience = 'premium_users' AND (u.premium_until IS NOT NULL AND u.premium_until >= NOW() AND (u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) OR u.premium_limit IS NULL)))
            )
        )::int AS recipients,
-       (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id)::int AS delivered,
+       (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id AND status = 'sent')::int AS delivered,
        COALESCE((SELECT COUNT(*)::int FROM broadcast_clicks WHERE campaign_id = t.id), 0) AS clicks,
        COALESCE((
          SELECT COUNT(DISTINCT p.user_id)::int
@@ -4013,6 +4024,64 @@ export async function getAIRecommendationsData() {
     revenueChange,
     recommendations
   };
+}
+
+export async function checkSchemaPreflight() {
+  console.log('[Schema Check] Запуск preflight проверки...');
+  const expectedSchema = {
+    users: ['id', 'username', 'first_name', 'lang', 'downloads_today', 'premium_limit', 'premium_until', 'created_at', 'last_active'],
+    payments: ['id', 'user_id', 'plan', 'amount_minor', 'currency', 'payment_method', 'payment_status', 'paid_at'],
+    broadcast_tasks: ['id', 'message', 'file_id', 'target_audience', 'disable_notification', 'scheduled_at', 'status', 'report', 'created_at', 'completed_at', 'keyboard', 'disable_web_page_preview', 'file_mime_type', 'started_at', 'target_languages', 'unknown_language_policy', 'messages_json', 'language_source_filter', 'message_version', 'broadcast_type', 'campaign_tag', 'campaign_name', 'fallback_language'],
+    broadcast_log: ['id', 'broadcast_id', 'user_id', 'sent_at', 'audience_language_segment', 'delivered_language', 'status'],
+    broadcast_clicks: ['id', 'campaign_id', 'user_id', 'button_index', 'clicked_at'],
+    analytics_events: ['id', 'user_id', 'event_name', 'event_category', 'event_data', 'created_at'],
+    analytics_daily: ['day', 'dau', 'wau', 'mau', 'registrations', 'downloads_total', 'limits_reached', 'revenue_rub_minor', 'revenue_xtr'],
+    analytics_user_daily: ['day', 'user_id', 'downloads_count', 'searches_count', 'limits_reached_count'],
+    app_settings: ['key', 'value']
+  };
+
+  try {
+    const res = await query(`
+      SELECT table_name, column_name 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+        AND table_name IN (${Object.keys(expectedSchema).map(t => `'${t}'`).join(', ')})
+    `);
+    
+    // Group columns by table
+    const actualSchema = {};
+    for (const row of res.rows) {
+      const table = row.table_name;
+      if (!actualSchema[table]) actualSchema[table] = new Set();
+      actualSchema[table].add(row.column_name);
+    }
+    
+    const missing = [];
+    
+    for (const [table, columns] of Object.entries(expectedSchema)) {
+      if (!actualSchema[table]) {
+        missing.push(`Table public.${table} is MISSING entirely.`);
+        continue;
+      }
+      for (const col of columns) {
+        if (!actualSchema[table].has(col)) {
+          missing.push(`Column public.${table}.${col} is MISSING.`);
+        }
+      }
+    }
+    
+    if (missing.length > 0) {
+      console.warn('\n⚠️ [Schema Check] ❌ ОБНАРУЖЕНЫ ОТСУТСТВУЮЩИЕ ТАБЛИЦЫ ИЛИ КОЛОНКИ:');
+      for (const item of missing) {
+        console.warn(`  - ${item}`);
+      }
+      console.warn('⚠️ [Schema Check] Пожалуйста, примените миграции (006, 007, 008) или обновите БД!\n');
+    } else {
+      console.log('✅ [Schema Check] Все обязательные таблицы и колонки аналитики присутствуют в БД.');
+    }
+  } catch (err) {
+    console.error('❌ [Schema Check] Ошибка во время preflight проверки:', err.message);
+  }
 }
 
 
