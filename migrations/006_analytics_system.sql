@@ -1,5 +1,18 @@
 -- migrations/006_analytics_system.sql
 
+-- 0. Очистка пустой некорректной таблицы payments, если она существовала ранее
+DO $$
+DECLARE
+    v_count INTEGER;
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'payments') THEN
+        EXECUTE 'SELECT COUNT(*)::int FROM public.payments' INTO v_count;
+        IF v_count = 0 THEN
+            DROP TABLE public.payments CASCADE;
+        END IF;
+    END IF;
+END $$;
+
 -- 1. Создание таблицы предварительных заказов платежей
 CREATE TABLE IF NOT EXISTS public.payment_orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -493,6 +506,11 @@ GRANT EXECUTE ON FUNCTION public.process_manual_payment(BIGINT, BIGINT, VARCHAR,
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'payments') THEN
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS user_id BIGINT;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS plan VARCHAR(50);
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS amount_minor BIGINT;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS currency VARCHAR(10);
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50);
         ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) NOT NULL DEFAULT 'pending';
         ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS period_days INTEGER NOT NULL DEFAULT 30;
         ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS comment TEXT;
