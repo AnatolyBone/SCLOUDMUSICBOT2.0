@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL, KARAOKE_DATABASE_URL, KARAOKE_SUPABASE_URL, KARAOKE_SUPABASE_KEY } from './config.js';
+import { SUPPORTED_LANGUAGES } from './config/languages.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +27,11 @@ export const pool = new Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
   allowExitOnIdle: false
+});
+
+// Автоматическая миграция схемы для campaign_tag
+pool.query('ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS campaign_tag VARCHAR(100) NULL').catch(err => {
+  console.error('[DB Schema] Error adding campaign_tag column:', err.message);
 });
 
 // --- KARAOKE LRC MAKER SEPARATE CONNECTION POOL & CLIENT ---
@@ -341,18 +347,23 @@ export async function getUserById(id) {
   return rows[0] || null;
 }
 
-export async function createUser(id, firstName, username, referrerId = null, referralSource = null) {
+export async function createUser(id, firstName, username, referrerId = null, referralSource = null, telegramLanguageCode = null) {
+  // Нормализуем язык Telegram (импортируем inline чтобы не создавать цикличности)
+  const { normalizeLanguageCode } = await import('./config/languages.js');
+  const langCode = normalizeLanguageCode(telegramLanguageCode);
+  const langSource = 'telegram_auto';
+
   const sql = `
     INSERT INTO users (
-      id, first_name, username, referrer_id, referral_source, 
-      last_active, last_reset_date, premium_limit
+      id, first_name, username, referrer_id, referral_source,
+      last_active, last_reset_date, premium_limit,
+      telegram_language_code, language_code, language_source, language_updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, NOW(), CURRENT_DATE, 3)
+    VALUES ($1, $2, $3, $4, $5, NOW(), CURRENT_DATE, 3, $6, $7, $8, NOW())
     ON CONFLICT (id) DO NOTHING
   `;
-  // Обрезаем источник до 50 символов
   const safeSource = referralSource ? referralSource.substring(0, 50) : null;
-  await query(sql, [id, firstName, username, referrerId, safeSource]);
+  await query(sql, [id, firstName, username, referrerId, safeSource, telegramLanguageCode || null, langCode, langSource]);
 }
 
 const userCache = new Map();
@@ -367,7 +378,7 @@ function cleanUserCache() {
   }
 }
 
-export async function getUser(id, firstName = '', username = '', startPayload = null) {
+export async function getUser(id, firstName = '', username = '', startPayload = null, telegramLanguageCode = null) {
   const cacheKey = String(id);
   const now = Date.now();
   if (!startPayload && userCache.has(cacheKey)) {
@@ -428,8 +439,8 @@ export async function getUser(id, firstName = '', username = '', startPayload = 
         }
     }
 
-    // ВАЖНО: Передаем referralSource в создание
-    await createUser(id, firstName, username, referrerId, referralSource);
+    // ВАЖНО: Передаем referralSource и язык Telegram в создание
+    await createUser(id, firstName, username, referrerId, referralSource, telegramLanguageCode);
     
     const newUserResult = await query(sqlSelect, [id]);
     return newUserResult.rows[0];
@@ -442,7 +453,8 @@ const allowedFields = new Set([
   'active', 'referred_count', 'promo_1plus1_used', 'has_reviewed',
   'notified_about_expiration',
   'notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d',
-  'can_receive_broadcasts', 'support_mode'
+  'can_receive_broadcasts', 'support_mode',
+  'language_code', 'telegram_language_code', 'language_source', 'language_updated_at'
 ]);
 
 export async function updateUserField(id, updates) {
@@ -1450,18 +1462,24 @@ export async function getBroadcastTaskById(taskId) {
 export async function createBroadcastTask(taskData) {
   const {
     message, file_id, file_mime_type, keyboard,
-    disable_web_page_preview, targetAudience, scheduledAt, disableNotification
+    disable_web_page_preview, targetAudience, scheduledAt, disableNotification,
+    target_languages, unknown_language_policy, messages_json, language_source_filter,
+    broadcast_type, campaign_name, campaign_tag, fallback_language
   } = taskData;
   const queryText = `
     INSERT INTO broadcast_tasks (
       message, file_id, file_mime_type, keyboard,
-      disable_web_page_preview, target_audience, status, scheduled_at, disable_notification
-    ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+      disable_web_page_preview, target_audience, status, scheduled_at, disable_notification,
+      target_languages, unknown_language_policy, messages_json, language_source_filter,
+      broadcast_type, campaign_name, campaign_tag, fallback_language
+    ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     RETURNING *;
   `;
   const values = [
-    message, file_id, file_mime_type, keyboard ? JSON.stringify(keyboard) : null,
-    disable_web_page_preview, targetAudience, scheduledAt || new Date(), !!disableNotification
+    message || null, file_id || null, file_mime_type || null, keyboard ? JSON.stringify(keyboard) : null,
+    !!disable_web_page_preview, targetAudience || 'all', scheduledAt || new Date(), !!disableNotification,
+    target_languages || ['all'], unknown_language_policy || 'use_ru', messages_json ? JSON.stringify(messages_json) : null, language_source_filter || 'all',
+    broadcast_type || 'marketing', campaign_name || null, campaign_tag || null, fallback_language || 'ru'
   ];
   const result = await query(queryText, values);
   return result.rows[0];
@@ -1470,7 +1488,9 @@ export async function createBroadcastTask(taskData) {
 export async function updateBroadcastTask(id, taskData) {
   const {
     message, file_id, file_mime_type, keyboard,
-    disable_web_page_preview, targetAudience, scheduledAt, disableNotification
+    disable_web_page_preview, targetAudience, scheduledAt, disableNotification,
+    target_languages, unknown_language_policy, messages_json, language_source_filter,
+    broadcast_type, campaign_name, campaign_tag, fallback_language
   } = taskData;
   const queryText = `
     UPDATE broadcast_tasks SET
@@ -1482,13 +1502,24 @@ export async function updateBroadcastTask(id, taskData) {
       target_audience = $6,
       scheduled_at = $7,
       disable_notification = $8,
+      target_languages = $9,
+      unknown_language_policy = $10,
+      messages_json = $11,
+      language_source_filter = $12,
+      broadcast_type = $13,
+      campaign_name = $14,
+      campaign_tag = $15,
+      fallback_language = $16,
       status = 'pending'
-    WHERE id = $9
+    WHERE id = $17
     RETURNING *;
   `;
   const values = [
-    message, file_id, file_mime_type, keyboard ? JSON.stringify(keyboard) : null,
-    disable_web_page_preview, targetAudience, scheduledAt || new Date(), !!disableNotification, id
+    message || null, file_id || null, file_mime_type || null, keyboard ? JSON.stringify(keyboard) : null,
+    !!disable_web_page_preview, targetAudience || 'all', scheduledAt || new Date(), !!disableNotification,
+    target_languages || ['all'], unknown_language_policy || 'use_ru', messages_json ? JSON.stringify(messages_json) : null, language_source_filter || 'all',
+    broadcast_type || 'marketing', campaign_name || null, campaign_tag || null, fallback_language || 'ru',
+    id
   ];
   const result = await query(queryText, values);
   return result.rows[0];
@@ -1511,63 +1542,334 @@ export async function getAndStartPendingBroadcastTask() {
   return rows[0] || null;
 }
 
-export async function getUsersForBroadcastBatch(broadcastId, audience, limit) {
-  let sql = `
-    SELECT id, first_name
-    FROM users
-    WHERE active = TRUE
-      AND can_receive_broadcasts = TRUE
-      AND id NOT IN (SELECT user_id FROM broadcast_log WHERE broadcast_id = $1)
-  `;
-  if (audience === 'free_users') {
-    sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`;
-  } else if (audience === 'premium_users') {
-    sql += ` AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (premium_until IS NULL OR premium_until >= NOW())`;
+export function getSqlLanguageSegmentExpr() {
+  const langRegex = /^[a-z]{2,5}$/;
+  const supportedTgPrefixes = ['ru', 'uk', 'be', 'kk', 'en'];
+
+  let whenClauses = [];
+
+  for (const lang of SUPPORTED_LANGUAGES) {
+    if (!langRegex.test(lang)) {
+      throw new Error(`[Security Alert] Недопустимый формат кода языка: ${lang}`);
+    }
+
+    // 1. user_selected / admin_changed / legacy_default → доверяем language_code напрямую
+    whenClauses.push(`
+      WHEN language_source IN ('user_selected', 'admin_changed', 'legacy_default')
+           AND language_code = '${lang}'
+      THEN '${lang}'
+    `);
+
+    // 2. telegram_auto → доверяем только если telegram_language_code из поддерживаемой группы
+    const tgLikeClauses = supportedTgPrefixes.map(p => `telegram_language_code ILIKE '${p}%'`).join(' OR ');
+    whenClauses.push(`
+      WHEN language_source = 'telegram_auto'
+           AND language_code = '${lang}'
+           AND (telegram_language_code IS NULL OR (${tgLikeClauses}))
+      THEN '${lang}'
+    `);
   }
-  sql += ` LIMIT $2`;
+
+  return `CASE ${whenClauses.join(' ')} ELSE 'unknown' END`;
+}
+
+export function buildBroadcastAudienceQuery(targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter = 'all') {
+  let whereClauses = ['active = TRUE', 'can_receive_broadcasts = TRUE'];
+  const values = [];
+
+  // 1. Фильтр по тарифам (Premium учитывает Unlimited с premium_limit IS NULL)
+  if (targetAudience === 'free_users') {
+    whereClauses.push(`(premium_until IS NULL OR premium_until < NOW() OR (premium_limit <= 5 AND premium_limit IS NOT NULL))`);
+  } else if (targetAudience === 'premium_users') {
+    whereClauses.push(`(premium_until IS NOT NULL AND premium_until >= NOW() AND (premium_limit > 5 OR premium_limit IS NULL))`);
+  }
+
+  // 2. Сегментация языка (динамическая)
+  const segmentExpr = getSqlLanguageSegmentExpr();
+
+  // 3. Фильтр по языкам
+  if (targetLanguages && !targetLanguages.includes('all')) {
+    const langConditions = [];
+    for (const lang of SUPPORTED_LANGUAGES) {
+      if (targetLanguages.includes(lang)) {
+        langConditions.push(`${segmentExpr} = '${lang}'`);
+      }
+    }
+    if (targetLanguages.includes('unknown') && unknownLanguagePolicy !== 'exclude') {
+      langConditions.push(`${segmentExpr} = 'unknown'`);
+    }
+    
+    if (langConditions.length > 0) {
+      whereClauses.push(`(${langConditions.join(' OR ')})`);
+    } else {
+      whereClauses.push('FALSE');
+    }
+  } else {
+    if (unknownLanguagePolicy === 'exclude') {
+      whereClauses.push(`${segmentExpr} != 'unknown'`);
+    }
+  }
+
+  // 4. Фильтр по источнику языка
+  if (languageSourceFilter && languageSourceFilter !== 'all') {
+    values.push(languageSourceFilter);
+    whereClauses.push(`language_source = $${values.length}`);
+  }
+
+  const whereSql = whereClauses.join(' AND ');
+  return { whereSql, segmentExpr, values };
+}
+
+export async function estimateBroadcastAudience(targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter, messagesJson = {}) {
+  const { whereSql, segmentExpr, values } = buildBroadcastAudienceQuery(targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter);
+  
+  const sql = `
+    SELECT 
+      ${segmentExpr} AS segment,
+      COUNT(*)::int AS count
+    FROM users
+    WHERE ${whereSql}
+    GROUP BY ${segmentExpr}
+  `;
+  
+  const { rows } = await query(sql, values);
+  
+  const stats = { total: 0, ru: 0, en: 0, unknown: 0, excluded: 0, excluded_by_language: 0, excluded_unknown: 0, excluded_missing_translation: 0 };
+  
+  let ruCount = 0;
+  let enCount = 0;
+  let unknownCount = 0;
+  
+  for (const row of rows) {
+    if (row.segment === 'ru') ruCount = row.count;
+    else if (row.segment === 'en') enCount = row.count;
+    else if (row.segment === 'unknown') unknownCount = row.count;
+  }
+  
+  // Исключено из-за отсутствия перевода
+  let missingTranslation = 0;
+  if (!messagesJson?.ru?.message) {
+    missingTranslation += ruCount;
+    if (unknownLanguagePolicy === 'use_ru') {
+      missingTranslation += unknownCount;
+    }
+  }
+  if (!messagesJson?.en?.message) {
+    missingTranslation += enCount;
+    if (unknownLanguagePolicy === 'use_en') {
+      missingTranslation += unknownCount;
+    }
+  }
+  
+  stats.ru = ruCount;
+  stats.en = enCount;
+  stats.unknown = unknownCount;
+  stats.excluded_missing_translation = missingTranslation;
+  
+  // Исключено из-за exclude политики для unknown
+  if (unknownLanguagePolicy === 'exclude') {
+    stats.excluded_unknown = unknownCount;
+  }
+  
+  // Исключено по языку (если сегмент пользователя не входит в targetLanguages)
+  if (targetLanguages && !targetLanguages.includes('all')) {
+    if (!targetLanguages.includes('ru')) stats.excluded_by_language += ruCount;
+    if (!targetLanguages.includes('en')) stats.excluded_by_language += enCount;
+    if (!targetLanguages.includes('unknown')) stats.excluded_by_language += unknownCount;
+  }
+  
+  stats.total = ruCount + enCount + unknownCount - stats.excluded_missing_translation;
+  
+  // Общее базовое количество активных пользователей с тарифом
+  let baseAudienceSql = `SELECT COUNT(*)::int AS count FROM users WHERE active = TRUE AND can_receive_broadcasts = TRUE`;
+  const baseParams = [];
+  if (targetAudience === 'free_users') {
+    baseAudienceSql += ` AND (premium_until IS NULL OR premium_until < NOW() OR (premium_limit <= 5 AND premium_limit IS NOT NULL))`;
+  } else if (targetAudience === 'premium_users') {
+    baseAudienceSql += ` AND (premium_until IS NOT NULL AND premium_until >= NOW() AND (premium_limit > 5 OR premium_limit IS NULL))`;
+  }
+  if (languageSourceFilter && languageSourceFilter !== 'all') {
+    baseParams.push(languageSourceFilter);
+    baseAudienceSql += ` AND language_source = $1`;
+  }
+  
+  const baseRes = await query(baseAudienceSql, baseParams);
+  stats.base_audience = baseRes.rows[0].count;
+  stats.excluded = stats.base_audience - stats.total;
+
+  return stats;
+}
+
+export async function createBroadcastSnapshot(broadcastId, targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter, messagesJson = {}, fallbackLanguage = 'ru') {
+  const { whereSql, values } = buildBroadcastAudienceQuery(targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter);
+  const segmentExpr = getSqlLanguageSegmentExpr();
+
+  const sql = `
+    INSERT INTO broadcast_log (broadcast_id, user_id, audience_language_segment, delivered_language, status)
+    SELECT 
+      $${values.length + 1} AS broadcast_id,
+      u.id AS user_id,
+      ${segmentExpr} AS audience_language_segment,
+      COALESCE(
+        CASE 
+          WHEN (${segmentExpr}) = 'ru' AND ($${values.length + 3}::jsonb ? 'ru') THEN 'ru'
+          WHEN (${segmentExpr}) = 'en' AND ($${values.length + 3}::jsonb ? 'en') THEN 'en'
+          ELSE NULL
+        END,
+        CASE 
+          WHEN (${segmentExpr}) = 'unknown' AND $${values.length + 2} = 'use_en' AND ($${values.length + 3}::jsonb ? 'en') THEN 'en'
+          WHEN (${segmentExpr}) = 'unknown' AND $${values.length + 2} = 'use_ru' AND ($${values.length + 3}::jsonb ? 'ru') THEN 'ru'
+          ELSE NULL
+        END,
+        $${values.length + 4}
+      ) AS delivered_language,
+      'pending' AS status
+    FROM users u
+    WHERE ${whereSql}
+    ON CONFLICT (broadcast_id, user_id) DO NOTHING
+  `;
+
+  const fallbackPolicy = unknownLanguagePolicy === 'use_en' ? 'use_en' : 'use_ru';
+  await query(sql, [...values, broadcastId, fallbackPolicy, JSON.stringify(messagesJson), fallbackLanguage]);
+}
+
+export async function startCampaignTransaction(broadcastId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Блокируем строку кампании
+    const res = await client.query('SELECT * FROM broadcast_tasks WHERE id = $1 FOR UPDATE', [broadcastId]);
+    const campaign = res.rows[0];
+    
+    if (!campaign) {
+      throw new Error('Кампания не найдена.');
+    }
+    if (campaign.status !== 'pending') {
+      throw new Error('Кампания уже запущена или обработана.');
+    }
+
+    // Динамическая валидация переводов
+    const targetLangs = campaign.target_languages || ['all'];
+    const messages = campaign.messages_json || {};
+    const broadcastType = campaign.broadcast_type || 'marketing';
+
+    if (broadcastType === 'system_update') {
+      // Для system_update достаточно хотя бы одного заполненного языка
+      const hasAnyMessage = SUPPORTED_LANGUAGES.some(lang => messages[lang]?.message);
+      if (!hasAnyMessage) {
+        throw new Error('Для system_update должно быть заполнено сообщение хотя бы на одном языке.');
+      }
+    } else {
+      // Для остальных типов требуем все переводы для выбранных языков
+      for (const lang of SUPPORTED_LANGUAGES) {
+        if (targetLangs.includes('all') || targetLangs.includes(lang)) {
+          if (!messages[lang]?.message) {
+            throw new Error(`Отсутствует перевод сообщения для языка: ${lang.toUpperCase()}`);
+          }
+        }
+      }
+      
+      if (targetLangs.includes('all') || targetLangs.includes('unknown')) {
+        const policy = campaign.unknown_language_policy;
+        if (policy === 'use_ru' && !messages.ru?.message) {
+          throw new Error('Для пользователей с неизвестным языком выбрана политика RU, но русский текст не заполнен.');
+        }
+        if (policy === 'use_en' && !messages.en?.message) {
+          throw new Error('Для пользователей с неизвестным языком выбрана политика EN, но английский текст не заполнен.');
+        }
+      }
+    }
+
+
+    // Создаем snapshot в broadcast_log
+    await createBroadcastSnapshot(
+      broadcastId,
+      campaign.target_audience,
+      campaign.target_languages,
+      campaign.unknown_language_policy,
+      campaign.language_source_filter,
+      campaign.messages_json,
+      campaign.fallback_language || 'ru'
+    );
+
+    // Подсчитываем размер созданной аудитории
+    const countRes = await client.query(
+      `SELECT COUNT(*)::int AS count FROM broadcast_log WHERE broadcast_id = $1`,
+      [broadcastId]
+    );
+    const totalCount = countRes.rows[0].count;
+
+    // Обновляем статус кампании
+    await client.query(`
+      UPDATE broadcast_tasks
+      SET status = 'processing', started_at = NOW()
+      WHERE id = $1
+    `, [broadcastId]);
+
+    await client.query('COMMIT');
+    return totalCount;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getUsersForBroadcastBatch(broadcastId, audience, limit) {
+  // Выбираем получателей из snapshot (broadcast_log) со статусом pending
+  const sql = `
+    SELECT l.user_id AS id, l.delivered_language, u.first_name
+    FROM broadcast_log l
+    JOIN users u ON l.user_id = u.id
+    WHERE l.broadcast_id = $1 AND l.status = 'pending'
+    LIMIT $2
+  `;
   const { rows } = await query(sql, [broadcastId, limit]);
   return rows;
 }
 
-export async function logBroadcastSent(broadcastId, userId) {
+export async function logBroadcastSent(broadcastId, userId, status = 'sent', audienceSegment = null, deliveredLang = null) {
   await query(
-    `INSERT INTO broadcast_log (broadcast_id, user_id)
-     VALUES ($1, $2)
-     ON CONFLICT (broadcast_id, user_id) DO NOTHING`,
-    [broadcastId, userId]
+    `INSERT INTO broadcast_log (broadcast_id, user_id, status, audience_language_segment, delivered_language, sent_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())
+     ON CONFLICT (broadcast_id, user_id) DO UPDATE
+     SET status = EXCLUDED.status,
+         audience_language_segment = COALESCE(broadcast_log.audience_language_segment, EXCLUDED.audience_language_segment),
+         delivered_language = COALESCE(broadcast_log.delivered_language, EXCLUDED.delivered_language),
+         sent_at = NOW()`,
+    [broadcastId, userId, status, audienceSegment, deliveredLang]
   );
 }
 
 export async function getBroadcastProgress(broadcastId, audience) {
   try {
-    // 1. Сколько уже РЕАЛЬНО отправлено (из логов)
     const sentResult = await query(
-      `SELECT COUNT(*) as count FROM broadcast_log WHERE broadcast_id = $1`, 
+      `SELECT COUNT(*) as count FROM broadcast_log WHERE broadcast_id = $1 AND status IN ('sent', 'blocked', 'failed')`, 
       [broadcastId]
     );
     const sent = parseInt(sentResult.rows[0]?.count || 0, 10);
 
-    // 2. Считаем Total точно так же, как выбираем юзеров
-    let sql = `SELECT COUNT(*) as count FROM users WHERE active = TRUE AND can_receive_broadcasts = TRUE`;
-    
-    // ВАЖНО: сопоставляем ключи с теми, что используются в getUsersForBroadcastBatch
-    if (audience === 'free_users') {
-      sql += ` AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`;
-    } else if (audience === 'premium_users') {
-      sql += ` AND (premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (premium_until IS NULL OR premium_until >= NOW()))`;
-    }
-
-    const totalResult = await query(sql);
-    let total = parseInt(totalResult.rows[0]?.count || 0, 10);
-
-    // Защита: общее количество не может быть меньше отправленного
-    if (total < sent) total = sent;
+    const totalResult = await query(
+      `SELECT COUNT(*) as count FROM broadcast_log WHERE broadcast_id = $1`,
+      [broadcastId]
+    );
+    const total = parseInt(totalResult.rows[0]?.count || 0, 10);
 
     return { total, sent };
   } catch (err) {
     console.error('[DB] Ошибка в getBroadcastProgress:', err);
     return { total: 0, sent: 0 };
   }
+}
+
+export async function logLanguageChange(userId, prevLang, newLang, prevSource, newSource, changedByType, changedByUserId = null) {
+  await query(
+    `INSERT INTO language_history (user_id, previous_language, new_language, previous_source, new_source, changed_by_type, changed_by_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [userId, prevLang, newLang, prevSource, newSource, changedByType, changedByUserId]
+  );
 }
 export async function updateBroadcastStatus(taskId, status, errorMessage = null) {
   const report = status === 'failed' ? JSON.stringify({ error: errorMessage }) : null;
@@ -2464,6 +2766,17 @@ export async function runAnalyticsSystemMigration() {
   }
 }
 
+export async function runMultilangSystemMigration() {
+  try {
+    const migrationPath = path.join(__dirname, 'migrations', '007_multilang_system.sql');
+    const sql = fs.readFileSync(migrationPath, 'utf8');
+    await query(sql);
+    console.log('✅ [DB] Автоматическая миграция мультиязычности и рассылок (007) выполнена успешно.');
+  } catch (err) {
+    console.error('❌ [DB] Ошибка автоматической миграции мультиязычности и рассылок (007):', err.message);
+  }
+}
+
 export async function createSupportMessage(userId, text, sender, mediaType = 'text', fileId = null) {
   const sql = `
     INSERT INTO support_messages (user_id, message_text, sender, is_read, media_type, file_id)
@@ -2959,4 +3272,151 @@ export async function backfillMissingDays() {
   console.log('[Analytics/Backfill] Проверка завершена.');
 }
 
+export async function getLanguageDistribution() {
+  const sql = `
+    SELECT
+      COALESCE(language_code, 'NULL') AS language_code,
+      COALESCE(language_source, 'NULL') AS language_source,
+      COUNT(*)::int AS count
+    FROM users
+    GROUP BY 1, 2
+    ORDER BY count DESC
+  `;
+  const { rows } = await query(sql);
+  return rows;
+}
+
+export async function getLanguageHistoryForUser(userId) {
+  const sql = `
+    SELECT * FROM language_history
+    WHERE user_id = $1
+    ORDER BY changed_at DESC
+  `;
+  const { rows } = await query(sql, [userId]);
+  return rows;
+}
+
+export async function setUserLanguageByAdmin(userId, langCode, adminId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Получаем текущие данные пользователя
+    const userRes = await client.query('SELECT language_code, language_source FROM users WHERE id = $1', [userId]);
+    const user = userRes.rows[0];
+    if (!user) {
+      throw new Error('Пользователь не найден.');
+    }
+    
+    const prevLang = user.language_code || 'ru';
+    const prevSource = user.language_source || 'legacy_default';
+    
+    // Обновляем пользователя
+    await client.query(
+      `UPDATE users 
+       SET language_code = $2, 
+           language_source = 'admin_changed', 
+           language_updated_at = NOW() 
+       WHERE id = $1`,
+      [userId, langCode]
+    );
+    
+    // Записываем историю
+    await client.query(
+      `INSERT INTO language_history 
+       (user_id, previous_language, new_language, previous_source, new_source, changed_by_type, changed_by_user_id)
+       VALUES ($1, $2, $3, $4, 'admin_changed', 'admin', $5)`,
+      [userId, prevLang, langCode, prevSource, adminId]
+    );
+    
+    await client.query('COMMIT');
+    userCache.delete(String(userId));
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getBroadcastTaskStats(broadcastId) {
+  // 1. Сводка доставки
+  const deliveryRes = await query(
+    `SELECT status, COUNT(*)::int AS count FROM broadcast_log WHERE broadcast_id = $1 GROUP BY status`,
+    [broadcastId]
+  );
+  const delivery = { sent: 0, failed: 0, blocked: 0, pending: 0 };
+  for (const row of deliveryRes.rows) {
+    if (row.status === 'sent') delivery.sent = row.count;
+    else if (row.status === 'failed') delivery.failed = row.count;
+    else if (row.status === 'blocked') delivery.blocked = row.count;
+    else if (row.status === 'pending') delivery.pending = row.count;
+  }
+  delivery.total = delivery.sent + delivery.failed + delivery.blocked + delivery.pending;
+
+  // 2. Доставка по языкам
+  const langRes = await query(
+    `SELECT delivered_language, status, COUNT(*)::int AS count 
+     FROM broadcast_log 
+     WHERE broadcast_id = $1 
+     GROUP BY delivered_language, status`,
+    [broadcastId]
+  );
+  const languages = {};
+  for (const row of langRes.rows) {
+    const lang = row.delivered_language || 'unknown';
+    if (!languages[lang]) languages[lang] = { sent: 0, failed: 0, blocked: 0, pending: 0 };
+    if (row.status === 'sent') languages[lang].sent = row.count;
+    else if (row.status === 'failed') languages[lang].failed = row.count;
+    else if (row.status === 'blocked') languages[lang].blocked = row.count;
+    else if (row.status === 'pending') languages[lang].pending = row.count;
+  }
+
+  // 3. Клики по кнопкам
+  const clickRes = await query(
+    `SELECT button_index, COUNT(*)::int AS total, COUNT(DISTINCT user_id)::int AS unique 
+     FROM broadcast_clicks 
+     WHERE campaign_id = $1 
+     GROUP BY button_index 
+     ORDER BY button_index ASC`,
+    [broadcastId]
+  );
+  const clicks = clickRes.rows;
+
+  // 4. Просмотры тарифов (Upgrade) в течение 24 часов
+  const upgradeRes = await query(
+    `SELECT COUNT(DISTINCT e.user_id)::int AS count
+     FROM analytics_events e
+     JOIN broadcast_log l ON e.user_id = l.user_id
+     WHERE l.broadcast_id = $1 
+       AND l.status = 'sent'
+       AND e.event_name = 'star_payment_option_shown'
+       AND e.created_at >= l.updated_at 
+       AND e.created_at <= l.updated_at + INTERVAL '24 hours'`,
+    [broadcastId]
+  );
+  const upgradesAfterSent = upgradeRes.rows[0]?.count || 0;
+
+  // 5. Оплаты (Payments) в течение 24 часов
+  const paymentRes = await query(
+    `SELECT COUNT(DISTINCT o.user_id)::int AS count
+     FROM payment_orders o
+     JOIN broadcast_log l ON o.user_id = l.user_id
+     WHERE l.broadcast_id = $1 
+       AND l.status = 'sent'
+       AND o.status = 'success'
+       AND o.updated_at >= l.updated_at 
+       AND o.updated_at <= l.updated_at + INTERVAL '24 hours'`,
+    [broadcastId]
+  );
+  const paymentsAfterSent = paymentRes.rows[0]?.count || 0;
+
+  return {
+    delivery,
+    languages,
+    clicks,
+    upgradesAfterSent,
+    paymentsAfterSent
+  };
+}
 

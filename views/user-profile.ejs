@@ -149,8 +149,79 @@
             </div>
           </dd>
         </dl>
+    </div>
+
+    <%# Карточка Управления Языком %>
+    <div class="card shadow-sm mb-4">
+      <div class="card-header fw-semibold bg-light"><i class="bi bi-translate me-2"></i>Языковые настройки</div>
+      <div class="card-body">
+        <dl class="row mb-3 dl-horizontal">
+          <dt class="col-sm-5">Текущий язык</dt>
+          <dd class="col-sm-7">
+            <% if (u.language_code === 'ru') { %>
+              🇷🇺 Русский (ru)
+            <% } else if (u.language_code === 'en') { %>
+              🇬🇧 English (en)
+            <% } else { %>
+              ❓ Неизвестно (<%= u.language_code || '—' %>)
+            <% } %>
+          </dd>
+          
+          <dt class="col-sm-5">Источник</dt>
+          <dd class="col-sm-7">
+            <span class="badge bg-info text-dark"><%= u.language_source || 'legacy_default' %></span>
+          </dd>
+
+          <dt class="col-sm-5">Код Telegram</dt>
+          <dd class="col-sm-7">
+            <code><%= u.telegram_language_code || '—' %></code>
+          </dd>
+          
+          <dt class="col-sm-5">Дата изменения</dt>
+          <dd class="col-sm-7">
+            <%= formatDate(u.language_updated_at) %>
+          </dd>
+        </dl>
+
+        <form class="d-flex gap-2 mb-3" method="POST" action="/user/<%= u.id %>/set-language" onsubmit="return confirm('Изменить язык пользователя?');">
+          <button type="submit" name="lang" value="ru" class="btn btn-sm btn-outline-primary flex-grow-1 <%= u.language_code === 'ru' ? 'active' : '' %>">
+            🇷🇺 Установить RU
+          </button>
+          <button type="submit" name="lang" value="en" class="btn btn-sm btn-outline-primary flex-grow-1 <%= u.language_code === 'en' ? 'active' : '' %>">
+            🇬🇧 Установить EN
+          </button>
+        </form>
+
+        <% if (typeof languageHistory !== 'undefined' && languageHistory && languageHistory.length > 0) { %>
+          <div class="mt-3">
+            <h6 class="small fw-bold text-muted text-uppercase mb-2"><i class="bi bi-clock-history me-1"></i>История изменений</h6>
+            <div class="table-responsive" style="max-height: 200px; overflow-y: auto; font-size: 0.85rem;">
+              <table class="table table-sm table-striped table-bordered mb-0">
+                <thead>
+                  <tr>
+                    <th>Дата</th>
+                    <th>Язык</th>
+                    <th>Источник</th>
+                    <th>Изменил</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% languageHistory.forEach(h => { %>
+                    <tr>
+                      <td class="text-nowrap"><%= formatDate(h.changed_at) %></td>
+                      <td class="text-nowrap"><code><%= h.previous_language %></code> ➔ <code><%= h.new_language %></code></td>
+                      <td class="text-nowrap"><code><%= h.previous_source || '—' %></code> ➔ <code><%= h.new_source %></code></td>
+                      <td><%= h.changed_by_type === 'admin' ? 'Админ (' + h.changed_by_user_id + ')' : 'Авто' %></td>
+                    </tr>
+                  <% }) %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        <% } %>
       </div>
     </div>
+
 
     <%# Карточка Смены Тарифа %>
     <%# Карточка Смены Тарифа %>

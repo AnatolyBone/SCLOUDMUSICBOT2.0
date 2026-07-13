@@ -76,8 +76,8 @@ const editableTexts = {
 
 const defaults = { ...systemKeys, ...editableTexts };
 
-export function getEditableTexts() {
-  const currentTexts = allTextsSync();
+export function getEditableTexts(lang = 'ru') {
+  const currentTexts = allTextsSync(lang);
   const result = { ...editableTexts };
   for (const key in currentTexts) {
     if (!systemKeys.hasOwnProperty(key)) {
@@ -87,46 +87,58 @@ export function getEditableTexts() {
   return result;
 }
 
-let cache = { ...defaults };
+let cacheByLang = {
+  ru: {},
+  en: {}
+};
 let lastLoad = 0;
 const TTL_MS = 60 * 1000;
 
 export async function loadTexts(force = false) {
   const now = Date.now();
-  if (!force && now - lastLoad < TTL_MS) return cache;
+  if (!force && now - lastLoad < TTL_MS) return cacheByLang;
   try {
-    const { data, error } = await supabase.from('bot_texts').select('key,value');
+    const { data, error } = await supabase.from('bot_texts').select('key,value,language_code');
     if (error) {
       console.error('[texts] Ошибка загрузки из Supabase:', error.message);
-      return cache;
+      return cacheByLang;
     }
-    const map = { ...defaults };
+    const map = {
+      ru: {},
+      en: {}
+    };
     for (const row of data || []) {
-      if (row?.key && typeof row.value === 'string') map[row.key] = row.value;
+      if (row?.key && typeof row.value === 'string') {
+        const lang = row.language_code || 'ru';
+        if (!map[lang]) map[lang] = {};
+        map[lang][row.key] = row.value;
+      }
     }
-    cache = map;
+    cacheByLang = map;
     lastLoad = now;
   } catch (e) {
     console.error('[texts] Критическая ошибка при загрузке текстов:', e.message);
   }
-  return cache;
+  return cacheByLang;
 }
 
 export function T(key) {
-  return cache[key] ?? defaults[key] ?? '';
+  return cacheByLang['ru']?.[key] ?? defaults[key] ?? '';
 }
 
-export function allTextsSync() {
-  return { ...cache };
+export function allTextsSync(lang = 'ru') {
+  return { ...cacheByLang[lang] };
 }
 
-export async function setText(key, value) {
+export async function setText(key, value, lang = 'ru') {
   if (!key) throw new Error('key is required');
   const { error } = await supabase
     .from('bot_texts')
-    .upsert({ key, value }, { onConflict: 'key' });
+    .upsert({ key, value, language_code: lang }, { onConflict: 'key,language_code' });
   if (error) throw new Error(error.message);
-  cache[key] = value;
+  
+  if (!cacheByLang[lang]) cacheByLang[lang] = {};
+  cacheByLang[lang][key] = value;
   lastLoad = 0;
   return true;
 }

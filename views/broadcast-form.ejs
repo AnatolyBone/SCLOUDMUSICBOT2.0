@@ -1,85 +1,383 @@
-<% // views/broadcast-form.ejs (ФИНАЛЬНАЯ ВЕРСИЯ С ИСПРАВЛЕННОЙ ЛОГИКОЙ) %>
 <%- contentFor('body') %>
 
-<%# --- ВОТ ГЛАВНЫЙ ФИКС --- %>
 <% const isEditing = typeof task !== 'undefined' && task && task.id; %>
 
 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
-  <h1 class="h2"><%= isEditing ? 'Редактировать рассылку' : 'Создать рассылку' %></h1>
+  <h1 class="h2"><%= isEditing ? 'Редактировать рассылку' : 'Создать мультиязычную рассылку' %></h1>
   <a href="/broadcasts" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left"></i> Назад к списку</a>
 </div>
 
-<% if (success) { %><div class="alert alert-success"><%= success %></div><% } %>
-<% if (error) { %><div class="alert alert-danger"><%= error %></div><% } %>
+<% if (locals.success) { %><div class="alert alert-success"><%= locals.success %></div><% } %>
+<% if (locals.error) { %><div class="alert alert-danger"><%= locals.error %></div><% } %>
 
-<div class="card shadow-sm">
+<div class="card shadow-sm mb-4">
   <div class="card-body">
     <form id="broadcastForm" method="POST" action="<%= isEditing ? '/broadcast/edit/' + task.id : '/broadcast/new' %>" enctype="multipart/form-data">
-
-      <div class="mb-3">
-        <label for="message" class="form-label">Текст сообщения</label>
-        <textarea name="message" id="message" class="form-control" rows="5" required><%= (typeof task !== 'undefined' && task.message) ? task.message : '' %></textarea>
-        <div class="form-text">Поддерживается <b>HTML-разметка</b> и тег <code>{first_name}</code> для обращения по имени.</div>
+      <input type="hidden" name="action" id="form_action" value="send">
+      
+      <div class="row">
+        <div class="col-md-4 mb-3">
+          <label for="campaign_name" class="form-label fw-semibold">Название кампании</label>
+          <input type="text" name="campaign_name" id="campaign_name" class="form-control" placeholder="Например: Промо тарифа Pro (Лето)" value="<%= (typeof task !== 'undefined' && task.campaign_name) ? task.campaign_name : '' %>" required>
+        </div>
+        <div class="col-md-4 mb-3">
+          <label for="campaign_tag" class="form-label fw-semibold">Тег кампании (UTM / Campaign Tag)</label>
+          <input type="text" name="campaign_tag" id="campaign_tag" class="form-control" placeholder="Например: promo_pro_july" value="<%= (typeof task !== 'undefined' && task.campaign_tag) ? task.campaign_tag : '' %>" pattern="^[a-zA-Z0-9_-]+$" title="Только английские буквы, цифры, дефис и подчеркивание" required>
+          <div class="form-text text-muted">Используется для сквозного отслеживания кликов и конверсий.</div>
+        </div>
+        <div class="col-md-4 mb-3">
+          <label for="broadcast_type" class="form-label fw-semibold">Тип рассылки</label>
+          <select class="form-select" id="broadcast_type" name="broadcast_type">
+            <option value="marketing" <%= (typeof task !== 'undefined' && task.broadcast_type === 'marketing') ? 'selected' : '' %>>Маркетинг (Marketing)</option>
+            <option value="system_update" <%= (typeof task !== 'undefined' && task.broadcast_type === 'system_update') ? 'selected' : '' %>>Системное обновление (System Update)</option>
+            <option value="payment" <%= (typeof task !== 'undefined' && task.broadcast_type === 'payment') ? 'selected' : '' %>>Оплата (Payment)</option>
+            <option value="maintenance" <%= (typeof task !== 'undefined' && task.broadcast_type === 'maintenance') ? 'selected' : '' %>>Обслуживание (Maintenance)</option>
+          </select>
+        </div>
       </div>
 
-      <div class="mb-3">
-        <label for="buttons" class="form-label">Инлайн-кнопки (необязательно)</label>
-        <textarea name="buttons" id="buttons" class="form-control" rows="3" placeholder="Текст кнопки | тип | данные (каждая кнопка с новой строки)"><%= (typeof task !== 'undefined' && task.buttons_text) ? task.buttons_text : '' %></textarea>
-        <div class="form-text">
-          Типы: <code>url</code>, <code>callback</code>, <code>inline_search</code>. Пример: <code>Наш канал | url | https://t.me/your_channel</code>
+      <div class="row">
+        <div class="col-md-4 mb-3">
+          <label for="targetAudience" class="form-label fw-semibold">Аудитория</label>
+          <select class="form-select" id="targetAudience" name="targetAudience">
+            <option value="all" <%= (typeof task !== 'undefined' && task.target_audience === 'all') ? 'selected' : '' %>>Всем активным</option>
+            <option value="free_users" <%= (typeof task !== 'undefined' && task.target_audience === 'free_users') ? 'selected' : '' %>>Только Free</option>
+            <option value="premium_users" <%= (typeof task !== 'undefined' && task.target_audience === 'premium_users') ? 'selected' : '' %>>Только Premium</option>
+          </select>
+        </div>
+        <div class="col-md-4 mb-3">
+          <label class="form-label fw-semibold">Целевые языки</label>
+          <div class="d-flex flex-wrap gap-3 pt-2">
+            <% 
+              const activeLangs = (typeof task !== 'undefined' && task.target_languages) ? task.target_languages : ['all'];
+              const isChecked = (lang) => activeLangs.includes(lang) ? 'checked' : '';
+            %>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="target_languages[]" value="all" id="lang_all" <%= isChecked('all') %>>
+              <label class="form-check-label" for="lang_all">Все (All)</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="target_languages[]" value="ru" id="lang_ru" <%= isChecked('ru') %>>
+              <label class="form-check-label" for="lang_ru">🇷🇺 RU</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="target_languages[]" value="en" id="lang_en" <%= isChecked('en') %>>
+              <label class="form-check-label" for="lang_en">🇬🇧 EN</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="target_languages[]" value="unknown" id="lang_unknown" <%= isChecked('unknown') %>>
+              <label class="form-check-label" for="lang_unknown">❓ Неизвестные</label>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-4 mb-3">
+          <label for="fallback_language" class="form-label fw-semibold">Язык по умолчанию (Fallback)</label>
+          <select class="form-select" id="fallback_language" name="fallback_language">
+            <option value="ru" <%= (typeof task !== 'undefined' && task.fallback_language === 'ru') ? 'selected' : '' %>>🇷🇺 Русский (ru)</option>
+            <option value="en" <%= (typeof task !== 'undefined' && task.fallback_language === 'en') ? 'selected' : '' %>>🇬🇧 English (en)</option>
+          </select>
         </div>
       </div>
 
       <div class="row">
         <div class="col-md-6 mb-3">
-          <label for="file" class="form-label">Файл (фото, видео, аудио, документ)</label>
-          <input type="file" name="file" id="file" class="form-control" />
-          <% if (isEditing && (task.audio_path || task.file_path || task.file_id)) { %>
-            <div class="form-text">Прикреплен файл. Загрузка нового заменит его.</div>
-          <% } %>
+          <label for="unknown_language_policy" class="form-label fw-semibold">Политика для неизвестных языков</label>
+          <select class="form-select" id="unknown_language_policy" name="unknown_language_policy">
+            <option value="use_ru" <%= (typeof task !== 'undefined' && task.unknown_language_policy === 'use_ru') ? 'selected' : '' %>>🇷🇺 Отправить русскую версию (RU)</option>
+            <option value="use_en" <%= (typeof task !== 'undefined' && task.unknown_language_policy === 'use_en') ? 'selected' : '' %>>🇬🇧 Отправить английскую версию (EN)</option>
+            <option value="exclude" <%= (typeof task !== 'undefined' && task.unknown_language_policy === 'exclude') ? 'selected' : '' %>>❌ Не отправлять (Исключить)</option>
+          </select>
         </div>
         <div class="col-md-6 mb-3">
-          <label for="targetAudience" class="form-label">Аудитория</label>
-          <select class="form-select" id="targetAudience" name="targetAudience">
-            <option value="all" <%= (isEditing && task.target_audience === 'all') ? 'selected' : '' %>>Всем активным</option>
-            <option value="free_users" <%= (isEditing && task.target_audience === 'free_users') ? 'selected' : '' %>>Только Free</option>
-            <option value="premium_users" <%= (isEditing && task.target_audience === 'premium_users') ? 'selected' : '' %>>Только Premium</option>
-          </select>
+          <label for="file" class="form-label fw-semibold">Медиа файл (необязательно)</label>
+          <input type="file" name="file" id="file" class="form-control" />
+          <% if (isEditing && (task.file_path || task.file_id)) { %>
+            <div class="form-text text-success"><i class="bi bi-paperclip"></i> Файл прикреплен. Загрузка нового файла заменит текущий.</div>
+          <% } %>
+        </div>
+      </div>
+
+      <hr class="my-4">
+
+      <%# Табы для локализации %>
+      <div class="mb-4">
+        <ul class="nav nav-tabs" id="langTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active fw-bold text-primary" id="ru-tab" data-bs-toggle="tab" data-bs-target="#ru-pane" type="button" role="tab" aria-controls="ru-pane" aria-selected="true">
+              🇷🇺 Русский (RU)
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link fw-bold text-success" id="en-tab" data-bs-toggle="tab" data-bs-target="#en-pane" type="button" role="tab" aria-controls="en-pane" aria-selected="false">
+              🇬🇧 English (EN)
+            </button>
+          </li>
+        </ul>
+        <div class="tab-content border-start border-end border-bottom p-3 bg-light bg-opacity-50" id="langTabsContent">
+          
+          <%# ПАНЕЛЬ RU %>
+          <div class="tab-pane fade show active" id="ru-pane" role="tabpanel" aria-labelledby="ru-tab" tabindex="0">
+            <div class="mb-3">
+              <label for="message_ru" class="form-label fw-semibold text-primary">Текст сообщения (RU)</label>
+              <textarea name="message_ru" id="message_ru" class="form-control" rows="5"><%= (typeof task !== 'undefined' && task.message_ru) ? task.message_ru : '' %></textarea>
+              <div class="form-text">Поддерживается HTML разметка и <code>{first_name}</code>.</div>
+            </div>
+            <div class="mb-0">
+              <label for="buttons_ru" class="form-label fw-semibold text-primary">Инлайн-кнопки (RU)</label>
+              <textarea name="buttons_ru" id="buttons_ru" class="form-control" rows="3" placeholder="Текст кнопки | тип | данные (каждая с новой строки)"><%= (typeof task !== 'undefined' && task.buttons_ru) ? task.buttons_ru : '' %></textarea>
+              <div class="form-text">Пример: <code>Наш канал | url | https://t.me/our_channel</code></div>
+            </div>
+          </div>
+
+          <%# ПАНЕЛЬ EN %>
+          <div class="tab-pane fade" id="en-pane" role="tabpanel" aria-labelledby="en-tab" tabindex="0">
+            <div class="mb-3">
+              <label for="message_en" class="form-label fw-semibold text-success">Message text (EN)</label>
+              <textarea name="message_en" id="message_en" class="form-control" rows="5"><%= (typeof task !== 'undefined' && task.message_en) ? task.message_en : '' %></textarea>
+              <div class="form-text">HTML formatting and <code>{first_name}</code> are supported.</div>
+            </div>
+            <div class="mb-0">
+              <label for="buttons_en" class="form-label fw-semibold text-success">Inline buttons (EN)</label>
+              <textarea name="buttons_en" id="buttons_en" class="form-control" rows="3" placeholder="Button text | type | data (each on a new line)"><%= (typeof task !== 'undefined' && task.buttons_en) ? task.buttons_en : '' %></textarea>
+              <div class="form-text">Example: <code>Join Channel | url | https://t.me/our_channel_en</code></div>
+            </div>
+          </div>
+
         </div>
       </div>
 
       <div class="row align-items-end">
         <div class="col-md-6 mb-3">
-          <label for="localScheduledAt" class="form-label">Запланировать на (ваше локальное время)</label>
-          <input type="datetime-local" class="form-control" id="localScheduledAt" value="<%= isEditing && task.scheduled_at ? new Date(new Date(task.scheduled_at).getTime() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 16) : '' %>">
+          <label for="localScheduledAt" class="form-label fw-semibold">Запланировать на (ваше локальное время)</label>
+          <input type="datetime-local" class="form-control" id="localScheduledAt" value="<%= (typeof task !== 'undefined' && task.scheduled_at) ? new Date(new Date(task.scheduled_at).getTime() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 16) : '' %>">
           <input type="hidden" name="scheduledAt" id="scheduledAt">
         </div>
         <div class="col-md-6 mb-3 d-flex flex-wrap gap-3">
           <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" name="disable_notification" id="disable_notification" <%= (isEditing && task.disable_notification) ? 'checked' : '' %>>
+            <input class="form-check-input" type="checkbox" name="disable_notification" id="disable_notification" <%= (typeof task !== 'undefined' && task.disable_notification) ? 'checked' : '' %>>
             <label class="form-check-label" for="disable_notification">Тихая рассылка</label>
           </div>
           <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" name="enable_web_page_preview" id="enable_web_page_preview" <%= (isEditing && !task.disable_web_page_preview) ? 'checked' : '' %>>
+            <input class="form-check-input" type="checkbox" name="enable_web_page_preview" id="enable_web_page_preview" <%= (typeof task !== 'undefined' && !task.disable_web_page_preview) ? 'checked' : '' %>>
             <label class="form-check-label" for="enable_web_page_preview">Предпросмотр ссылки</label>
           </div>
         </div>
       </div>
 
-      <div class="d-flex flex-wrap gap-2">
-        <% if (!isEditing) { %><button type="submit" name="action" value="preview" class="btn btn-outline-secondary">Предпросмотр</button><% } %>
-        <button type="submit" name="action" value="send" class="btn btn-primary flex-grow-1" onclick="return confirm('Вы уверены?')">🚀 <%= isEditing ? 'Сохранить' : 'Отправить/Запланировать' %></button>
+      <div class="card bg-light border mb-4">
+        <div class="card-body py-2 px-3">
+          <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+            <div class="d-flex align-items-center gap-2">
+              <span class="badge bg-primary fs-6" id="estimate_total">0</span>
+              <span class="small fw-semibold text-muted">получателей оценено</span>
+            </div>
+            <div class="d-flex gap-3 small">
+              <div>🇷🇺 RU: <span class="fw-bold" id="estimate_ru">0</span></div>
+              <div>🇬🇧 EN: <span class="fw-bold" id="estimate_en">0</span></div>
+              <div>❓ Unknown: <span class="fw-bold" id="estimate_unknown">0</span></div>
+              <div class="text-danger">Исключено: <span class="fw-bold" id="estimate_excluded">0</span></div>
+            </div>
+            <button type="button" id="btn_estimate" class="btn btn-sm btn-outline-secondary"><i class="bi bi-calculator"></i> Пересчитать</button>
+          </div>
+        </div>
       </div>
+
+      <div class="d-flex flex-wrap gap-2">
+        <button type="button" onclick="submitPreview('ru')" class="btn btn-outline-primary"><i class="bi bi-eye"></i> Предпросмотр RU</button>
+        <button type="button" onclick="submitPreview('en')" class="btn btn-outline-success"><i class="bi bi-eye"></i> Предпросмотр EN</button>
+        <button type="button" onclick="openConfirmModal()" class="btn btn-danger flex-grow-1">
+          🚀 <%= isEditing ? 'Сохранить изменения' : 'Создать и отправить' %>
+        </button>
+      </div>
+
     </form>
   </div>
 </div>
 
+<%# MODAL CONFIRMATION %>
+<div class="modal fade" id="confirmModal" tabindex="-1" aria-labelledby="confirmModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title fw-bold" id="confirmModalLabel"><i class="bi bi-exclamation-triangle-fill me-2"></i>Подтверждение рассылки</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="fw-semibold">Вы собираетесь запустить/запланировать рассылку со следующими параметрами:</p>
+        <table class="table table-bordered table-sm text-start" style="font-size: 0.9rem;">
+          <tbody>
+            <tr>
+              <th style="width: 40%;">Название кампании</th>
+              <td id="modal_campaign_name" class="fw-bold"></td>
+            </tr>
+            <tr>
+              <th>Тег (Campaign Tag)</th>
+              <td id="modal_campaign_tag" class="text-success fw-bold"></td>
+            </tr>
+            <tr>
+              <th>Тип рассылки</th>
+              <td id="modal_broadcast_type"></td>
+            </tr>
+            <tr>
+              <th>Целевая аудитория</th>
+              <td id="modal_target_audience"></td>
+            </tr>
+            <tr>
+              <th>Всего получателей</th>
+              <td id="modal_total_recipients" class="fw-bold text-danger fs-5"></td>
+            </tr>
+            <tr>
+              <th>По языкам</th>
+              <td id="modal_languages"></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="alert alert-warning py-2 mb-0" style="font-size: 0.85rem;" id="modal_time_warning">
+          <i class="bi bi-clock-fill me-1"></i> Рассылка начнется немедленно после сохранения.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="button" onclick="submitForm()" class="btn btn-danger">🚀 Подтвердить отправку</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
-  document.getElementById('broadcastForm').addEventListener('submit', function(event) {
+  // Синхронизация локального времени с UTC
+  function syncTime() {
     const localTimeInput = document.getElementById('localScheduledAt');
     const utcTimeInput = document.getElementById('scheduledAt');
     if (localTimeInput.value) {
       utcTimeInput.value = new Date(localTimeInput.value).toISOString();
+    } else {
+      utcTimeInput.value = '';
+    }
+  }
+
+  function submitPreview(lang) {
+    syncTime();
+    document.getElementById('form_action').value = 'preview_' + lang;
+    document.getElementById('broadcastForm').submit();
+  }
+
+  function openConfirmModal() {
+    // Валидация полей HTML5
+    const form = document.getElementById('broadcastForm');
+    if (!form.checkValidity()) {
+      form.reportValidity();
+      return;
+    }
+
+    syncTime();
+
+    // Заполняем данные модального окна
+    document.getElementById('modal_campaign_name').innerText = document.getElementById('campaign_name').value;
+    document.getElementById('modal_campaign_tag').innerText = document.getElementById('campaign_tag').value;
+    
+    const typeSelect = document.getElementById('broadcast_type');
+    document.getElementById('modal_broadcast_type').innerText = typeSelect.options[typeSelect.selectedIndex].text;
+    
+    const audSelect = document.getElementById('targetAudience');
+    document.getElementById('modal_target_audience').innerText = audSelect.options[audSelect.selectedIndex].text;
+
+    document.getElementById('modal_total_recipients').innerText = document.getElementById('estimate_total').innerText;
+
+    const ruVal = document.getElementById('estimate_ru').innerText;
+    const enVal = document.getElementById('estimate_en').innerText;
+    const unVal = document.getElementById('estimate_unknown').innerText;
+    document.getElementById('modal_languages').innerHTML = `🇷🇺 RU: <b>${ruVal}</b>, 🇬🇧 EN: <b>${enVal}</b>, ❓ Unknown: <b>${unVal}</b>`;
+
+    const schedVal = document.getElementById('localScheduledAt').value;
+    const warningDiv = document.getElementById('modal_time_warning');
+    if (schedVal) {
+      const formattedDate = new Date(schedVal).toLocaleString('ru-RU');
+      warningDiv.className = "alert alert-info py-2 mb-0";
+      warningDiv.innerHTML = `<i class="bi bi-calendar-event-fill me-1"></i> Рассылка запланирована на: <b>${formattedDate} (Локально)</b>.`;
+    } else {
+      warningDiv.className = "alert alert-danger py-2 mb-0";
+      warningDiv.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i> <b>Внимание!</b> Рассылка начнется немедленно после создания.`;
+    }
+
+    // Показываем модалку
+    const confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
+    confirmModal.show();
+  }
+
+  function submitForm() {
+    document.getElementById('form_action').value = 'send';
+    document.getElementById('broadcastForm').submit();
+  }
+
+  // Логика чекбокса "Все (All)"
+  const chkAll = document.getElementById('lang_all');
+  const otherChecks = [document.getElementById('lang_ru'), document.getElementById('lang_en'), document.getElementById('lang_unknown')];
+
+  chkAll.addEventListener('change', function() {
+    if (chkAll.checked) {
+      otherChecks.forEach(c => { c.checked = false; c.disabled = true; });
+    } else {
+      otherChecks.forEach(c => { c.disabled = false; });
     }
   });
+
+  if (chkAll.checked) {
+    otherChecks.forEach(c => { c.checked = false; c.disabled = true; });
+  }
+
+  // Оценка аудитории через API
+  async function updateEstimate() {
+    try {
+      const targetAudience = document.getElementById('targetAudience').value;
+      const fallbackLanguage = document.getElementById('fallback_language').value;
+      const unknownLanguagePolicy = document.getElementById('unknown_language_policy').value;
+      
+      const targetLanguages = [];
+      if (document.getElementById('lang_all').checked) {
+        targetLanguages.push('all');
+      } else {
+        if (document.getElementById('lang_ru').checked) targetLanguages.push('ru');
+        if (document.getElementById('lang_en').checked) targetLanguages.push('en');
+        if (document.getElementById('lang_unknown').checked) targetLanguages.push('unknown');
+      }
+
+      const message_ru = document.getElementById('message_ru').value;
+      const message_en = document.getElementById('message_en').value;
+
+      const response = await fetch('/broadcast/estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetAudience,
+          targetLanguages,
+          unknownLanguagePolicy,
+          fallbackLanguage,
+          message_ru,
+          message_en
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to estimate');
+      const data = await response.json();
+
+      document.getElementById('estimate_total').innerText = data.total || 0;
+      document.getElementById('estimate_ru').innerText = data.ru || 0;
+      document.getElementById('estimate_en').innerText = data.en || 0;
+      document.getElementById('estimate_unknown').innerText = data.unknown || 0;
+      document.getElementById('estimate_excluded').innerText = data.excluded || 0;
+    } catch (e) {
+      console.error('[Estimate] Error:', e);
+    }
+  }
+
+  document.getElementById('btn_estimate').addEventListener('click', updateEstimate);
+  document.getElementById('targetAudience').addEventListener('change', updateEstimate);
+  document.getElementById('unknown_language_policy').addEventListener('change', updateEstimate);
+  document.getElementById('fallback_language').addEventListener('change', updateEstimate);
+  otherChecks.forEach(c => c.addEventListener('change', updateEstimate));
+  chkAll.addEventListener('change', updateEstimate);
+
+  // Сделать первую быструю оценку при загрузке
+  window.addEventListener('DOMContentLoaded', updateEstimate);
 </script>

@@ -196,14 +196,24 @@
               <span class="badge <%= status.class %>"><%- status.name %></span>
             </td>
             <td><%= audience %></td>
-            <td class="text-truncate preview-cell" 
-                data-bs-toggle="tooltip"
-                title="<%- safeMessage || '(только медиафайл)' %>">
-              <% if (task.file_id) { %>
-                <i class="bi bi-paperclip text-muted me-1"></i>
-              <% } %>
-              <%- safeMessage || '<i>(только медиафайл)</i>' %>
+            <td class="preview-cell">
+              <div class="fw-bold text-dark-emphasis mb-1"><%= task.campaign_name || 'Без названия' %></div>
+              <div class="mb-1">
+                <% if (task.campaign_tag) { %>
+                  <span class="badge bg-success-subtle text-success border border-success-subtle me-1" style="font-size: 0.75rem;"><%= task.campaign_tag %></span>
+                <% } %>
+                <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle" style="font-size: 0.75rem;"><%= task.broadcast_type || 'marketing' %></span>
+              </div>
+              <div class="text-muted text-truncate" style="max-width: 320px;" 
+                  data-bs-toggle="tooltip"
+                  title="<%- safeMessage || '(только медиафайл)' %>">
+                <% if (task.file_id) { %>
+                  <i class="bi bi-paperclip me-1"></i>
+                <% } %>
+                <%- safeMessage || '<i>(только медиафайл)</i>' %>
+              </div>
             </td>
+
             
             <%# --- Время по МСК --- %>
             <td data-bs-toggle="tooltip" title="Время указано по МСК (UTC+3)">
@@ -246,6 +256,18 @@
                     <i class="bi bi-pencil-fill"></i>
                   </a>
                 <% } %>
+                <a href="/broadcast/new?clone=<%= task.id %>" 
+                   class="btn btn-outline-secondary"
+                   title="Клонировать">
+                  <i class="bi bi-copy"></i>
+                </a>
+                <% if (task.status === 'completed' || task.status === 'processing') { %>
+                  <a href="/broadcast/<%= task.id %>/stats" 
+                     class="btn btn-outline-info"
+                     title="Статистика">
+                    <i class="bi bi-bar-chart-fill"></i>
+                  </a>
+                <% } %>
                 <form method="POST" action="/broadcast/delete" class="d-inline" onsubmit="return confirm('Удалить эту рассылку?');">
                   <input type="hidden" name="taskId" value="<%= task.id %>">
                   <button type="submit" class="btn btn-outline-danger" title="Удалить">
@@ -253,7 +275,9 @@
                   </button>
                 </form>
               </div>
+
             </td>
+
           </tr>
         <% }) %>
       <% } else { %>

@@ -1,0 +1,172 @@
+<%- contentFor('body') %>
+
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+  <h1 class="h2"><i class="bi bi-bar-chart-line-fill me-2"></i>Статистика рассылки #<%= task.id %></h1>
+  <a href="/broadcasts" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left"></i> Назад к списку</a>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <h5 class="card-title fw-bold"><%= task.campaign_name || 'Без названия' %></h5>
+    <p class="card-text text-muted mb-0">Тег: <span class="badge bg-success"><%= task.campaign_tag || '—' %></span> | Тип: <span class="badge bg-secondary"><%= task.broadcast_type || 'marketing' %></span> | Аудитория: <code><%= task.target_audience %></code></p>
+  </div>
+</div>
+
+<%# Сводные карточки KPI %>
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card border-0 shadow-sm bg-primary text-white h-100">
+      <div class="card-body text-center">
+        <div class="small opacity-75">Всего получателей</div>
+        <div class="fs-2 fw-bold my-1"><%= stats.delivery.total %></div>
+        <div class="small opacity-75">в снимке рассылки</div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="col-md-3">
+    <div class="card border-0 shadow-sm bg-success text-white h-100">
+      <div class="card-body text-center">
+        <div class="small opacity-75">Доставлено</div>
+        <div class="fs-2 fw-bold my-1"><%= stats.delivery.sent %></div>
+        <div class="small">
+          <% const delRate = stats.delivery.total > 0 ? (stats.delivery.sent / stats.delivery.total * 100).toFixed(1) : 0; %>
+          Успешно: <b><%= delRate %>%</b>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-3">
+    <div class="card border-0 shadow-sm bg-warning text-dark h-100">
+      <div class="card-body text-center">
+        <div class="small opacity-75">Переходы в тарифы (24ч)</div>
+        <div class="fs-2 fw-bold my-1"><%= stats.upgradesAfterSent %></div>
+        <div class="small">
+          <% const viewRate = stats.delivery.sent > 0 ? (stats.upgradesAfterSent / stats.delivery.sent * 100).toFixed(1) : 0; %>
+          Конверсия: <b><%= viewRate %>%</b>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-3">
+    <div class="card border-0 shadow-sm bg-danger text-white h-100">
+      <div class="card-body text-center">
+        <div class="small opacity-75">Оплаты (24ч)</div>
+        <div class="fs-2 fw-bold my-1"><%= stats.paymentsAfterSent %></div>
+        <div class="small">
+          <% const payRate = stats.delivery.sent > 0 ? (stats.paymentsAfterSent / stats.delivery.sent * 100).toFixed(1) : 0; %>
+          Конверсия: <b><%= payRate %>%</b>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+  <%# Статистика доставки по языкам %>
+  <div class="col-lg-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-header fw-bold bg-light"><i class="bi bi-globe me-2"></i>Статистика по языкам</div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-striped table-hover mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Язык</th>
+                <th class="text-center">Доставлено</th>
+                <th class="text-center">Блокировка</th>
+                <th class="text-center">Ошибки</th>
+                <th class="text-center">Всего</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (Object.keys(stats.languages).length > 0) { %>
+                <% Object.entries(stats.languages).forEach(([lang, data]) => { %>
+                  <% const langTotal = data.sent + data.failed + data.blocked + data.pending; %>
+                  <tr>
+                    <td class="fw-bold">
+                      <% if (lang === 'ru') { %>🇷🇺 RU<% } else if (lang === 'en') { %>🇬🇧 EN<% } else { %>❓ Unknown (<%= lang %>)<% } %>
+                    </td>
+                    <td class="text-center text-success fw-bold"><%= data.sent %></td>
+                    <td class="text-center text-warning"><%= data.blocked %></td>
+                    <td class="text-center text-danger"><%= data.failed %></td>
+                    <td class="text-center text-muted fw-bold"><%= langTotal %></td>
+                  </tr>
+                <% }) %>
+              <% } else { %>
+                <tr>
+                  <td colspan="5" class="text-center text-muted py-4">Нет языковых данных</td>
+                </tr>
+              <% } %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <%# Статистика кликов по кнопкам %>
+  <div class="col-lg-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-header fw-bold bg-light"><i class="bi bi-hand-index-thumb me-2"></i>Клики по кнопкам рассылки</div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-striped table-hover mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Кнопка</th>
+                <th class="text-center">Всего кликов</th>
+                <th class="text-center">Уникальные</th>
+                <th class="text-center">CTR</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (stats.clicks && stats.clicks.length > 0) { %>
+                <% stats.clicks.forEach(click => { %>
+                  <% 
+                    const label = buttonLabels[click.button_index] || `Кнопка #${click.button_index + 1}`;
+                    const ctr = stats.delivery.sent > 0 ? (click.unique / stats.delivery.sent * 100).toFixed(1) : 0;
+                  %>
+                  <tr>
+                    <td class="fw-bold"><code><%= label %></code></td>
+                    <td class="text-center"><%= click.total %></td>
+                    <td class="text-center fw-bold text-primary"><%= click.unique %></td>
+                    <td class="text-center text-success fw-bold"><%= ctr %>%</td>
+                  </tr>
+                <% }) %>
+              <% } else { %>
+                <tr>
+                  <td colspan="4" class="text-center text-muted py-4">Клики по кнопкам не зафиксированы</td>
+                </tr>
+              <% } %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-header fw-bold bg-light"><i class="bi bi-shield-exclamation me-2"></i>Технические сведения о доставке</div>
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">Статус</dt>
+      <dd class="col-sm-9">
+        <span class="badge bg-success"><%= task.status %></span>
+      </dd>
+      <dt class="col-sm-3">Создана</dt>
+      <dd class="col-sm-9"><%= new Date(task.created_at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }) %> (МСК)</dd>
+      <dt class="col-sm-3">Запущена</dt>
+      <dd class="col-sm-9"><%= task.started_at ? new Date(task.started_at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }) : '—' %> (МСК)</dd>
+      <dt class="col-sm-3">Завершена</dt>
+      <dd class="col-sm-9"><%= task.completed_at ? new Date(task.completed_at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }) : '—' %> (МСК)</dd>
+      <% if (task.report && task.report.error) { %>
+        <dt class="col-sm-3 text-danger">Ошибка запуска</dt>
+        <dd class="col-sm-9 text-danger fw-bold"><%= task.report.error %></dd>
+      <% } %>
+    </dl>
+  </div>
+</div>

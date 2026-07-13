@@ -1119,20 +1119,23 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 app.get('/user/:id', requireAuth, async (req, res) => {
     try {
         const userId = req.params.id;
+        const { getLanguageHistoryForUser } = await import('./db.js');
         
-        // Теперь мы запрашиваем 5 порций данных параллельно, включая реферера
+        // Теперь мы запрашиваем данные параллельно, включая реферера и историю языка
         const [
             userProfile,
             downloads,
             actions,
-            referrer, // <-- КТО пригласил ЭТОГО пользователя
-            referredUsers // <-- КОГО пригласил ЭТОТ пользователь
+            referrer,
+            referredUsers,
+            languageHistory
         ] = await Promise.all([
             getUserById(userId),
             getDownloadsByUserId(userId),
             getUserActions(userId),
-            getReferrerInfo(userId), // <-- Используем нашу новую функцию
-            getReferredUsers(userId) // <-- Эта функция у тебя уже должна быть
+            getReferrerInfo(userId),
+            getReferredUsers(userId),
+            getLanguageHistoryForUser(userId)
         ]);
         
         if (!userProfile) {
@@ -1146,8 +1149,9 @@ app.get('/user/:id', requireAuth, async (req, res) => {
             userProfile,
             downloads,
             actions,
-            referrer, // <-- Передаем реферера в шаблон
-            referredUsers
+            referrer,
+            referredUsers,
+            languageHistory: languageHistory || []
         });
         
     } catch (error) {
@@ -1155,38 +1159,148 @@ app.get('/user/:id', requireAuth, async (req, res) => {
         res.status(500).send("Ошибка сервера");
     }
 });
+
+app.post('/user/:id/set-language', requireAuth, async (req, res) => {
+    try {
+        const userId = req.params.id;
+        const { lang } = req.body;
+        if (!['ru', 'en'].includes(lang)) {
+            return res.status(400).send("Неподдерживаемый язык");
+        }
+
+        const { setUserLanguageByAdmin } = await import('./db.js');
+        // В сессии isAdmin = true, используем ID админа 0 (или ID из сессии, если есть)
+        const adminId = req.session.userId || 0; 
+        
+        await setUserLanguageByAdmin(userId, lang, adminId);
+        res.redirect(`/user/${userId}?success=lang_changed`);
+    } catch (error) {
+        console.error(`Ошибка смены языка для пользователя ${req.params.id}:`, error);
+        res.status(500).send("Ошибка сервера: " + error.message);
+    }
+});
+
   app.get('/broadcasts', requireAuth, async (req, res) => {
     const tasks = await getAllBroadcastTasks();
     res.render('broadcasts', { title: 'Управление рассылками', page: 'broadcasts', tasks });
   });
 
-  app.get('/broadcast/new', requireAuth, (req, res) => {
-    res.render('broadcast-form', { title: 'Новая рассылка', page: 'broadcasts', error: null, success: null });
-    console.log(`[Broadcast Debug] Использую BROADCAST_STORAGE_ID: '${BROADCAST_STORAGE_ID}' (тип: ${typeof BROADCAST_STORAGE_ID})`);
+  function formatKeyboardToText(keyboard) {
+    if (!keyboard || !Array.isArray(keyboard)) return '';
+    return keyboard.map(row => {
+      const btn = Array.isArray(row) ? row[0] : row;
+      if (!btn) return '';
+      if (btn.url) return `${btn.text} | url | ${btn.url}`;
+      if (btn.callback_data) return `${btn.text} | callback | ${btn.callback_data}`;
+      if (btn.switch_inline_query !== undefined) return `${btn.text} | inline_search | ${btn.switch_inline_query}`;
+      return btn.text;
+    }).filter(Boolean).join('\n');
+  }
+
+    app.get('/broadcast/new', requireAuth, async (req, res) => {
+    let taskData = {
+      campaign_name: '',
+      campaign_tag: '',
+      broadcast_type: 'marketing',
+      target_audience: 'all',
+      target_languages: ['all'],
+      unknown_language_policy: 'use_ru',
+      fallback_language: 'ru',
+      message_ru: '',
+      message_en: '',
+      buttons_ru: '',
+      buttons_en: ''
+    };
+
+    if (req.query.clone) {
+      try {
+        const clonedTask = await getBroadcastTaskById(req.query.clone);
+        if (clonedTask) {
+          const messagesJson = clonedTask.messages_json || {};
+          taskData = {
+            campaign_name: (clonedTask.campaign_name || '') + ' (Копия)',
+            campaign_tag: (clonedTask.campaign_tag || '') + '_copy',
+            broadcast_type: clonedTask.broadcast_type || 'marketing',
+            target_audience: clonedTask.target_audience || 'all',
+            target_languages: clonedTask.target_languages || ['all'],
+            unknown_language_policy: clonedTask.unknown_language_policy || 'use_ru',
+            fallback_language: clonedTask.fallback_language || 'ru',
+            message_ru: messagesJson.ru?.message || '',
+            message_en: messagesJson.en?.message || '',
+            buttons_ru: formatKeyboardToText(messagesJson.ru?.keyboard),
+            buttons_en: formatKeyboardToText(messagesJson.en?.keyboard),
+            file_id: clonedTask.file_id || null,
+            file_mime_type: clonedTask.file_mime_type || null
+          };
+        }
+      } catch (e) {
+        console.error('[Broadcast Clone] Error loading task to clone:', e.message);
+      }
+    }
+
+    res.render('broadcast-form', {
+      title: 'Новая рассылка',
+      page: 'broadcasts',
+      error: null,
+      success: null,
+      task: taskData
+    });
   });
-// Диагностический эндпоинт для просмотра состояния приложения
-app.get('/debug/state', requireAuth, async (req, res) => {
-  const state = getAppState(); // Импортируй из appState.js
-  res.json({
-    ...state,
-    queueSize: downloadQueue.size,
-    queuePending: downloadQueue.pending,
-    uptime: process.uptime()
+
+  // Диагностический эндпоинт для просмотра состояния приложения
+  app.get('/debug/state', requireAuth, async (req, res) => {
+    const state = getAppState(); // Импортируй из appState.js
+    res.json({
+      ...state,
+      queueSize: downloadQueue.size,
+      queuePending: downloadQueue.pending,
+      uptime: process.uptime()
+    });
   });
-});
-  app.get('/broadcast/edit/:id', requireAuth, async (req, res) => {
+
+    app.get('/broadcast/edit/:id', requireAuth, async (req, res) => {
     const task = await getBroadcastTaskById(req.params.id);
     if (!task || task.status !== 'pending') {
       return res.redirect('/broadcasts');
     }
-    const buttons_text = task.keyboard ? task.keyboard.map(row => {
-      const btn = row[0];
-      if (btn.url) return `${btn.text} | url | ${btn.url}`;
-      if (btn.callback_data) return `${btn.text} | callback | ${btn.callback_data}`;
-      if (btn.switch_inline_query !== undefined) return `${btn.text} | inline_search | ${btn.switch_inline_query}`;
-      return '';
-    }).join('\n') : '';
-    res.render('broadcast-form', { title: 'Редактировать рассылку', page: 'broadcasts', task: { ...task, buttons_text }, error: null, success: null });
+    const messagesJson = task.messages_json || {};
+    const taskData = {
+      ...task,
+      campaign_name: task.campaign_name || '',
+      campaign_tag: task.campaign_tag || '',
+      broadcast_type: task.broadcast_type || 'marketing',
+      target_audience: task.target_audience || 'all',
+      target_languages: task.target_languages || ['all'],
+      unknown_language_policy: task.unknown_language_policy || 'use_ru',
+      fallback_language: task.fallback_language || 'ru',
+      message_ru: messagesJson.ru?.message || '',
+      message_en: messagesJson.en?.message || '',
+      buttons_ru: formatKeyboardToText(messagesJson.ru?.keyboard),
+      buttons_en: formatKeyboardToText(messagesJson.en?.keyboard)
+    };
+    res.render('broadcast-form', { title: 'Редактировать рассылку', page: 'broadcasts', task: taskData, error: null, success: null });
+  });
+
+  app.post('/broadcast/estimate', requireAuth, async (req, res) => {
+    try {
+      const { targetAudience, targetLanguages, unknownLanguagePolicy, fallbackLanguage, message_ru, message_en } = req.body;
+      const messagesJson = {
+        ru: message_ru ? { message: message_ru } : null,
+        en: message_en ? { message: message_en } : null
+      };
+      const { estimateBroadcastAudience } = await import('./db.js');
+      const stats = await estimateBroadcastAudience(
+        targetAudience,
+        targetLanguages || ['all'],
+        unknownLanguagePolicy,
+        'all',
+        messagesJson
+      );
+      res.json(stats);
+    } catch (e) {
+      console.error('[Broadcast Estimate] Error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.post('/broadcast/delete', requireAuth, async (req, res) => {
@@ -1194,25 +1308,96 @@ app.get('/debug/state', requireAuth, async (req, res) => {
     await deleteBroadcastTask(taskId);
     res.redirect('/broadcasts');
   });
-  app.post('/tariffs/reset-expired', requireAuth, async (req, res) => {
-try {
-const n = await resetExpiredPremiumsBulk();
-res.redirect('/dashboard?resetExpired=' + n);
-} catch (e) {
-console.error('[Tariffs] reset-expired error:', e.message);
-res.redirect('/dashboard?resetExpired=err');
-}
-});
 
-  app.post(['/broadcast/new', '/broadcast/edit/:id'], requireAuth, upload.single('file'), async (req, res) => {
+  app.get('/broadcast/:id/stats', requireAuth, async (req, res) => {
+    try {
+      const broadcastId = req.params.id;
+      const task = await getBroadcastTaskById(broadcastId);
+      if (!task) {
+        return res.status(404).send('Рассылка не найдена');
+      }
+
+      const { getBroadcastTaskStats } = await import('./db.js');
+      const stats = await getBroadcastTaskStats(broadcastId);
+
+      // Мапим кнопки для отображения
+      const ruButtons = task.messages_json?.ru?.keyboard?.flat() || [];
+      const enButtons = task.messages_json?.en?.keyboard?.flat() || [];
+      const buttonLabels = {};
+      for (let i = 0; i < Math.max(ruButtons.length, enButtons.length); i++) {
+        const ruLabel = ruButtons[i]?.text || '';
+        const enLabel = enButtons[i]?.text || '';
+        buttonLabels[i] = ruLabel && enLabel && ruLabel !== enLabel ? `${ruLabel} / ${enLabel}` : (ruLabel || enLabel || `Кнопка #${i + 1}`);
+      }
+
+      res.render('broadcast-stats', {
+        title: `Статистика рассылки #${broadcastId}`,
+        page: 'broadcasts',
+        task,
+        stats,
+        buttonLabels
+      });
+    } catch (e) {
+      console.error('[Broadcast Stats] Error:', e.message);
+      res.status(500).send('Ошибка загрузки статистики: ' + e.message);
+    }
+  });
+
+
+  app.post('/tariffs/reset-expired', requireAuth, async (req, res) => {
+    try {
+      const n = await resetExpiredPremiumsBulk();
+      res.redirect('/dashboard?resetExpired=' + n);
+    } catch (e) {
+      console.error('[Tariffs] reset-expired error:', e.message);
+      res.redirect('/dashboard?resetExpired=err');
+    }
+  });
+
+    app.post(['/broadcast/new', '/broadcast/edit/:id'], requireAuth, upload.single('file'), async (req, res) => {
     const isEditing = !!req.params.id;
     const taskId = req.params.id;
     const file = req.file;
 
     try {
-      const { message, buttons, targetAudience, scheduledAt, disable_notification, enable_web_page_preview, action } = req.body;
+      const {
+        campaign_name,
+        campaign_tag,
+        broadcast_type,
+        targetAudience,
+        unknown_language_policy,
+        fallback_language,
+        message_ru,
+        buttons_ru,
+        message_en,
+        buttons_en,
+        scheduledAt,
+        disable_notification,
+        enable_web_page_preview,
+        action
+      } = req.body;
 
-      const taskForRender = { ...req.body, buttons_text: buttons };
+      let targetLanguages = req.body['target_languages[]'] || ['all'];
+      if (!Array.isArray(targetLanguages)) {
+        targetLanguages = [targetLanguages];
+      }
+
+      // Подготавливаем task для рендера в случае ошибки или превью
+      const taskForRender = {
+        campaign_name,
+        campaign_tag,
+        broadcast_type,
+        target_audience: targetAudience,
+        target_languages: targetLanguages,
+        unknown_language_policy,
+        fallback_language,
+        message_ru,
+        buttons_ru,
+        message_en,
+        buttons_en,
+        disable_notification: !!disable_notification,
+        disable_web_page_preview: !enable_web_page_preview
+      };
       if (isEditing) taskForRender.id = taskId;
 
       const renderOptions = {
@@ -1225,7 +1410,9 @@ res.redirect('/dashboard?resetExpired=err');
 
       const existingTask = isEditing ? await getBroadcastTaskById(taskId) : {};
 
-      if (!message && !file && !(existingTask && existingTask.file_id)) {
+      // Валидация наличия контента
+      const hasAnyMessage = message_ru || message_en;
+      if (!hasAnyMessage && !file && !(existingTask && existingTask.file_id)) {
         if (file) await fs.promises.unlink(file.path).catch(() => {});
         renderOptions.error = 'Сообщение не может быть пустым, если не прикреплен файл.';
         return res.render('broadcast-form', renderOptions);
@@ -1256,21 +1443,52 @@ res.redirect('/dashboard?resetExpired=err');
         await fs.promises.unlink(file.path).catch(() => {});
       }
 
+      // Обработка превью
+      if (action === 'preview_ru' || action === 'preview_en') {
+        const isEn = action === 'preview_en';
+        const msgText = isEn ? message_en : message_ru;
+        const btnText = isEn ? buttons_en : buttons_ru;
+
+        if (!msgText && !fileId) {
+          renderOptions.error = 'Сообщение для предпросмотра на выбранном языке пустое.';
+          return res.render('broadcast-form', renderOptions);
+        }
+
+        const previewTaskData = {
+          message: msgText,
+          keyboard: parseButtons(btnText),
+          file_id: fileId,
+          file_mime_type: fileMimeType,
+          disable_web_page_preview: !enable_web_page_preview
+        };
+
+        await runBroadcastBatch(bot, previewTaskData, [{ id: ADMIN_ID, first_name: 'Admin' }]);
+        renderOptions.success = `Предпросмотр (${isEn ? 'EN' : 'RU'} версии) успешно отправлен админу в Telegram.`;
+        return res.render('broadcast-form', renderOptions);
+      }
+
+      // Сохранение задачи в базу
+      const messagesJson = {
+        ru: message_ru ? { message: message_ru, keyboard: parseButtons(buttons_ru) } : null,
+        en: message_en ? { message: message_en, keyboard: parseButtons(buttons_en) } : null
+      };
+
       const taskData = {
-        message,
-        keyboard: parseButtons(buttons),
+        campaign_name,
+        campaign_tag,
+        broadcast_type,
+        messages_json: messagesJson,
+        target_languages: targetLanguages,
+        unknown_language_policy,
+        fallback_language,
+        message: message_ru || message_en || '',
+        keyboard: parseButtons(buttons_ru) || parseButtons(buttons_en) || null,
         file_id: fileId,
         file_mime_type: fileMimeType,
         targetAudience,
         disableNotification: !!disable_notification,
         disable_web_page_preview: !enable_web_page_preview
       };
-
-      if (action === 'preview') {
-        await runBroadcastBatch(bot, taskData, [{ id: ADMIN_ID, first_name: 'Admin' }]);
-        renderOptions.success = 'Предпросмотр отправлен вам в Telegram.';
-        return res.render('broadcast-form', renderOptions);
-      }
 
       const scheduleTime = scheduledAt ? new Date(scheduledAt) : new Date();
       if (isEditing) {
@@ -1283,22 +1501,30 @@ res.redirect('/dashboard?resetExpired=err');
     } catch (e) {
       console.error(`Ошибка создания/редактирования задачи (ID: ${taskId}):`, e);
       if (file) {
-        try { await fs.promises.unlink(file.path); console.log('[Error Cleanup] Временный файл успешно удален.'); }
-        catch (cleanupError) { console.error('[Error Cleanup] Не удалось удалить временный файл:', cleanupError); }
+        try { await fs.promises.unlink(file.path); } catch (_) {}
       }
 
-      const taskForRenderOnError = { ...req.body, buttons_text: req.body.buttons };
-      if (isEditing) taskForRenderOnError.id = taskId;
-
-      res.render('broadcast-form', {
+      const renderOptionsError = {
         title: isEditing ? 'Редактировать рассылку' : 'Новая рассылка',
         page: 'broadcasts',
         error: 'Не удалось сохранить задачу. ' + e.message,
         success: null,
-        task: taskForRenderOnError
-      });
+        task: {
+          ...req.body,
+          target_audience: req.body.targetAudience,
+          target_languages: req.body['target_languages[]'] || ['all'],
+          message_ru: req.body.message_ru,
+          message_en: req.body.message_en,
+          buttons_ru: req.body.buttons_ru,
+          buttons_en: req.body.buttons_en
+        }
+      };
+      if (isEditing) renderOptionsError.task.id = taskId;
+
+      res.render('broadcast-form', renderOptionsError);
     }
   });
+
 
   app.get('/texts', requireAuth, async (req, res) => {
     try {

@@ -1,11 +1,9 @@
-// services/broadcastManager.js (Финальная версия: Без спама админу)
-
+// services/broadcastManager.js
 import pMap from 'p-map';
 import pTimeout from 'p-timeout';
-import { ADMIN_ID } from '../config.js';
+import { ADMIN_ID, CONFIG } from '../config.js';
 import { logBroadcastSent, updateUserField, getBroadcastProgress } from '../db.js';
-
-// --- Helper Functions ---
+import { createRedirectToken } from './cryptoService.js';
 
 function escapeHtml(text) {
   if (!text) return '';
@@ -27,8 +25,6 @@ function getTelegramMethod(mimeType) {
   return MEDIA_TYPES[prefix] || 'sendDocument';
 }
 
-// --- Core Functions ---
-
 /**
  * Отправляет сообщение одному пользователю с retry на 429
  */
@@ -36,8 +32,15 @@ async function sendToUser(bot, task, user, retryCount = 0) {
   const MAX_RETRIES = 3;
   
   try {
+    const userLang = user.delivered_language || 'ru';
+    // Находим сообщение для этого языка
+    const langData = task.messages_json?.[userLang] || task.messages_json?.[task.fallback_language || 'ru'] || task.messages_json?.['ru'] || {};
+    
+    let rawMessage = langData.message || task.message || '';
+    let keyboard = langData.keyboard || task.keyboard || [];
+    
     // Персонализация
-    const personalMessage = (task.message || '')
+    const personalMessage = rawMessage
       .replace(/{first_name}/g, escapeHtml(user.first_name || 'дорогой друг'));
     
     const options = {
@@ -46,8 +49,33 @@ async function sendToUser(bot, task, user, retryCount = 0) {
       disable_notification: task.disable_notification
     };
     
-    if (task.keyboard?.length > 0) {
-      options.reply_markup = { inline_keyboard: task.keyboard };
+    // Заменяем оригинальные ссылки на подписанные redirect-ссылки
+    const processedKeyboard = [];
+    let buttonCount = 0;
+    if (keyboard?.length > 0) {
+      for (const row of keyboard) {
+        const processedRow = [];
+        for (const button of row) {
+          if (button.url) {
+            const isTest = !task.id || task.isTest;
+            const token = isTest 
+              ? createRedirectToken(0, user.id, buttonCount, button.url)
+              : createRedirectToken(task.id, user.id, buttonCount);
+            // Если это тест, можно добавить флаг test=1 в URL или закодировать в токене (будет обработано в cryptoService)
+            // Но мы передаем реальный token, в котором campaign_id = 0, что указывает на тестовый режим
+            const redirectUrl = `${CONFIG.WEBHOOK_URL}/r?t=${token}`;
+            processedRow.push({ ...button, url: redirectUrl });
+          } else {
+            processedRow.push(button);
+          }
+          buttonCount++;
+        }
+        processedKeyboard.push(processedRow);
+      }
+    }
+
+    if (processedKeyboard.length > 0) {
+      options.reply_markup = { inline_keyboard: processedKeyboard };
     }
     
     // Таймаут 15 секунд
@@ -69,7 +97,9 @@ async function sendToUser(bot, task, user, retryCount = 0) {
     
     // Логируем успех
     try {
-      if (task.id) await logBroadcastSent(task.id, user.id);
+      if (task.id && !task.isTest) {
+        await logBroadcastSent(task.id, user.id, 'sent', user.audience_language_segment || userLang, userLang);
+      }
     } catch (logErr) {}
     
     return { status: 'ok', userId: user.id };
@@ -83,60 +113,57 @@ async function sendToUser(bot, task, user, retryCount = 0) {
     }
     
     // Блокировка бота (403)
-    if (e.response?.error_code === 403 || e.response?.description?.includes('chat not found')) {
+    const isBlocked = e.response?.error_code === 403 || e.response?.description?.includes('chat not found');
+    const status = isBlocked ? 'blocked' : 'failed';
+
+    if (isBlocked) {
       try {
         await updateUserField(user.id, { can_receive_broadcasts: false });
       } catch (err) {}
-      try {
-        if (task.id) await logBroadcastSent(task.id, user.id);
-      } catch (err) {}
-      return { status: 'blocked', userId: user.id };
     }
     
-    // Логируем неудачу, чтобы не зацикливаться
     try {
-      if (task.id) await logBroadcastSent(task.id, user.id);
+      if (task.id && !task.isTest) {
+        await logBroadcastSent(task.id, user.id, status, user.audience_language_segment || user.delivered_language, user.delivered_language);
+      }
     } catch (err) {}
     
-    return { status: 'error', userId: user.id };
+    return { status, userId: user.id };
   }
 }
 
 /**
- * Обрабатывает одну пачку пользователей.
- * ВАЖНО: Мы убрали отправку сообщений админу отсюда, чтобы не спамить.
+ * Обрабатывает одну пачку пользователей
  */
 export async function runBroadcastBatch(bot, task, users) {
   const results = await pMap(
     users,
     user => sendToUser(bot, task, user),
-    { concurrency: 25 } // Чуть снизил для стабильности
+    { concurrency: 25 }
   );
   
   const stats = {
     total: results.length,
     success: results.filter(r => r.status === 'ok').length,
     blocked: results.filter(r => r.status === 'blocked').length,
-    errors: results.filter(r => r.status === 'error').length
+    errors: results.filter(r => r.status === 'failed' || r.status === 'error').length
   };
   
   console.log(`[Broadcast] Batch finished: ${stats.success}/${stats.total} sent, ${stats.blocked} blocked, ${stats.errors} errors.`);
   return results;
 }
 
-/**
- * Отправляет финальный отчёт администратору
- */
-// Вспомогательная функция для рисования полоски
+// Рисование полоски прогресса
 function drawProgressBar(current, total) {
-  const size = 12; // Длина полоски
+  const size = 12;
   const progress = total > 0 ? Math.round((current / total) * size) : 0;
   const empty = size - progress;
-  
-  // Используем спецсимволы: закрашенные и пустые квадраты
   return `<code>[${'■'.repeat(progress)}${'□'.repeat(empty)}]</code>`;
 }
 
+/**
+ * Отправляет отчет администратору
+ */
 export async function sendAdminReport(bot, taskId, task, isFinal = true) {
   try {
     const { total, sent } = await getBroadcastProgress(taskId, task.target_audience);
@@ -148,10 +175,12 @@ export async function sendAdminReport(bot, taskId, task, isFinal = true) {
     const statusText = isFinal ? 'завершена' : 'в процессе';
 
     const reportMessage = 
-      `${statusEmoji} <b>Рассылка #${taskId} ${statusText}</b>\n\n` +
+      `${statusEmoji} <b>Рассылка #${taskId} ${statusText}</b>\n` +
+      `📌 Название: <b>${task.campaign_name || 'Без названия'}</b>\n` +
+      `🏷 Тип: <code>${task.broadcast_type || 'marketing'}</code>\n\n` +
       `${progressBar} <b>${percent}%</b>\n\n` +
       `📦 Отправлено: <b>${sent}</b>\n` +
-      `👥 Всего: <b>${total}</b>\n` +
+      `👥 Всего в снимке: <b>${total}</b>\n` +
       `👤 Аудитория: <code>${task.target_audience}</code>`;
     
     await bot.telegram.sendMessage(ADMIN_ID, reportMessage, { parse_mode: 'HTML' });

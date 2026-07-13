@@ -17,8 +17,8 @@ import execYoutubeDl from 'youtube-dl-exec';
 import { identifyTrack } from './services/shazamService.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
-
-
+import { t as i18n, getUserLanguage, normalizeLanguageCode, getUserLanguageSegment } from './services/i18nService.js';
+import { SUPPORTED_LANGUAGES, LANGUAGE_LABELS } from './config/languages.js';
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
@@ -276,50 +276,44 @@ function getDaysLeft(premiumUntil) {
 
 // bot.js
 
-function formatMenuMessage(user, botUsername) {
-    // 1. Сначала получаем все динамические данные (как и раньше)
+function formatMenuMessage(user, botUsername, lang = 'ru') {
+    // 1. Динамические данные
     const userLimit = getUserLimit(user);
     const tariffLabel = getTariffName(userLimit);
     const downloadsToday = user.downloads_today || 0;
     const daysLeft = getDaysLeft(user.premium_until);
     const referralCount = user.referral_count || 0;
     const referralLink = `https://t.me/${botUsername}?start=ref_${user.id}`;
-    
-    // 2. Собираем основной блок статистики (он нередактируемый, т.к. это данные)
+
+    // 2. Блок статистики (данные, не переводятся)
     const limitText = userLimit === null ? '∞' : userLimit;
     const statsBlock = [
-        `💼 <b>Тариф:</b> <i>${tariffLabel}</i>`,
-        `⏳ <b>Осталось дней подписки:</b> <i>${daysLeft}</i>`,
-        `🎧 <b>Сегодня скачано:</b> <i>${downloadsToday}</i> из <i>${limitText}</i>`
+        `💼 <b>${lang === 'en' ? 'Plan' : 'Тариф'}:</b> <i>${tariffLabel}</i>`,
+        `⏳ <b>${lang === 'en' ? 'Subscription days left' : 'Осталось дней подписки'}:</b> <i>${daysLeft}</i>`,
+        `🎧 <b>${lang === 'en' ? 'Downloaded today' : 'Сегодня скачано'}:</b> <i>${downloadsToday}</i> / <i>${limitText}</i>`
     ].join('\n');
-    
-    // 3. Берем шаблоны из T() и заменяем плейсхолдеры
-    const header = T('menu_header').replace('{first_name}', escapeHtml(user.first_name) || 'пользователь');
-    
-    const referralBlock = T('menu_referral_block')
-        .replace('{referral_count}', referralCount)
-        .replace('{referral_link}', referralLink);
-    
+
+    // 3. Переведённые шаблоны через i18n с подстановкой переменных
+    const header = i18n(lang, 'menu_header', { first_name: escapeHtml(user.first_name) || (lang === 'en' ? 'user' : 'пользователь') });
+
+    const referralBlock = i18n(lang, 'menu_referral_block', {
+        referral_count: referralCount,
+        referral_link: referralLink
+    });
+
     let bonusBlock = '';
     if (!user.subscribed_bonus_used && CHANNEL_USERNAME) {
         const cleanUsername = CHANNEL_USERNAME.replace('@', '');
-        const channelLink = `<a href="https://t.me/${cleanUsername}">наш канал</a>`;
-        bonusBlock = T('menu_bonus_block').replace('{channel_link}', channelLink);
+        const channelLabel = lang === 'en' ? 'our channel' : 'наш канал';
+        const channelLink = `<a href="https://t.me/${cleanUsername}">${channelLabel}</a>`;
+        bonusBlock = i18n(lang, 'menu_bonus_block', { channel_link: channelLink });
     }
-    
-    const footer = T('menu_footer');
-    
-    // 4. Собираем все части вместе, отфильтровывая пустые блоки
-    const messageParts = [
-        header,
-        statsBlock,
-        '\n- - - - - - - - - - - - - - -',
-        referralBlock,
-        bonusBlock, // Этот блок добавится, только если он не пустой
-        footer
-    ];
-    
-    return messageParts.filter(Boolean).join('\n\n');
+
+    const footer = i18n(lang, 'menu_footer');
+
+    // 4. Сборка
+    return [header, statsBlock, '\n- - - - - - - - - - - - - - -', referralBlock, bonusBlock, footer]
+        .filter(Boolean).join('\n\n');
 }
 
 // --- Инициализация Telegraf ---
@@ -401,11 +395,16 @@ bot.use(async (ctx, next) => {
         
         // Разрешаем кнопки основного меню и навигацию
         const vpnText = getSetting('vpn_button_text') || '🔐 VPN (YouTube 4K)';
-        const allowedTexts = [
-            T('menu'), '🆔 Распознать', T('upgrade'), T('mytracks'), T('help'), 
-            vpnText, T('vpn')
-        ];
-        if (allowedTexts.includes(text)) {
+        // Собираем разрешённые тексты кнопок для всех поддерживаемых языков
+        const allowedTexts = new Set(['🆔 Распознать', vpnText]);
+        for (const lng of SUPPORTED_LANGUAGES) {
+            allowedTexts.add(i18n(lng, 'btn_menu'));
+            allowedTexts.add(i18n(lng, 'btn_upgrade'));
+            allowedTexts.add(i18n(lng, 'btn_mytracks'));
+            allowedTexts.add(i18n(lng, 'btn_help'));
+            allowedTexts.add(i18n(lng, 'btn_language'));
+        }
+        if (allowedTexts.has(text)) {
             return await next();
         }
         
@@ -478,28 +477,63 @@ bot.catch(async (err, ctx) => {
 });
 bot.use(async (ctx, next) => {
     if (!ctx.from) return next();
-    
-    // Пытаемся достать payload из deep link:
-    // 1) ctx.startPayload — есть на /start
-    // 2) запасной способ — из текста '/start ref_xxx'
+
+    // Пытаемся достать payload из deep link
     const payload =
         (typeof ctx.startPayload === 'string' && ctx.startPayload) ||
         (ctx.message?.text?.startsWith('/start ') ? ctx.message.text.split(' ')[1] : null) ||
         null;
-    
-    // ВАЖНО: передаём payload в getUser — он сам проставит referrer_id при создании
-    const user = await getUser(ctx.from.id, ctx.from.first_name, ctx.from.username, payload);
+
+    const tgLangCode = ctx.from.language_code || null;
+
+    // Получаем/создаём пользователя, передаём язык Telegram
+    const user = await getUser(ctx.from.id, ctx.from.first_name, ctx.from.username, payload, tgLangCode);
     ctx.state.user = user;
-    
+
+    // === ОПРЕДЕЛЕНИЕ ЯЗЫКА ===
+    // Для существующих legacy-пользователей без language_source — бэкфилл
+    if (user && !user.language_source && tgLangCode) {
+        try {
+            const normalizedLang = normalizeLanguageCode(tgLangCode);
+            await updateUserField(ctx.from.id, {
+                telegram_language_code: tgLangCode,
+                language_code: normalizedLang,
+                language_source: 'telegram_auto',
+                language_updated_at: new Date()
+            });
+            user.language_code = normalizedLang;
+            user.language_source = 'telegram_auto';
+            user.telegram_language_code = tgLangCode;
+            // Аналитика первого определения языка
+            const isSupported = ['ru', 'en'].includes(normalizedLang) &&
+                ['ru', 'uk', 'be', 'kk', 'en'].includes(tgLangCode.toLowerCase().split('-')[0]);
+            const reason = isSupported ? 'supported_language' : 'unsupported_language';
+            try {
+                const { analyticsService } = await import('./services/analyticsService.js');
+                await analyticsService.trackEventSafe(ctx.from.id, 'language_detected', 'i18n', {
+                    telegram_language: tgLangCode,
+                    selected_language: normalizedLang,
+                    source: 'telegram_auto',
+                    reason
+                }, ctx);
+            } catch (_ae) {}
+        } catch (e) {
+            console.error('[i18n] Backfill language error:', e.message);
+        }
+    }
+
+    // Устанавливаем текущий язык пользователя в ctx.state для хендлеров
+    ctx.state.lang = getUserLanguage(user);
+
     if (user && user.active === false) return;
-    
-    // По желанию: восстанавливаем флаг рассылок
+
+    // Восстанавливаем флаг рассылок
     if (user && user.can_receive_broadcasts === false) {
         try { await updateUserField(user.id, { can_receive_broadcasts: true }); } catch (e) {
             console.error('[Broadcast flag] update error:', e.message);
         }
     }
-    
+
     await resetDailyLimitIfNeeded(ctx.from.id);
     await resetExpiredPremiumIfNeeded(ctx.from.id);
 
@@ -671,10 +705,10 @@ bot.use(async (ctx, next) => {
 
     return next();
 });
-const getMainKeyboard = () => {
+const getMainKeyboard = (lang = 'ru') => {
     const buttons = [
-        [T('menu'), '🆔 Распознать', T('upgrade')],
-        [T('mytracks'), T('help')]
+        [i18n(lang, 'btn_menu'), '🆔 Распознать', i18n(lang, 'btn_upgrade')],
+        [i18n(lang, 'btn_mytracks'), i18n(lang, 'btn_help')]
     ];
     if (getSetting('use_vpn') !== 'false') {
         const vpnText = getSetting('vpn_button_text') || '🔐 VPN (YouTube 4K)';
@@ -687,13 +721,28 @@ bot.start(async (ctx) => {
   try {
     console.log('[START] got start for', ctx.from.id, 'payload=', ctx.startPayload);
 
-    const user = await getUser(ctx.from.id, ctx.from.first_name, ctx.from.username, ctx.startPayload || null);
+    const tgLang = ctx.from.language_code || null;
+    const user = await getUser(ctx.from.id, ctx.from.first_name, ctx.from.username, ctx.startPayload || null, tgLang);
+    const lang = getUserLanguage(user);
 
     const isNewRegistration = (Date.now() - new Date(user.created_at).getTime()) < 5000;
 
     if (isNewRegistration) {
         await logUserAction(ctx.from.id, 'registration');
         await processNewUserReferral(user, ctx);
+        // Аналитика первого определения языка для нового пользователя
+        try {
+            const normalizedLang = normalizeLanguageCode(tgLang);
+            const cleanTg = (tgLang || '').toLowerCase().split('-')[0];
+            const isSupported = ['ru', 'uk', 'be', 'kk', 'en'].includes(cleanTg);
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(ctx.from.id, 'language_detected', 'i18n', {
+                telegram_language: tgLang || 'unknown',
+                selected_language: normalizedLang,
+                source: 'telegram_auto',
+                reason: isSupported ? 'supported_language' : 'unsupported_language'
+            }, ctx);
+        } catch (_ae) {}
     }
 
     if (ctx.startPayload === 'karaoke_test') {
@@ -714,17 +763,84 @@ bot.start(async (ctx) => {
         });
     }
 
-    const startMessage = isNewRegistration ? T('start_new_user') : T('start');
-
-    await ctx.reply(startMessage, {
+    const startKey = isNewRegistration ? 'start_new_user' : 'start_returning';
+    await ctx.reply(i18n(lang, startKey), {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
-        ...getMainKeyboard()
+        ...getMainKeyboard(lang)
     });
   } catch (err) {
     console.error(`[bot.start] Ошибка для userId=${ctx.from?.id}:`, err.message);
     await ctx.reply('Произошла ошибка при запуске. Попробуйте ещё раз: /start').catch(() => {});
   }
+});
+
+// =====================================================================================
+//                       КОМАНДА /language — СМЕНА ЯЗЫКА
+// =====================================================================================
+
+const sendLanguageMenu = async (ctx) => {
+    const user = ctx.state.user || await getUser(ctx.from.id);
+    const lang = getUserLanguage(user);
+    const buttons = SUPPORTED_LANGUAGES.map(code => [
+        Markup.button.callback(
+            (lang === code ? '✅ ' : '') + (LANGUAGE_LABELS[code] || code),
+            `set_lang_${code}`
+        )
+    ]);
+    await ctx.reply(i18n(lang, 'select_language_msg'), {
+        ...Markup.inlineKeyboard(buttons)
+    });
+};
+
+bot.command('language', sendLanguageMenu);
+
+// Callback-обработчик выбора языка
+bot.action(/^set_lang_(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const selectedLang = ctx.match[1];
+    if (!SUPPORTED_LANGUAGES.includes(selectedLang)) return;
+
+    const prevUser = ctx.state.user || await getUser(ctx.from.id);
+    const prevLang = getUserLanguage(prevUser);
+
+    if (prevLang === selectedLang) {
+        // Уже выбран — ничего не делаем
+        return ctx.editMessageText(
+            (LANGUAGE_LABELS[selectedLang] || selectedLang) + ' ' + i18n(selectedLang, 'language_changed'),
+            { parse_mode: 'HTML' }
+        ).catch(() => {});
+    }
+
+    try {
+        await updateUserField(ctx.from.id, {
+            language_code: selectedLang,
+            language_source: 'user_selected',
+            language_updated_at: new Date()
+        });
+
+        // Логируем смену в language_history
+        const { logLanguageChange } = await import('./db.js');
+        await logLanguageChange(ctx.from.id, prevLang, selectedLang, 'user_selected').catch(() => {});
+
+        // Аналитика
+        try {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(ctx.from.id, 'language_changed', 'i18n', {
+                from_lang: prevLang,
+                to_lang: selectedLang,
+                source: 'user_selected'
+            }, ctx);
+        } catch (_ae) {}
+
+        // Подтверждение на новом языке
+        await ctx.editMessageText(i18n(selectedLang, 'language_changed'), { parse_mode: 'HTML' }).catch(() => {});
+        await ctx.reply(i18n(selectedLang, 'select_language_msg') + '\n' + i18n(selectedLang, 'language_changed'),
+            { ...getMainKeyboard(selectedLang) }
+        ).catch(() => {});
+    } catch (e) {
+        console.error('[language] Ошибка смены языка:', e.message);
+    }
 });
 
 function sanitizeFilename(name) {
@@ -1334,7 +1450,7 @@ bot.command('maintenance', async (ctx) => {
         await ctx.reply('ℹ️ Статус: ' + (isMaintenanceMode() ? 'ВКЛЮЧЕН' : 'ВЫКЛЮЧЕН') + '\n\nИспользуйте: `/maintenance on` или `/maintenance off`');
     }
 });
-bot.command('premium', (ctx) => ctx.reply(T('upgradeInfo'), { parse_mode: 'HTML', disable_web_page_preview: true }));
+bot.command('premium', upgradeHandler);
 // bot.js
 // ==========================================================
 //    ДОБАВЬ ЭТОТ БЛОК ДЛЯ ОБРАБОТКИ КНОПКИ "ПОЛУЧИТЬ БОНУС"
@@ -1394,28 +1510,38 @@ bot.action(/^ytq:(.+):(.+)$/, async (ctx) => {
     await handleYouTubeQualitySelection(ctx, sessionId, quality);
 });
 const menuHandler = async (ctx) => {
-    const user = await getUser(ctx.from.id);
-    const message = formatMenuMessage(user, ctx.botInfo.username);
-    const extraOptions = { 
+    const user = ctx.state.user || await getUser(ctx.from.id);
+    const lang = ctx.state.lang || getUserLanguage(user);
+    const message = formatMenuMessage(user, ctx.botInfo.username, lang);
+    const extraOptions = {
         parse_mode: 'HTML',
         disable_web_page_preview: true
     };
     if (!user.subscribed_bonus_used && CHANNEL_USERNAME) {
-        extraOptions.reply_markup = { 
-            inline_keyboard: [[ Markup.button.callback('✅ Я подписался и хочу бонус!', 'check_subscription') ]] 
+        extraOptions.reply_markup = {
+            inline_keyboard: [[ Markup.button.callback('✅ Я подписался и хочу бонус!', 'check_subscription') ]]
         };
     } else {
-        Object.assign(extraOptions, getMainKeyboard());
+        Object.assign(extraOptions, getMainKeyboard(lang));
     }
     await ctx.reply(message, extraOptions);
 };
 
-const recognizeHandler = (ctx) => ctx.reply('Просто отправьте или перешлите мне:\n🎤 Голосовое сообщение\n📹 Видео-кружок\n🎧 Аудиофайл\n\n...и я скажу, что это за трек!', getMainKeyboard());
+const recognizeHandler = (ctx) => {
+    const lang = ctx.state.lang || 'ru';
+    const text = lang === 'en'
+        ? 'Just send or forward me:\n🎤 Voice message\n📹 Video note\n🎧 Audio file\n\n...and I will identify the track!'
+        : 'Просто отправьте или перешлите мне:\n🎤 Голосовое сообщение\n📹 Видео-кружок\n🎧 Аудиофайл\n\n...и я скажу, что это за трек!';
+    return ctx.reply(text, getMainKeyboard(lang));
+};
 
 const mytracksHandler = async (ctx) => {
     try {
-        const user = await getUser(ctx.from.id);
-        if (!user.tracks_today || user.tracks_today.length === 0) return await ctx.reply(T('noTracks'), getMainKeyboard());
+        const user = ctx.state.user || await getUser(ctx.from.id);
+        const lang = ctx.state.lang || getUserLanguage(user);
+        if (!user.tracks_today || user.tracks_today.length === 0) {
+            return await ctx.reply(i18n(lang, 'no_tracks_today'), getMainKeyboard(lang));
+        }
         for (let i = 0; i < user.tracks_today.length; i += 10) {
             const chunk = user.tracks_today.slice(i, i + 10).filter(t => t && t.fileId);
             if (chunk.length > 0) await ctx.replyWithMediaGroup(chunk.map(t => ({ type: 'audio', media: t.fileId })));
@@ -1435,21 +1561,26 @@ const supportCommandHandler = async (ctx) => {
     }
 };
 
-const helpHandler = (ctx) => ctx.reply(T('helpInfo'), { 
-    parse_mode: 'HTML', 
-    disable_web_page_preview: true,
-    ...getMainKeyboard(),
-    ...Markup.inlineKeyboard([
-        [Markup.button.callback('✉️ Написать в поддержку', 'support_enter')]
-    ])
-});
+const helpHandler = async (ctx) => {
+    const lang = ctx.state.lang || 'ru';
+    return ctx.reply(i18n(lang, 'help_info'), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...getMainKeyboard(lang),
+        ...Markup.inlineKeyboard([
+            [Markup.button.callback('✉️ Написать в поддержку', 'support_enter')]
+        ])
+    });
+};
 const upgradeHandler = async (ctx) => {
     try {
-        const text = `<b>💎 Увеличение лимитов скачивания</b>\n\n` +
-            `Выберите тарифный план — оплата через <b>Telegram Stars</b> (мгновенная автоматическая активация):\n\n` +
-            `⭐️ <b>Plus</b> — 30 скачиваний в день / 79 Stars / 30 дней\n` +
-            `⭐️ <b>Pro</b> — 100 скачиваний в день / 129 Stars / 30 дней\n` +
-            `💎 <b>Unlimited</b> — безлимит / 199 Stars / 30 дней`;
+        const lang = ctx.state.lang || 'ru';
+
+        const text = lang === 'en'
+            ? `<b>💎 Download Limit Upgrade</b>\n\nChoose your plan — instant activation via <b>Telegram Stars</b>:\n\n⭐️ <b>Plus</b> — 30 downloads/day / 79 Stars / 30 days\n⭐️ <b>Pro</b> — 100 downloads/day / 129 Stars / 30 days\n💎 <b>Unlimited</b> — unlimited / 199 Stars / 30 days`
+            : `<b>💎 Увеличение лимитов скачивания</b>\n\nВыберите тарифный план — оплата через <b>Telegram Stars</b> (мгновенная автоматическая активация):\n\n⭐️ <b>Plus</b> — 30 скачиваний в день / 79 Stars / 30 дней\n⭐️ <b>Pro</b> — 100 скачиваний в день / 129 Stars / 30 дней\n💎 <b>Unlimited</b> — безлимит / 199 Stars / 30 дней`;
+
+        const otherPayBtn = lang === 'en' ? '💳 Other payment methods' : '💳 Другие способы оплаты';
 
         await ctx.reply(text, {
             parse_mode: 'HTML',
@@ -1462,7 +1593,7 @@ const upgradeHandler = async (ctx) => {
                     Markup.button.callback('💎 Unlimited — 199 Stars', 'buy_plan_unlim')
                 ],
                 [
-                    Markup.button.callback('💳 Другие способы оплаты', 'other_payment_methods')
+                    Markup.button.callback(otherPayBtn, 'other_payment_methods')
                 ]
             ])
         });
@@ -1471,7 +1602,8 @@ const upgradeHandler = async (ctx) => {
         if (userId) {
             const { analyticsService } = await import('./services/analyticsService.js');
             await analyticsService.trackEventSafe(userId, 'star_payment_option_shown', 'monetization', {
-                placement: 'upgrade_menu'
+                placement: 'upgrade_menu',
+                lang
             }, ctx);
         }
     } catch (e) {
@@ -1479,11 +1611,16 @@ const upgradeHandler = async (ctx) => {
     }
 };
 
-bot.hears(T('menu'), menuHandler);
+
+// Кнопки меню — слушаем все поддерживаемые языки
+for (const lang of SUPPORTED_LANGUAGES) {
+    bot.hears(i18n(lang, 'btn_menu'), menuHandler);
+    bot.hears(i18n(lang, 'btn_mytracks'), mytracksHandler);
+    bot.hears(i18n(lang, 'btn_help'), helpHandler);
+    bot.hears(i18n(lang, 'btn_upgrade'), upgradeHandler);
+    bot.hears(i18n(lang, 'btn_language'), sendLanguageMenu);
+}
 bot.hears('🆔 Распознать', recognizeHandler);
-bot.hears(T('mytracks'), mytracksHandler);
-bot.hears(T('help'), helpHandler);
-bot.hears(T('upgrade'), upgradeHandler);
 
 bot.command('menu', menuHandler);
 bot.command('subs', menuHandler);
@@ -1520,7 +1657,7 @@ const vpnHandler = (ctx) => {
 bot.hears((text) => {
     if (getSetting('use_vpn') === 'false') return false;
     const vpnText = getSetting('vpn_button_text') || '🔐 VPN (YouTube 4K)';
-    return text === vpnText || text === T('vpn');
+    return text === vpnText;
 }, vpnHandler);
 
 bot.command('vpn', vpnHandler);
@@ -1873,7 +2010,8 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
                 inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
             };
         }
-        await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
+        const _lang1 = ctx.state?.lang || 'ru';
+        await ctx.editMessageText(`${i18n(_lang1, 'limit_reached')}${bonusText}`, extra);
         playlistSessions.delete(userId);
         return;
     }
@@ -1981,7 +2119,8 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
         if (bonusAvailable) {
             extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
         }
-        await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
+        const _lang2 = ctx.state?.lang || 'ru';
+        await ctx.editMessageText(`${i18n(_lang2, 'limit_reached')}${bonusText}`, extra);
         playlistSessions.delete(userId);
         return await ctx.answerCbQuery('Лимит исчерпан');
     }
@@ -2097,7 +2236,8 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
       inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
     };
   }
-  await ctx.editMessageText(`${T('limitReached')}${bonusText}`, extra);
+  const _langLR = ctx.state?.lang || 'ru';
+  await ctx.editMessageText(`${i18n(_langLR, 'limit_reached')}${bonusText}`, extra);
   playlistSessions.delete(userId);
   return;
 }
@@ -2282,7 +2422,8 @@ async function handleSoundCloudUrl(ctx, url) {
             if (bonusAvailable) {
               extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
             }
-            await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+            const _lang4 = ctx.state?.lang || 'ru';
+        await ctx.reply(`${i18n(_lang4, 'limit_reached')}${bonusText}`, extra);
             return;
         }
 
@@ -2597,7 +2738,8 @@ bot.on('text', async (ctx) => {
         if (bonusAvailable) {
           extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
         }
-        await ctx.reply(`${T('limitReached')}${bonusText}`, extra);
+        const _lang5 = ctx.state?.lang || 'ru';
+        await ctx.reply(`${i18n(_lang5, 'limit_reached')}${bonusText}`, extra);
         return;
     }
 
@@ -2663,14 +2805,22 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
             periodDays: tariff.periodDays
         });
 
-        const title = `Тариф ${tariff.name}`;
-        const description = `Активация тарифа ${tariff.name} на ${tariff.periodDays} дней. Лимит: ${tariff.dailyLimit === null ? 'безлимитно' : tariff.dailyLimit + ' скачиваний в день'}.`;
-        const payload = order.id.toString(); // UUID заказа передаем в payload
+        const lang = ctx.state.lang || 'ru';
+        const isEn = lang === 'en';
+
+        const title = isEn ? `Plan ${tariff.name}` : `Тариф ${tariff.name}`;
+        const limitLabel = tariff.dailyLimit === null
+            ? (isEn ? 'unlimited' : 'безлимитно')
+            : (isEn ? `${tariff.dailyLimit} downloads/day` : `${tariff.dailyLimit} скачиваний в день`);
+        const description = isEn
+            ? `Activate ${tariff.name} plan for ${tariff.periodDays} days. Limit: ${limitLabel}.`
+            : `Активация тарифа ${tariff.name} на ${tariff.periodDays} дней. Лимит: ${limitLabel}.`;
+        const payload = order.id.toString();
         const currency = 'XTR';
 
         const prices = [{
             label: tariff.name,
-            amount: tariff.priceXtr // XTR (Stars) в целых единицах
+            amount: tariff.priceXtr
         }];
 
         // Выставляем счет
@@ -2682,7 +2832,10 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
             prices
         }).catch(async (err) => {
             console.error('[Payment] Error sending Stars invoice:', err.message);
-            await ctx.reply('⚠️ Не удалось выставить счет. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.');
+            const errMsg = (ctx.state.lang === 'en')
+                ? '⚠️ Failed to issue invoice. Please try again or contact support.'
+                : '⚠️ Не удалось выставить счет. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.';
+            await ctx.reply(errMsg);
         });
 
         // Отслеживаем выбор плана и способа оплаты
@@ -2775,21 +2928,37 @@ bot.on('successful_payment', async (ctx) => {
             const { TARIFFS } = await import('./config/tariffs.js');
             const tariff = TARIFFS[result.plan];
             const name = tariff ? tariff.name : result.plan;
-            
-            const expDate = new Date(result.new_premium_until).toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow' });
-            let msgText = `<b>🎉 Оплата успешно подтверждена!</b>\n\n` +
-                `Вам начислен тариф <b>${name}</b>.\n` +
-                `Срок действия продлен до: <b>${expDate} (МСК)</b>.\n\n`;
-            
-            if (result.op_type === 'renewal') {
-                msgText += `<i>Поскольку у вас уже была активна подписка, новый тариф активирован сразу, а оставшиеся дни старого тарифа были сохранены и добавлены к общему сроку!</i>`;
+            const lang = ctx.state.lang || 'ru';
+            const isEn = lang === 'en';
+
+            const locale = isEn ? 'en-GB' : 'ru-RU';
+            const tz = isEn ? 'UTC' : 'Europe/Moscow';
+            const tzLabel = isEn ? 'UTC' : 'МСК';
+            const expDate = new Date(result.new_premium_until).toLocaleDateString(locale, { timeZone: tz });
+
+            let msgText;
+            if (isEn) {
+                msgText = `<b>🎉 Payment confirmed!</b>\n\nPlan <b>${name}</b> has been activated.\nValid until: <b>${expDate} (${tzLabel})</b>.\n\n`;
+                if (result.op_type === 'renewal') {
+                    msgText += `<i>Your previous subscription was active — the new plan was added on top and remaining days carried over!</i>`;
+                } else {
+                    msgText += `<i>Daily limits updated. Enjoy!</i>`;
+                }
             } else {
-                msgText += `<i>Дневные лимиты обновлены. Приятного пользования!</i>`;
+                msgText = `<b>🎉 Оплата успешно подтверждена!</b>\n\nВам начислен тариф <b>${name}</b>.\nСрок действия продлен до: <b>${expDate} (${tzLabel})</b>.\n\n`;
+                if (result.op_type === 'renewal') {
+                    msgText += `<i>Поскольку у вас уже была активна подписка, новый тариф активирован сразу, а оставшиеся дни старого тарифа были сохранены и добавлены к общему сроку!</i>`;
+                } else {
+                    msgText += `<i>Дневные лимиты обновлены. Приятного пользования!</i>`;
+                }
             }
 
             await ctx.reply(msgText, { parse_mode: 'HTML' });
         } else if (result && result.status === 'already_processed') {
-            await ctx.reply('Этот платеж уже был успешно обработан ранее.');
+            const alreadyMsg = (ctx.state.lang === 'en')
+                ? 'This payment has already been processed.'
+                : 'Этот платеж уже был успешно обработан ранее.';
+            await ctx.reply(alreadyMsg);
         } else {
             const errorReason = result ? result.reason : 'unknown_error';
             console.error('[Payment] Stars payment process failed:', result);
