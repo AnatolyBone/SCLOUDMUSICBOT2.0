@@ -2579,7 +2579,14 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
         }];
 
         // Выставляем счет
-        await ctx.replyWithInvoice(title, description, payload, '', currency, prices).catch(async (err) => {
+        await ctx.replyWithInvoice({
+            title,
+            description,
+            payload,
+            provider_token: '',
+            currency,
+            prices
+        }).catch(async (err) => {
             console.error('[Payment] Error sending Stars invoice:', err.message);
             await ctx.reply('⚠️ Не удалось выставить счет. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.');
         });
