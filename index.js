@@ -123,21 +123,7 @@ async function startApp() {
     await runSupportSystemMigration();
     await runAnalyticsSystemMigration();
 
-    // Убедимся, что лимит Free в БД равен 5 (если равен 3)
-    try {
-      await pool.query(`
-        INSERT INTO app_settings (key, value)
-        VALUES ('daily_limit_free', '5')
-        ON CONFLICT (key) DO UPDATE
-        SET value = '5'
-        WHERE app_settings.value = '3'
-      `);
-      await pool.query(`ALTER TABLE users ALTER COLUMN premium_limit SET DEFAULT 5`);
-      await pool.query(`UPDATE users SET premium_limit = 5 WHERE premium_limit = 3`);
-      console.log('[Startup] Инициализация лимита Free (5) в БД завершена.');
-    } catch (e) {
-      console.error('[Startup] Ошибка инициализации лимита Free в БД:', e.message);
-    }
+    // Историческая миграция лимитов (удалена, чтобы настройки пользователя не перезаписывались при старте)
     
     // Остальная инициализация
     await loadTexts(true);
