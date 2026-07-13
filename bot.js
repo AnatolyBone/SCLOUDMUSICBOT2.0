@@ -1092,7 +1092,7 @@ bot.action('support_enter', async (ctx) => {
 });
 
 // Альтернативные способы оплаты
-bot.action('payment_help', async (ctx) => {
+bot.action(['payment_help', 'other_payment_methods'], async (ctx) => {
     try {
         await ctx.answerCbQuery();
         const userId = ctx.from?.id;
@@ -1100,32 +1100,43 @@ bot.action('payment_help', async (ctx) => {
         // Трекаем открытие меню альтернативных способов
         if (userId) {
             const { analyticsService } = await import('./services/analyticsService.js');
-            await analyticsService.trackEventSafe(userId, 'alternative_payment_methods_opened', 'monetization', {
+            const eventName = ctx.callbackQuery.data === 'payment_help' ? 'alternative_payment_methods_opened' : 'other_payment_methods_opened';
+            await analyticsService.trackEventSafe(userId, eventName, 'monetization', {
                 placement: 'upgrade_menu'
             }, ctx);
         }
 
-        const TBANK_URL = getSetting('tbank_payment_url') || '';
         const ADMIN_USERNAME = getSetting('admin_username') || '';
 
-        const text = `<b>❓ Проблемы с оплатой через Stars?</b>\n\n` +
-            `Если вам не удаётся оплатить через Telegram Stars, вы можете:\n\n` +
-            `🏦 <b>Т-Банк / СБП</b> — перевод на карту вручную\n` +
-            `☕ <b>Boosty</b> — поддержка через платформу\n` +
-            `✉️ <b>Написать администратору</b> — любой вопрос\n\n` +
-            `<i>Выберите нужный способ оплаты ниже для получения ссылки:</i>`;
+        const text = `<b>💳 Другие способы оплаты (оплата в рублях)</b>\n\n` +
+            `Если вы предпочитаете оплатить картой (ЮMoney, Т-Банк/СБП) или через Boosty, выберите нужный вариант ниже:\n\n` +
+            `🎯 <b>Plus</b> — 119 ₽ / месяц (ЮMoney)\n` +
+            `💪 <b>Pro</b> — 199 ₽ / месяц (ЮMoney)\n` +
+            `💎 <b>Unlimited</b> — 299 ₽ / месяц (ЮMoney)\n` +
+            `🏦 <b>Т-Банк / СБП</b> — ручной перевод на карту по реквизитам\n` +
+            `❤️ <b>Boosty</b> — поддержка и подписки через платформу Boosty\n` +
+            `👤 <b>Написать администратору</b> — ручное зачисление/любые вопросы`;
 
-        const buttons = [];
-        if (TBANK_URL) {
-            buttons.push([Markup.button.callback('🏦 Получить ссылку на Т-Банк', 'tbank_help')]);
-        }
-        buttons.push([Markup.button.callback('☕ Получить ссылку на Boosty', 'boosty_help')]);
+        const buttons = [
+            [
+                Markup.button.callback('🎯 Plus — ЮMoney (119 ₽)', 'yoomoney_plus'),
+                Markup.button.callback('💪 Pro — ЮMoney (199 ₽)', 'yoomoney_pro')
+            ],
+            [
+                Markup.button.callback('💎 Unlimited — ЮMoney (299 ₽)', 'yoomoney_unlim')
+            ],
+            [
+                Markup.button.callback('🏦 Т-Банк / СБП', 'tbank_help'),
+                Markup.button.callback('❤️ Boosty', 'boosty_help')
+            ]
+        ];
+
         if (ADMIN_USERNAME) {
-            buttons.push([Markup.button.url('✉️ Написать администратору', `https://t.me/${ADMIN_USERNAME.replace('@', '')}`)]);
+            buttons.push([Markup.button.url('👤 Написать администратору', `https://t.me/${ADMIN_USERNAME.replace('@', '')}`)]);
         } else {
-            buttons.push([Markup.button.callback('✉️ Написать в поддержку бота', 'support_enter')]);
+            buttons.push([Markup.button.callback('👤 Написать в поддержку бота', 'support_enter')]);
         }
-        buttons.push([Markup.button.callback('« Назад к тарифам', 'back_to_upgrade')]);
+        buttons.push([Markup.button.callback('⬅️ Назад', 'back_to_upgrade')]);
 
         await ctx.reply(text, {
             parse_mode: 'HTML',
@@ -1133,7 +1144,7 @@ bot.action('payment_help', async (ctx) => {
             ...Markup.inlineKeyboard(buttons)
         });
     } catch (e) {
-        console.error('[payment_help] Error:', e.message);
+        console.error('[other_payment_methods] Error:', e.message);
     }
 });
 
@@ -1145,10 +1156,10 @@ bot.action('tbank_help', async (ctx) => {
         if (userId) {
             const { analyticsService } = await import('./services/analyticsService.js');
             await analyticsService.trackEventSafe(userId, 'tbank_payment_link_opened', 'monetization', {
-                placement: 'payment_help_menu'
+                placement: 'other_payment_methods_menu'
             }, ctx);
         }
-        const TBANK_URL = getSetting('tbank_payment_url') || '';
+        const TBANK_URL = getSetting('tbank_payment_url') || 'https://www.tinkoff.ru/rm/r_BZqnOJWzGA.WgnBFlqjec/02q0l97815';
         await ctx.reply(
             `🏦 <b>Оплата через Т-Банк / СБП</b>\n\n` +
             `Для перевода на карту вручную используйте кнопку ниже:\n\n` +
@@ -1157,7 +1168,7 @@ bot.action('tbank_help', async (ctx) => {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [Markup.button.url('🔗 Перейти к оплате Т-Банк', TBANK_URL)],
-                    [Markup.button.callback('« Назад к способам оплаты', 'payment_help')]
+                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
                 ])
             }
         );
@@ -1174,7 +1185,7 @@ bot.action('boosty_help', async (ctx) => {
         if (userId) {
             const { analyticsService } = await import('./services/analyticsService.js');
             await analyticsService.trackEventSafe(userId, 'boosty_payment_link_opened', 'monetization', {
-                placement: 'payment_help_menu'
+                placement: 'other_payment_methods_menu'
             }, ctx);
         }
         const BOOSTY_URL = getSetting('boosty_url') || 'https://boosty.to';
@@ -1186,12 +1197,96 @@ bot.action('boosty_help', async (ctx) => {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [Markup.button.url('🔗 Перейти на Boosty', BOOSTY_URL)],
-                    [Markup.button.callback('« Назад к способам оплаты', 'payment_help')]
+                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
                 ])
             }
         );
     } catch (e) {
         console.error('[boosty_help] Error:', e.message);
+    }
+});
+
+// ЮMoney Plus
+bot.action('yoomoney_plus', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        const userId = ctx.from?.id;
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'yoomoney_plus_link_opened', 'monetization', {
+                placement: 'other_payment_methods_menu'
+            }, ctx);
+        }
+        await ctx.reply(
+            `🎯 <b>Тариф Plus — 119 ₽</b>\n\n` +
+            `Для оплаты через ЮMoney (банковские карты, кошелек) используйте кнопку ниже:\n\n` +
+            `<i>После оплаты обязательно отправьте чек администратору для активации!</i>`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('🔗 Перейти к оплате (119 ₽)', 'https://yoomoney.ru/bill/pay/1CI4F93M69C.250903')],
+                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                ])
+            }
+        );
+    } catch (e) {
+        console.error('[yoomoney_plus] Error:', e.message);
+    }
+});
+
+// ЮMoney Pro
+bot.action('yoomoney_pro', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        const userId = ctx.from?.id;
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'yoomoney_pro_link_opened', 'monetization', {
+                placement: 'other_payment_methods_menu'
+            }, ctx);
+        }
+        await ctx.reply(
+            `💪 <b>Тариф Pro — 199 ₽</b>\n\n` +
+            `Для оплаты через ЮMoney (банковские карты, кошелек) используйте кнопку ниже:\n\n` +
+            `<i>После оплаты обязательно отправьте чек администратору для активации!</i>`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('🔗 Перейти к оплате (199 ₽)', 'https://yoomoney.ru/bill/pay/1CI4JNMILG7.250903')],
+                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                ])
+            }
+        );
+    } catch (e) {
+        console.error('[yoomoney_pro] Error:', e.message);
+    }
+});
+
+// ЮMoney Unlimited
+bot.action('yoomoney_unlim', async (ctx) => {
+    try {
+        await ctx.answerCbQuery();
+        const userId = ctx.from?.id;
+        if (userId) {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackEventSafe(userId, 'yoomoney_unlimited_link_opened', 'monetization', {
+                placement: 'other_payment_methods_menu'
+            }, ctx);
+        }
+        await ctx.reply(
+            `💎 <b>Тариф Unlimited — 299 ₽</b>\n\n` +
+            `Для оплаты через ЮMoney (банковские карты, кошелек) используйте кнопку ниже:\n\n` +
+            `<i>После оплаты обязательно отправьте чек администратору для активации!</i>`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('🔗 Перейти к оплате (299 ₽)', 'https://yoomoney.ru/bill/pay/1CI4K5962NE.250903')],
+                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                ])
+            }
+        );
+    } catch (e) {
+        console.error('[yoomoney_unlim] Error:', e.message);
     }
 });
 
@@ -1367,7 +1462,7 @@ const upgradeHandler = async (ctx) => {
                     Markup.button.callback('💎 Unlimited — 199 Stars', 'buy_plan_unlim')
                 ],
                 [
-                    Markup.button.callback('❓ Не получается оплатить Stars?', 'payment_help')
+                    Markup.button.callback('💳 Другие способы оплаты', 'other_payment_methods')
                 ]
             ])
         });
