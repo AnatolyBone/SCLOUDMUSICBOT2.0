@@ -3400,8 +3400,8 @@ export async function getBroadcastTaskStats(broadcastId) {
      WHERE l.broadcast_id = $1 
        AND l.status = 'sent'
        AND e.event_name = 'star_payment_option_shown'
-       AND e.created_at >= l.updated_at 
-       AND e.created_at <= l.updated_at + INTERVAL '24 hours'`,
+       AND e.created_at >= l.sent_at 
+       AND e.created_at <= l.sent_at + INTERVAL '24 hours'`,
     [broadcastId]
   );
   const upgradesAfterSent = upgradeRes.rows[0]?.count || 0;
@@ -3414,8 +3414,8 @@ export async function getBroadcastTaskStats(broadcastId) {
      WHERE l.broadcast_id = $1 
        AND l.status = 'sent'
        AND o.status = 'success'
-       AND o.updated_at >= l.updated_at 
-       AND o.updated_at <= l.updated_at + INTERVAL '24 hours'`,
+       AND o.updated_at >= l.sent_at 
+       AND o.updated_at <= l.sent_at + INTERVAL '24 hours'`,
     [broadcastId]
   );
   const paymentsAfterSent = paymentRes.rows[0]?.count || 0;
@@ -3581,7 +3581,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
          SELECT COUNT(DISTINCT p.user_id)::int
          FROM broadcast_log l
          JOIN payments p ON p.user_id = l.user_id AND p.payment_status = 'completed'
-         WHERE l.broadcast_id = t.id AND l.status = 'sent' AND p.paid_at BETWEEN l.updated_at AND (l.updated_at + interval '24 hours')
+         WHERE l.broadcast_id = t.id AND l.status = 'sent' AND p.paid_at BETWEEN l.sent_at AND (l.sent_at + interval '24 hours')
        ), 0) AS conversions_24h
      FROM broadcast_tasks t
      WHERE t.scheduled_at BETWEEN $1 AND $2
