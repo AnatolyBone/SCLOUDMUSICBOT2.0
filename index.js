@@ -1088,15 +1088,23 @@ app.get('/dashboard', requireAuth, async (req, res) => {
   }
 });
     app.get('/users-table', requireAuth, async (req, res) => {
-    try {
-      let { q = '', status = '', page = 1, limit = 25, sort = 'created_at', order = 'desc' } = req.query;
-      if (Array.isArray(sort)) sort = sort[0] || 'created_at';
-      if (Array.isArray(order)) order = order[0] || 'desc';
-      
-      // ✅ ДОБАВЛЕНО totalUsers сюда
-      const { users, totalPages, totalUsers } = await getPaginatedUsers({
-        searchQuery: q, statusFilter: status, page: parseInt(page), limit: parseInt(limit), sortBy: sort, sortOrder: order
-      });
+      // Если это прямой запрос в браузере (например, рефреш), редиректим на красивый роут /users
+      if (!req.headers['hx-request']) {
+        return res.redirect('/users?' + new URLSearchParams(req.query).toString());
+      }
+
+      try {
+        let { q = '', status = '', page = 1, limit = 25, sort = 'created_at', order = 'desc' } = req.query;
+        if (Array.isArray(sort)) sort = sort[0] || 'created_at';
+        if (Array.isArray(order)) order = order[0] || 'desc';
+        
+        // Устанавливаем заголовок HTMX, чтобы браузер пушил /users вместо /users-table в историю
+        res.setHeader('HX-Push-Url', '/users?' + new URLSearchParams(req.query).toString());
+        
+        // ✅ ДОБАВЛЕНО totalUsers сюда
+        const { users, totalPages, totalUsers } = await getPaginatedUsers({
+          searchQuery: q, statusFilter: status, page: parseInt(page), limit: parseInt(limit), sortBy: sort, sortOrder: order
+        });
       
       const queryParams = { q, status, page, limit, sort, order };
       res.render('partials/users-table', { users, totalPages, totalUsers, currentPage: parseInt(page), queryParams, layout: false });
