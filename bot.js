@@ -708,7 +708,7 @@ bot.use(async (ctx, next) => {
 const getMainKeyboard = (lang = 'ru') => {
     const buttons = [
         [i18n(lang, 'btn_menu'), '🆔 Распознать', i18n(lang, 'btn_upgrade')],
-        [i18n(lang, 'btn_mytracks'), i18n(lang, 'btn_help')]
+        [i18n(lang, 'btn_mytracks'), i18n(lang, 'btn_help'), i18n(lang, 'btn_language')]
     ];
     if (getSetting('use_vpn') !== 'false') {
         const vpnText = getSetting('vpn_button_text') || '🔐 VPN (YouTube 4K)';
