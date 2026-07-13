@@ -29,9 +29,12 @@ export const pool = new Pool({
   allowExitOnIdle: false
 });
 
-// Автоматическая миграция схемы для campaign_tag
+// Автоматическая миграция схемы для campaign_tag и campaign_name
 pool.query('ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS campaign_tag VARCHAR(100) NULL').catch(err => {
   console.error('[DB Schema] Error adding campaign_tag column:', err.message);
+});
+pool.query('ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS campaign_name VARCHAR(100) NULL').catch(err => {
+  console.error('[DB Schema] Error adding campaign_name column:', err.message);
 });
 
 // --- KARAOKE LRC MAKER SEPARATE CONNECTION POOL & CLIENT ---
