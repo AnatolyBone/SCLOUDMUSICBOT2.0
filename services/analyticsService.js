@@ -122,7 +122,7 @@ class AnalyticsService {
            event_origin, acquisition_source, event_source, placement, 
            campaign_id, language_code, deduplication_key)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-        ON CONFLICT (deduplication_key) DO NOTHING;
+        ON CONFLICT (deduplication_key) WHERE deduplication_key IS NOT NULL DO NOTHING;
       `;
 
       await query(sql, [

@@ -1025,6 +1025,7 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
 
     // Проверяем, достиг ли пользователь дневного лимита
     const isPremium = updatedUser.premium_until && new Date(updatedUser.premium_until) > new Date();
+    const { getSetting } = await import('./services/settingsManager.js');
     const freeLimit = parseInt(getSetting('daily_limit_free') || '5', 10);
     const userLimit = isPremium ? updatedUser.premium_limit : freeLimit;
     if (userLimit !== null && updatedUser.downloads_today === userLimit) {
