@@ -1450,7 +1450,6 @@ bot.command('maintenance', async (ctx) => {
         await ctx.reply('ℹ️ Статус: ' + (isMaintenanceMode() ? 'ВКЛЮЧЕН' : 'ВЫКЛЮЧЕН') + '\n\nИспользуйте: `/maintenance on` или `/maintenance off`');
     }
 });
-bot.command('premium', upgradeHandler);
 // bot.js
 // ==========================================================
 //    ДОБАВЬ ЭТОТ БЛОК ДЛЯ ОБРАБОТКИ КНОПКИ "ПОЛУЧИТЬ БОНУС"
@@ -1629,6 +1628,7 @@ bot.command('help', helpHandler);
 bot.command('support', supportCommandHandler);
 bot.command('upgrade', upgradeHandler);
 bot.command('tariffs', upgradeHandler);
+bot.command('premium', upgradeHandler);
 bot.command('shazam', recognizeHandler);
 
 const vpnHandler = (ctx) => {

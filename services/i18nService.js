@@ -14,7 +14,11 @@ try {
   for (const lang of SUPPORTED_LANGUAGES) {
     const filePath = path.join(__dirname, '..', 'locales', `${lang}.json`);
     if (fs.existsSync(filePath)) {
-      locales[lang] = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      let content = fs.readFileSync(filePath, 'utf8');
+      if (content.charCodeAt(0) === 0xFEFF) {
+        content = content.slice(1);
+      }
+      locales[lang] = JSON.parse(content);
     } else {
       console.warn(`[i18n] Файл локали не найден: ${filePath}`);
       locales[lang] = {};
