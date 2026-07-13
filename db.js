@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL, KARAOKE_DATABASE_URL, KARAOKE_SUPABASE_URL, KARAOKE_SUPABASE_KEY } from './config.js';
 import { SUPPORTED_LANGUAGES } from './config/languages.js';
+import { countUndeliverableRecipients } from './services/broadcastAudienceRules.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1556,7 +1557,8 @@ export async function getAndStartPendingBroadcastTask() {
     SET status = 'processing', started_at = NOW()
     WHERE id = (
       SELECT id FROM broadcast_tasks
-      WHERE status = 'pending' AND scheduled_at <= NOW()
+      WHERE (status = 'pending' AND scheduled_at <= NOW())
+         OR (status = 'processing' AND (started_at IS NULL OR started_at <= NOW() - INTERVAL '35 minutes'))
       ORDER BY scheduled_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -1645,7 +1647,7 @@ export function buildBroadcastAudienceQuery(targetAudience, targetLanguages, unk
   return { whereSql, segmentExpr, values };
 }
 
-export async function estimateBroadcastAudience(targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter, messagesJson = {}) {
+export async function estimateBroadcastAudience(targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter, messagesJson = {}, fallbackLanguage = 'ru') {
   const { whereSql, segmentExpr, values } = buildBroadcastAudienceQuery(targetAudience, targetLanguages, unknownLanguagePolicy, languageSourceFilter);
   
   const sql = `
@@ -1671,20 +1673,15 @@ export async function estimateBroadcastAudience(targetAudience, targetLanguages,
     else if (row.segment === 'unknown') unknownCount = row.count;
   }
   
-  // Исключено из-за отсутствия перевода
-  let missingTranslation = 0;
-  if (!messagesJson?.ru?.message) {
-    missingTranslation += ruCount;
-    if (unknownLanguagePolicy === 'use_ru') {
-      missingTranslation += unknownCount;
-    }
-  }
-  if (!messagesJson?.en?.message) {
-    missingTranslation += enCount;
-    if (unknownLanguagePolicy === 'use_en') {
-      missingTranslation += unknownCount;
-    }
-  }
+  // Исключено только если отсутствуют и собственный перевод, и fallback-текст.
+  const missingTranslation = countUndeliverableRecipients({
+    ru: ruCount,
+    en: enCount,
+    unknown: unknownCount,
+    messagesJson,
+    fallbackLanguage,
+    unknownLanguagePolicy
+  });
   
   stats.ru = ruCount;
   stats.en = enCount;
@@ -1703,7 +1700,7 @@ export async function estimateBroadcastAudience(targetAudience, targetLanguages,
     if (!targetLanguages.includes('unknown')) stats.excluded_by_language += unknownCount;
   }
   
-  stats.total = ruCount + enCount + unknownCount - stats.excluded_missing_translation;
+  stats.total = Math.max(0, ruCount + enCount + unknownCount - stats.excluded_missing_translation);
   
   // Общее базовое количество активных пользователей с тарифом
   let baseAudienceSql = `SELECT COUNT(*)::int AS count FROM users WHERE active = TRUE AND can_receive_broadcasts = TRUE`;
@@ -1720,7 +1717,7 @@ export async function estimateBroadcastAudience(targetAudience, targetLanguages,
   
   const baseRes = await query(baseAudienceSql, baseParams);
   stats.base_audience = baseRes.rows[0].count;
-  stats.excluded = stats.base_audience - stats.total;
+  stats.excluded = Math.max(0, stats.base_audience - stats.total);
 
   return stats;
 }
@@ -4105,6 +4102,8 @@ export const REQUIRED_SCHEMA = Object.freeze({
   app_settings: ['key', 'value']
 });
 
+export const REQUIRED_SCHEMA_VERSION = 9;
+
 export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   const tableNames = Object.keys(REQUIRED_SCHEMA);
   const requiredColumnCount = Object.values(REQUIRED_SCHEMA).reduce((sum, columns) => sum + columns.length, 0);
@@ -4134,13 +4133,30 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
     }
   }
 
+  let actualSchemaVersion = null;
+  const appSettingsColumns = actualSchema.get('app_settings');
+  if (appSettingsColumns?.has('key') && appSettingsColumns.has('value')) {
+    const versionResult = await query(
+      `SELECT value FROM public.app_settings WHERE key = 'schema_version' LIMIT 1`
+    );
+    const parsedVersion = Number.parseInt(versionResult.rows[0]?.value, 10);
+    actualSchemaVersion = Number.isInteger(parsedVersion) ? parsedVersion : null;
+  }
+  const schemaVersionMatches = actualSchemaVersion === REQUIRED_SCHEMA_VERSION;
+
   const report = {
-    ok: missingTables.length === 0 && missingColumns.length === 0,
+    ok: missingTables.length === 0 && missingColumns.length === 0 && schemaVersionMatches,
     summary: {
       requiredTables: tableNames.length,
       requiredColumns: requiredColumnCount,
       missingTables: missingTables.length,
-      missingColumns: missingColumns.length
+      missingColumns: missingColumns.length,
+      schemaVersionMismatch: !schemaVersionMatches
+    },
+    schemaVersion: {
+      required: REQUIRED_SCHEMA_VERSION,
+      actual: actualSchemaVersion,
+      matches: schemaVersionMatches
     },
     missing: {
       tables: missingTables.sort(),
@@ -4149,18 +4165,33 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   };
 
   if (report.ok) {
-    console.log(`[Schema Check] OK: ${tableNames.length} tables, ${requiredColumnCount} required columns`);
+    console.log(
+      `[Schema Check] OK: version ${REQUIRED_SCHEMA_VERSION}, ` +
+      `${tableNames.length} tables, ${requiredColumnCount} required columns`
+    );
     return report;
   }
 
   console.error('[Schema Check] Missing:');
   for (const table of report.missing.tables) console.error(`- ${table}`);
   for (const column of report.missing.columns) console.error(`- ${column}`);
+  if (!schemaVersionMatches) {
+    console.error(`- schema_version: required ${REQUIRED_SCHEMA_VERSION}, actual ${actualSchemaVersion ?? 'missing'}`);
+  }
 
   if (throwOnMissing) {
-    const error = new Error(
-      `Database schema is incompatible: ${missingTables.length} tables and ${missingColumns.length} required columns are missing.`
-    );
+    const incompatibilities = [];
+    if (missingTables.length > 0 || missingColumns.length > 0) {
+      incompatibilities.push(
+        `${missingTables.length} tables and ${missingColumns.length} required columns are missing`
+      );
+    }
+    if (!schemaVersionMatches) {
+      incompatibilities.push(
+        `schema version ${actualSchemaVersion ?? 'missing'} does not match required version ${REQUIRED_SCHEMA_VERSION}`
+      );
+    }
+    const error = new Error(`Database schema is incompatible: ${incompatibilities.join('; ')}.`);
     error.code = 'SCHEMA_CONTRACT_MISMATCH';
     error.schemaReport = report;
     throw error;

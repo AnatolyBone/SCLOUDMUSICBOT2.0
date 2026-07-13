@@ -32,12 +32,18 @@
     <a href="/admin/analytics/export?startDate=<%= startDate %>&endDate=<%= endDate %>" class="btn btn-sm btn-success text-white">
       <i class="bi bi-file-earmark-excel me-1"></i>Экспорт XLSX
     </a>
+
+    <button type="button" class="btn btn-sm btn-outline-success" id="system-self-test-button" onclick="runSystemSelfTest()">
+      <i class="bi bi-activity me-1"></i>Self-test
+    </button>
     
     <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#aggregation-panel" title="Агрегация данных">
       <i class="bi bi-gear me-1"></i>Агрегация
     </button>
   </div>
 </div>
+
+<div id="system-self-test-result" class="alert d-none mb-3" role="status"></div>
 
 <div class="collapse mb-3" id="aggregation-panel">
   <div class="card card-body bg-light border-0 shadow-sm">
@@ -494,6 +500,30 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
 
 <script>
+  async function runSystemSelfTest() {
+    const button = document.getElementById('system-self-test-button');
+    const resultBox = document.getElementById('system-self-test-result');
+    button.disabled = true;
+    resultBox.className = 'alert alert-info mb-3';
+    resultBox.textContent = 'Выполняется системная проверка...';
+
+    try {
+      const response = await fetch('/admin/system/self-test', { method: 'POST' });
+      const result = await response.json();
+      const names = ['database', 'analytics', 'broadcasts', 'workers', 'excel'];
+      const summary = names
+        .map(name => `${result[name] === 'ok' ? '✅' : '❌'} ${name}: ${result[name] || 'error'}`)
+        .join(' · ');
+      resultBox.className = `alert ${result.ok ? 'alert-success' : 'alert-danger'} mb-3`;
+      resultBox.textContent = `${summary} (${result.durationMs || 0} ms)`;
+    } catch (error) {
+      resultBox.className = 'alert alert-danger mb-3';
+      resultBox.textContent = `Self-test error: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   let statusInterval = null;
   let wasActive = false;
 

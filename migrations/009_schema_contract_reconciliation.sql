@@ -127,3 +127,13 @@ BEGIN
             FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
     END IF;
 END $$;
+
+-- Never downgrade a database that was already migrated by newer application code.
+INSERT INTO public.app_settings (key, value)
+VALUES ('schema_version', '9')
+ON CONFLICT (key) DO UPDATE
+SET value = CASE
+    WHEN public.app_settings.value ~ '^[0-9]+$'
+        THEN GREATEST(public.app_settings.value::integer, EXCLUDED.value::integer)::text
+    ELSE EXCLUDED.value
+END;

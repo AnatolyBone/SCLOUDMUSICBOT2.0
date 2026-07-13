@@ -20,6 +20,15 @@ const MEDIA_TYPES = {
   'audio/': 'sendAudio'
 };
 
+function deliveryLogError(error, taskId, userId) {
+  const wrapped = new Error(
+    `Telegram delivery state could not be persisted for campaign ${taskId}, user ${userId}: ${error.message}`
+  );
+  wrapped.code = 'BROADCAST_DELIVERY_LOG_FAILED';
+  wrapped.cause = error;
+  return wrapped;
+}
+
 function getTelegramMethod(mimeType) {
   const prefix = Object.keys(MEDIA_TYPES).find(k => mimeType?.startsWith(k));
   return MEDIA_TYPES[prefix] || 'sendDocument';
@@ -100,11 +109,16 @@ async function sendToUser(bot, task, user, retryCount = 0) {
       if (task.id && !task.isTest) {
         await logBroadcastSent(task.id, user.id, 'sent', user.audience_language_segment || userLang, userLang);
       }
-    } catch (logErr) {}
+    } catch (logErr) {
+      throw deliveryLogError(logErr, task.id, user.id);
+    }
     
     return { status: 'ok', userId: user.id };
     
   } catch (e) {
+    // Continuing would select the still-pending snapshot row again and could duplicate delivery.
+    if (e.code === 'BROADCAST_DELIVERY_LOG_FAILED') throw e;
+
     // Rate limit (429)
     if (e.response?.error_code === 429 && retryCount < MAX_RETRIES) {
       const retryAfter = e.response.parameters?.retry_after || 5;
@@ -126,7 +140,9 @@ async function sendToUser(bot, task, user, retryCount = 0) {
       if (task.id && !task.isTest) {
         await logBroadcastSent(task.id, user.id, status, user.audience_language_segment || user.delivered_language, user.delivered_language);
       }
-    } catch (err) {}
+    } catch (logErr) {
+      throw deliveryLogError(logErr, task.id, user.id);
+    }
     
     return { status, userId: user.id };
   }

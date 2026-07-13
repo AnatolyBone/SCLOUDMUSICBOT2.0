@@ -56,6 +56,18 @@ test('Free tier is not hardcoded to five in runtime filters', () => {
   );
 });
 
+test('schema preflight requires migration version 9', () => {
+  const dbSource = fs.readFileSync(path.join(ROOT, 'db.js'), 'utf8');
+  const migration = fs.readFileSync(
+    path.join(ROOT, 'migrations', '009_schema_contract_reconciliation.sql'),
+    'utf8'
+  );
+
+  assert.match(dbSource, /REQUIRED_SCHEMA_VERSION = 9/);
+  assert.match(dbSource, /actualSchemaVersion === REQUIRED_SCHEMA_VERSION/);
+  assert.match(migration, /VALUES \('schema_version', '9'\)/);
+});
+
 test('smoke runner keeps the complete administrative contract', () => {
   const smokeSource = fs.readFileSync(path.join(ROOT, 'services', 'analyticsSmokeTest.js'), 'utf8');
   const requiredTests = [

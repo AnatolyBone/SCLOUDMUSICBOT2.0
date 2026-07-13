@@ -14,6 +14,8 @@
   <div class="card-body">
     <form id="broadcastForm" method="POST" action="<%= isEditing ? '/broadcast/edit/' + task.id : '/broadcast/new' %>" enctype="multipart/form-data">
       <input type="hidden" name="action" id="form_action" value="send">
+      <input type="hidden" name="existing_file_id" value="<%= task?.file_id || '' %>">
+      <input type="hidden" name="existing_file_mime_type" value="<%= task?.file_mime_type || '' %>">
       
       <div class="row">
         <div class="col-md-4 mb-3">
@@ -91,7 +93,7 @@
         <div class="col-md-6 mb-3">
           <label for="file" class="form-label fw-semibold">Медиа файл (необязательно)</label>
           <input type="file" name="file" id="file" class="form-control" />
-          <% if (isEditing && (task.file_path || task.file_id)) { %>
+          <% if (task?.file_path || task?.file_id) { %>
             <div class="form-text text-success"><i class="bi bi-paperclip"></i> Файл прикреплен. Загрузка нового файла заменит текущий.</div>
           <% } %>
         </div>

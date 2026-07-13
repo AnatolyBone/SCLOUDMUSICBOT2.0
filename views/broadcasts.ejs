@@ -187,8 +187,13 @@
           const sent = task.sent_count || 0;
           const targeted = task.targeted_count || 0;
           const estimated = task.estimated_count || 0;
+          const hasSnapshot = targeted > 0;
+          const isLegacyCompleted = task.status === 'completed' && !hasSnapshot;
           const total = targeted > 0 ? targeted : estimated;
-          const progress = total > 0 ? Math.round((processed / total) * 100) : 0;
+          const progress = isLegacyCompleted ? 100 : (total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0);
+          const progressTitle = isLegacyCompleted
+            ? 'Архивная рассылка завершена; детальная статистика до snapshot недоступна'
+            : `Отправлено: ${sent} из ${total}`;
         %>
           <tr data-id="<%= task.id %>"
               data-status="<%= task.status %>"
@@ -228,14 +233,15 @@
                 <div class="progress" 
                      style="height: 22px; font-size: 0.8rem;" 
                      data-bs-toggle="tooltip" 
-                     title="Отправлено: <%= sent %> из <%= total %>">
+                     title="<%= progressTitle %>">
                   <div class="progress-bar <%= task.status === 'completed' ? 'bg-success' : 'progress-bar-striped progress-bar-animated' %>" 
                        role="progressbar" 
+                       style="width: <%= progress %>%;"
                        data-progress="<%= progress %>" 
                        aria-valuenow="<%= progress %>" 
                        aria-valuemin="0" 
                        aria-valuemax="100">
-                    <%= progress %>%
+                    <%= progress %>%<%= isLegacyCompleted ? ' архив' : '' %>
                   </div>
                 </div>
               <% } else if (task.status === 'pending') { %>

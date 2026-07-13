@@ -5,13 +5,8 @@ import { Mutex } from 'async-mutex';
 import { ADMIN_ID } from '../config.js'; 
 import {
   pool,
-  getAndStartPendingBroadcastTask,
-  createBroadcastSnapshot,
-  updateBroadcastStatus,
-  getUsersForBroadcastBatch,
   findAndInterruptActiveBroadcast,
-  resetExpiredPremiumsBulk,
-  getBroadcastProgress
+  resetExpiredPremiumsBulk
 } from '../db.js';
 import {
   checkAndSendExpirationNotifications,
@@ -25,7 +20,7 @@ import {
   isBroadcasting, 
   setBroadcasting 
 } from './appState.js';
-import { runBroadcastBatch, sendAdminReport } from './broadcastManager.js';
+import { processNextBroadcastTask } from './broadcastWorker.js';
 
 // ========================= CONFIGURATION =========================
 
@@ -36,6 +31,11 @@ const BROADCAST_MAX_DURATION = 30 * 60 * 1000; // 30 минут
 
 let botInstance;
 const shutdownMutex = new Mutex();
+const workerRuntime = {
+  initialized: false,
+  initializedAt: null,
+  schedules: new Map()
+};
 
 // ========================= HELPER FUNCTIONS =========================
 
@@ -70,6 +70,11 @@ function createCronTask(schedule, taskName, taskFn, options = {}) {
       isRunning = false;
     }
   }, options.cronOptions);
+
+  workerRuntime.schedules.set(taskName, {
+    schedule,
+    timezone: options.cronOptions?.timezone || null
+  });
   
   console.log(`[${taskName}] Планировщик запущен (${schedule})`);
 }
@@ -119,145 +124,32 @@ function startPremiumAutoResetWorker() {
 /**
  * Воркер массовых рассылок
  */
-function drawProgressBar(current, total) {
-  const size = 10;
-  const progress = total > 0 ? Math.round((current / total) * size) : 0;
-  const empty = size - progress;
-  return `<code>[${'■'.repeat(progress)}${'□'.repeat(empty)}]</code>`;
-}
 function startBroadcastWorker() {
   createCronTask(
     '* * * * *',
     'Broadcast',
     async () => {
       if (isBroadcasting()) return;
-      
-      const task = await getAndStartPendingBroadcastTask();
-      if (!task) return;
-      
-      console.log(`[Broadcast] Начинаю рассылку #${task.id}.`);
-      setBroadcasting(true);
-      downloadQueue.pause();
-      
-      const startTime = Date.now();
-      let isDone = false;
-      let reportMsgId = null; // ID сообщения для обновления прогресса
-
-      let successCount = 0;
-      let errorCount = 0;
-      let blockedCount = 0;
-
+      let taskClaimed = false;
       try {
-        // 1. Отправляем начальное сообщение админу
-        const initialReport = await botInstance.telegram.sendMessage(
-          ADMIN_ID, 
-          `⏳ <b>Подготовка рассылки #${task.id}...</b>`, 
-          { parse_mode: 'HTML' }
-        );
-        reportMsgId = initialReport.message_id;
-
-        const insertedRecipients = await createBroadcastSnapshot(
-          task.id,
-          task.target_audience,
-          task.target_languages,
-          task.unknown_language_policy,
-          task.language_source_filter,
-          task.messages_json,
-          task.fallback_language || 'ru'
-        );
-        const snapshotProgress = await getBroadcastProgress(task.id, task.target_audience);
-
-        console.log(
-          `[Broadcast] Snapshot #${task.id}: ${snapshotProgress.total} recipients ` +
-          `(${insertedRecipients} inserted).`
-        );
-
-        if (snapshotProgress.total === 0) {
-          throw new Error('Broadcast audience is empty: recipient snapshot contains 0 users.');
-        }
-
-        while (!isDone && !isShuttingDown()) {
-          if (Date.now() - startTime > BROADCAST_MAX_DURATION) {
-            await updateBroadcastStatus(task.id, 'pending');
-            break;
+        await processNextBroadcastTask({
+          bot: botInstance,
+          adminId: ADMIN_ID,
+          batchSize: BROADCAST_BATCH_SIZE,
+          batchDelayMs: BROADCAST_BATCH_DELAY,
+          maxDurationMs: BROADCAST_MAX_DURATION,
+          shouldStop: isShuttingDown,
+          onTaskClaimed: () => {
+            taskClaimed = true;
+            setBroadcasting(true);
+            downloadQueue.pause();
           }
-          
-          const users = await getUsersForBroadcastBatch(
-            task.id,
-            task.target_audience,
-            BROADCAST_BATCH_SIZE
-          );
-          
-          if (users.length === 0) {
-            isDone = true;
-            continue;
-          }
-          
-          // 2. Отправляем пачку
-          const batchResults = await runBroadcastBatch(botInstance, task, users);
-          batchResults.forEach(r => {
-            if (r.status === 'ok') successCount++;
-            else if (r.status === 'blocked') blockedCount++;
-            else errorCount++;
-          });
-
-          // 3. ОБНОВЛЯЕМ ПРОГРЕСС-БАР
-          const { total, processed } = await getBroadcastProgress(task.id, task.target_audience);
-          const percent = total > 0 ? ((processed / total) * 100).toFixed(1) : '0';
-          const bar = drawProgressBar(processed, total);
-
-          try {
-            await botInstance.telegram.editMessageText(
-              ADMIN_ID,
-              reportMsgId,
-              null,
-              `⏳ <b>Выполнение рассылки #${task.id}</b>\n\n` +
-              `${bar} <b>${percent}%</b>\n\n` +
-              `📦 Обработано: <b>${processed} / ${total}</b>\n` +
-              `👤 Аудитория: <code>${task.target_audience}</code>`,
-              { parse_mode: 'HTML' }
-            );
-          } catch (editErr) {
-            // Игнорируем ошибки редактирования (например, если текст не изменился)
-          }
-          
-          await new Promise(resolve => setTimeout(resolve, BROADCAST_BATCH_DELAY));
-        }
-        
-        if (!isShuttingDown() && isDone) {
-          await updateBroadcastStatus(task.id, 'completed');
-          
-          // 4. Финальный отчет (редактируем то же сообщение)
-          const { total, processed } = await getBroadcastProgress(task.id, task.target_audience);
-          const duration = Math.round((Date.now() - startTime) / 1000);
-          
-          const completedReport =
-            `✅ <b>Рассылка #${task.id} завершена!</b>\n` +
-            `──────────────────\n` +
-            `${drawProgressBar(processed, total)} <b>100%</b>\n\n` +
-            `👥 Всего обработано: <b>${total}</b>\n\n` +
-            `✅ Успешно: <b>${successCount}</b>\n` +
-            `🚫 Заблокировали бота: <b>${blockedCount}</b>\n` +
-            `❌ Ошибок: <b>${errorCount}</b>\n\n` +
-            `⏱ Время выполнения: <b>${duration} сек.</b>`;
-
-          await botInstance.telegram.editMessageText(
-            ADMIN_ID,
-            reportMsgId,
-            null,
-            completedReport,
-            { parse_mode: 'HTML' }
-          );
-        }
-      } catch (error) {
-        console.error(`[Broadcast] Ошибка:`, error);
-        await updateBroadcastStatus(task.id, 'failed', error.message);
-        if (reportMsgId) {
-          await botInstance.telegram.sendMessage(ADMIN_ID, `❌ Ошибка рассылки #${task.id}: ${error.message}`);
-        }
+        });
       } finally {
-        setBroadcasting(false);
-        downloadQueue.start();
+        if (taskClaimed) {
+          setBroadcasting(false);
+          downloadQueue.start();
+        }
       }
     },
     { watchdogMs: 35 * 60 * 1000 }
@@ -378,11 +270,28 @@ export function initializeWorkers(server, bot) {
   startBroadcastWorker();
   startNotifierWorker();
   startPremiumAutoResetWorker();
+
+  workerRuntime.initialized = true;
+  workerRuntime.initializedAt = new Date().toISOString();
   
   // Настраиваем graceful shutdown
   setupGracefulShutdown(server);
   
   console.log('[Workers] ✅ Все воркеры успешно запущены');
+}
+
+export function getWorkerHealth() {
+  const schedules = Object.fromEntries(workerRuntime.schedules);
+  const requiredWorkers = ['Broadcast', 'Notifier/Daily', 'Notifier/Hourly', 'Premium/BulkReset'];
+  const missingWorkers = requiredWorkers.filter(name => !workerRuntime.schedules.has(name));
+
+  return {
+    ok: workerRuntime.initialized && missingWorkers.length === 0,
+    initialized: workerRuntime.initialized,
+    initializedAt: workerRuntime.initializedAt,
+    schedules,
+    missingWorkers
+  };
 }
 
 // ========================= EXPORTS SUMMARY =========================

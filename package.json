@@ -6,8 +6,11 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
+    "migrate:schema": "node scripts/migrate-schema.js",
     "check:schema": "node scripts/schema-preflight.js",
     "smoke:analytics": "node scripts/smoke-analytics.js",
+    "test:broadcast:integration": "node scripts/run-broadcast-integration.js",
+    "release:check": "node scripts/release-check.js",
     "test": "node --test --test-isolation=none"
   },
   "dependencies": {

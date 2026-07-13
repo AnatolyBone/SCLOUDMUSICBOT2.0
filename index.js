@@ -96,6 +96,8 @@ import { downloadQueue, initializeDownloadManager } from './services/downloadMan
 import { runAnalyticsSmokeTest } from './services/analyticsSmokeTest.js';
 import { generateExcelReport } from './services/excelReportService.js';
 import { formatSettingForLog, sanitizeLogValue } from './services/logSanitizer.js';
+import { runSystemSelfTest } from './services/systemSelfTest.js';
+import { mapBroadcastTaskToForm } from './services/broadcastFormMapper.js';
 
 const app = express();
 
@@ -1210,18 +1212,6 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     res.render('broadcasts', { title: 'Управление рассылками', page: 'broadcasts', tasks });
   });
 
-  function formatKeyboardToText(keyboard) {
-    if (!keyboard || !Array.isArray(keyboard)) return '';
-    return keyboard.map(row => {
-      const btn = Array.isArray(row) ? row[0] : row;
-      if (!btn) return '';
-      if (btn.url) return `${btn.text} | url | ${btn.url}`;
-      if (btn.callback_data) return `${btn.text} | callback | ${btn.callback_data}`;
-      if (btn.switch_inline_query !== undefined) return `${btn.text} | inline_search | ${btn.switch_inline_query}`;
-      return btn.text;
-    }).filter(Boolean).join('\n');
-  }
-
     app.get('/broadcast/new', requireAuth, async (req, res) => {
     let taskData = {
       campaign_name: '',
@@ -1241,22 +1231,7 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
       try {
         const clonedTask = await getBroadcastTaskById(req.query.clone);
         if (clonedTask) {
-          const messagesJson = clonedTask.messages_json || {};
-          taskData = {
-            campaign_name: (clonedTask.campaign_name || '') + ' (Копия)',
-            campaign_tag: (clonedTask.campaign_tag || '') + '_copy',
-            broadcast_type: clonedTask.broadcast_type || 'marketing',
-            target_audience: clonedTask.target_audience || 'all',
-            target_languages: clonedTask.target_languages || ['all'],
-            unknown_language_policy: clonedTask.unknown_language_policy || 'use_ru',
-            fallback_language: clonedTask.fallback_language || 'ru',
-            message_ru: messagesJson.ru?.message || '',
-            message_en: messagesJson.en?.message || '',
-            buttons_ru: formatKeyboardToText(messagesJson.ru?.keyboard),
-            buttons_en: formatKeyboardToText(messagesJson.en?.keyboard),
-            file_id: clonedTask.file_id || null,
-            file_mime_type: clonedTask.file_mime_type || null
-          };
+          taskData = mapBroadcastTaskToForm(clonedTask, { clone: true });
         }
       } catch (e) {
         console.error('[Broadcast Clone] Error loading task to clone:', e.message);
@@ -1288,21 +1263,7 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     if (!task || task.status !== 'pending') {
       return res.redirect('/broadcasts');
     }
-    const messagesJson = task.messages_json || {};
-    const taskData = {
-      ...task,
-      campaign_name: task.campaign_name || '',
-      campaign_tag: task.campaign_tag || '',
-      broadcast_type: task.broadcast_type || 'marketing',
-      target_audience: task.target_audience || 'all',
-      target_languages: task.target_languages || ['all'],
-      unknown_language_policy: task.unknown_language_policy || 'use_ru',
-      fallback_language: task.fallback_language || 'ru',
-      message_ru: messagesJson.ru?.message || '',
-      message_en: messagesJson.en?.message || '',
-      buttons_ru: formatKeyboardToText(messagesJson.ru?.keyboard),
-      buttons_en: formatKeyboardToText(messagesJson.en?.keyboard)
-    };
+    const taskData = mapBroadcastTaskToForm(task);
     res.render('broadcast-form', { title: 'Редактировать рассылку', page: 'broadcasts', task: taskData, error: null, success: null });
   });
 
@@ -1319,7 +1280,8 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         targetLanguages || ['all'],
         unknownLanguagePolicy,
         'all',
-        messagesJson
+        messagesJson,
+        fallbackLanguage || 'ru'
       );
       res.json(stats);
     } catch (e) {
@@ -1399,6 +1361,8 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         scheduledAt,
         disable_notification,
         enable_web_page_preview,
+        existing_file_id,
+        existing_file_mime_type,
         action
       } = req.body;
 
@@ -1420,6 +1384,8 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         buttons_ru,
         message_en,
         buttons_en,
+        file_id: existing_file_id || null,
+        file_mime_type: existing_file_mime_type || null,
         disable_notification: !!disable_notification,
         disable_web_page_preview: !enable_web_page_preview
       };
@@ -1433,7 +1399,12 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         task: taskForRender
       };
 
-      const existingTask = isEditing ? await getBroadcastTaskById(taskId) : {};
+      const existingTask = isEditing
+        ? await getBroadcastTaskById(taskId)
+        : {
+            file_id: existing_file_id || null,
+            file_mime_type: existing_file_mime_type || null
+          };
 
       // Валидация наличия контента
       const hasAnyMessage = message_ru || message_en;
@@ -1541,7 +1512,9 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
           message_ru: req.body.message_ru,
           message_en: req.body.message_en,
           buttons_ru: req.body.buttons_ru,
-          buttons_en: req.body.buttons_en
+          buttons_en: req.body.buttons_en,
+          file_id: req.body.existing_file_id || null,
+          file_mime_type: req.body.existing_file_mime_type || null
         }
       };
       if (isEditing) renderOptionsError.task.id = taskId;
@@ -2294,6 +2267,23 @@ app.post('/admin/analytics/smoke-test', requireAuth, async (req, res) => {
       tests: {
         smoke_runner: { status: 'error', error: error.message }
       }
+    });
+  }
+});
+
+app.post('/admin/system/self-test', requireAuth, async (req, res) => {
+  try {
+    const result = await runSystemSelfTest();
+    res.status(result.ok ? 200 : 503).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      database: 'error',
+      analytics: 'error',
+      broadcasts: 'error',
+      workers: 'error',
+      excel: 'error',
+      error: error.message
     });
   }
 });
