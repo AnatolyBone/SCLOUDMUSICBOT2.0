@@ -488,3 +488,29 @@ REVOKE EXECUTE ON FUNCTION public.process_manual_payment(BIGINT, BIGINT, VARCHAR
 -- Доступ только служебной backend-роли (service_role)
 GRANT EXECUTE ON FUNCTION public.process_stars_payment(BIGINT, UUID, VARCHAR, VARCHAR, BIGINT, VARCHAR, TEXT, VARCHAR, BIGINT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.process_manual_payment(BIGINT, BIGINT, VARCHAR, BIGINT, VARCHAR, VARCHAR, INTEGER, TEXT) TO service_role;
+
+-- 12. Самовосстановление колонок в таблице payments, если она существовала ранее
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'payments') THEN
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) NOT NULL DEFAULT 'pending';
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS period_days INTEGER NOT NULL DEFAULT 30;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS comment TEXT;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS metadata JSONB;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP WITH TIME ZONE NULL;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS telegram_payment_charge_id VARCHAR(150);
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS provider_payment_charge_id VARCHAR(150);
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS invoice_payload VARCHAR(250);
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS is_recurring BOOLEAN DEFAULT FALSE;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS is_first_recurring BOOLEAN DEFAULT FALSE;
+        ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS subscription_expiration_date TIMESTAMP WITH TIME ZONE;
+        
+        -- Попытка добавить unique constraint на telegram_payment_charge_id, если его нет
+        BEGIN
+            ALTER TABLE public.payments ADD CONSTRAINT uq_telegram_payment_charge_id UNIQUE (telegram_payment_charge_id);
+        EXCEPTION
+            WHEN duplicate_table OR duplicate_object THEN
+                -- Игнорируем, если ограничение уже существует
+        END;
+    END IF;
+END $$;

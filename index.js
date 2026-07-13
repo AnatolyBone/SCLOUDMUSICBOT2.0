@@ -160,7 +160,7 @@ async function startApp() {
     if (process.env.NODE_ENV === 'production' && !forcePolling) {
       const fullBase = WEBHOOK_URL.endsWith('/') ? WEBHOOK_URL.slice(0, -1) : WEBHOOK_URL;
       const fullWebhookUrl = fullBase + WEBHOOK_PATH;
-      const allowedUpdates = ['message', 'callback_query', 'inline_query'];
+      const allowedUpdates = ['message', 'callback_query', 'inline_query', 'pre_checkout_query'];
       
       // Retry-логика для вебхука
       for (let i = 0; i < 3; i++) {
@@ -216,7 +216,7 @@ async function startApp() {
       console.log('[App] Запуск бота в режиме long-polling...');
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       bot.launch({
-        allowedUpdates: ['message', 'callback_query', 'inline_query']
+        allowedUpdates: ['message', 'callback_query', 'inline_query', 'pre_checkout_query']
       });
     }
     
