@@ -323,3 +323,13 @@ if (window.location.hash) {
   }
 }
 </script>
+
+<%# Синхронизация hidden-полей сортировки в родительской форме %>
+<script>
+  (function() {
+    const sortInput = document.getElementById('filterSort');
+    const orderInput = document.getElementById('filterOrder');
+    if (sortInput) sortInput.value = '<%= queryParams?.sort || "created_at" %>';
+    if (orderInput) orderInput.value = '<%= queryParams?.order || "desc" %>';
+  })();
+</script>

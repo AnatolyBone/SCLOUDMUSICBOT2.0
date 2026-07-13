@@ -1004,7 +1004,9 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 
   app.get('/users', requireAuth, async (req, res) => {
     try {
-      const { q = '', status = '', page = 1, limit = 25, sort = 'created_at', order = 'desc' } = req.query;
+      let { q = '', status = '', page = 1, limit = 25, sort = 'created_at', order = 'desc' } = req.query;
+      if (Array.isArray(sort)) sort = sort[0] || 'created_at';
+      if (Array.isArray(order)) order = order[0] || 'desc';
       const { users, totalPages, totalUsers } = await getPaginatedUsers({
         searchQuery: q, statusFilter: status, page: parseInt(page), limit: parseInt(limit), sortBy: sort, sortOrder: order
       });
@@ -1087,7 +1089,9 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 });
     app.get('/users-table', requireAuth, async (req, res) => {
     try {
-      const { q = '', status = '', page = 1, limit = 25, sort = 'created_at', order = 'desc' } = req.query;
+      let { q = '', status = '', page = 1, limit = 25, sort = 'created_at', order = 'desc' } = req.query;
+      if (Array.isArray(sort)) sort = sort[0] || 'created_at';
+      if (Array.isArray(order)) order = order[0] || 'desc';
       
       // ✅ ДОБАВЛЕНО totalUsers сюда
       const { users, totalPages, totalUsers } = await getPaginatedUsers({

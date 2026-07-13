@@ -155,6 +155,8 @@
       hx-trigger="keyup changed delay:300ms from:#searchInput, change from:.form-select, change from:.adv-filter"
       hx-swap="innerHTML"
       hx-push-url="true">
+  <input type="hidden" name="sort" id="filterSort" value="<%= queryParams?.sort || 'created_at' %>">
+  <input type="hidden" name="order" id="filterOrder" value="<%= queryParams?.order || 'desc' %>">
 
   <!-- Поиск / статус / лимит / экспорт -->
   <div class="col-lg-4 col-md-6">
