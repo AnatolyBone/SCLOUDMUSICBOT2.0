@@ -1755,7 +1755,8 @@ export async function createBroadcastSnapshot(broadcastId, targetAudience, targe
   `;
 
   const fallbackPolicy = unknownLanguagePolicy === 'use_en' ? 'use_en' : 'use_ru';
-  await query(sql, [...values, broadcastId, fallbackPolicy, JSON.stringify(messagesJson), fallbackLanguage]);
+  const result = await query(sql, [...values, broadcastId, fallbackPolicy, JSON.stringify(messagesJson), fallbackLanguage]);
+  return result.rowCount || 0;
 }
 
 export async function startCampaignTransaction(broadcastId) {
@@ -1845,10 +1846,11 @@ export async function startCampaignTransaction(broadcastId) {
 export async function getUsersForBroadcastBatch(broadcastId, audience, limit) {
   // Выбираем получателей из snapshot (broadcast_log) со статусом pending
   const sql = `
-    SELECT l.user_id AS id, l.delivered_language, u.first_name
+    SELECT l.user_id AS id, l.audience_language_segment, l.delivered_language, u.first_name
     FROM broadcast_log l
     JOIN users u ON l.user_id = u.id
     WHERE l.broadcast_id = $1 AND l.status = 'pending'
+    ORDER BY l.user_id
     LIMIT $2
   `;
   const { rows } = await query(sql, [broadcastId, limit]);

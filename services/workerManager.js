@@ -6,6 +6,7 @@ import { ADMIN_ID } from '../config.js';
 import {
   pool,
   getAndStartPendingBroadcastTask,
+  createBroadcastSnapshot,
   updateBroadcastStatus,
   getUsersForBroadcastBatch,
   findAndInterruptActiveBroadcast,
@@ -154,6 +155,26 @@ function startBroadcastWorker() {
           { parse_mode: 'HTML' }
         );
         reportMsgId = initialReport.message_id;
+
+        const insertedRecipients = await createBroadcastSnapshot(
+          task.id,
+          task.target_audience,
+          task.target_languages,
+          task.unknown_language_policy,
+          task.language_source_filter,
+          task.messages_json,
+          task.fallback_language || 'ru'
+        );
+        const snapshotProgress = await getBroadcastProgress(task.id, task.target_audience);
+
+        console.log(
+          `[Broadcast] Snapshot #${task.id}: ${snapshotProgress.total} recipients ` +
+          `(${insertedRecipients} inserted).`
+        );
+
+        if (snapshotProgress.total === 0) {
+          throw new Error('Broadcast audience is empty: recipient snapshot contains 0 users.');
+        }
 
         while (!isDone && !isShuttingDown()) {
           if (Date.now() - startTime > BROADCAST_MAX_DURATION) {

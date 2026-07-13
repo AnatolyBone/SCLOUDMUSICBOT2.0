@@ -95,6 +95,7 @@ import { loadTexts, setText, getEditableTexts } from './config/texts.js';
 import { downloadQueue, initializeDownloadManager } from './services/downloadManager.js';
 import { runAnalyticsSmokeTest } from './services/analyticsSmokeTest.js';
 import { generateExcelReport } from './services/excelReportService.js';
+import { formatSettingForLog, sanitizeLogValue } from './services/logSanitizer.js';
 
 const app = express();
 
@@ -750,11 +751,11 @@ app.post('/settings/maintenance', requireAuth, async (req, res) => {
 
 app.post('/settings/update', requireAuth, async (req, res) => {
   try {
-    console.log('[Settings/Update] Получены данные:', JSON.stringify(req.body, null, 2));
+    console.log('[Settings/Update] Получены данные:', JSON.stringify(sanitizeLogValue(req.body), null, 2));
     
     // Лимиты являются настройками продукта; пользователей массово не перезаписываем.
     for (const [key, value] of Object.entries(req.body)) {
-      console.log(`[Settings/Update] Сохраняю: ${key} = ${value}`);
+      console.log(`[Settings/Update] Сохраняю: ${key} = ${formatSettingForLog(key, value)}`);
       await setAppSetting(key, value);
     }
     

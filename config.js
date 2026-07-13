@@ -278,7 +278,7 @@ export function getSafeConfig() {
     ADMIN_PASSWORD: CONFIG.ADMIN_PASSWORD ? '***' : null,
     REDIS_URL: CONFIG.REDIS_URL ? 'configured' : 'not set',
     SUPABASE_KEY: CONFIG.SUPABASE_KEY ? '***' + CONFIG.SUPABASE_KEY.slice(-4) : 'not set',
-    PROXY_URL: CONFIG.PROXY_URL ? 'configured' : 'not set',
+    PROXY_URL: CONFIG.PROXY_URL ? '[REDACTED]' : 'not set',
     SPOTIPY_CLIENT_SECRET: CONFIG.SPOTIPY_CLIENT_SECRET ? '***' : 'not set'
   };
 }

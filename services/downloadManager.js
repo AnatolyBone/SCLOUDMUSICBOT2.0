@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
 import { STORAGE_CHANNEL_ID, CHANNEL_USERNAME, PROXY_URL, SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET } from '../config.js';
+import { redactSecretsInText } from './logSanitizer.js';
 
 // Логика определения пути к кукам:
 // 1. Сначала ищем в секретах Render (/etc/secrets/cookies.txt)
@@ -44,7 +45,7 @@ if (PROXY_URL) {
     scdl.default.axios.defaults.httpAgent = agent;
     console.log('[SCDL] ✅ Proxy agent configured successfully');
   } catch (err) {
-    console.error('[SCDL] ❌ Failed to configure proxy agent:', err.message);
+    console.error('[SCDL] ❌ Failed to configure proxy agent:', redactSecretsInText(err.message));
   }
 }
 
@@ -119,7 +120,7 @@ async function ytdlSafe(url, flags = {}, options = {}) {
     const isProxyErr = BOT_PROXY_ERR.some(p => errText.includes(p));
     
     if (isProxyErr && (flags.proxy || YTDL_COMMON.proxy)) {
-      console.warn('[ytdlSafe] Ошибка прокси, пробуем без прокси:', errText.slice(0, 200));
+      console.warn('[ytdlSafe] Ошибка прокси, пробуем без прокси:', redactSecretsInText(errText).slice(0, 200));
       const cleanFlags = { ...flags };
       delete cleanFlags.proxy;
       
@@ -209,13 +210,13 @@ async function downloadWithSpotdl(url, quality = 'high') {
       stderrOutput += data.toString();
       const msg = data.toString();
       if (msg.includes('ERROR') || msg.includes('Exception')) {
-          console.error(`[spotdl] stderr: ${msg.trim()}`);
+          console.error(`[spotdl] stderr: ${redactSecretsInText(msg.trim())}`);
       }
     });
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        console.error(`[spotdl] Процесс завершился с кодом ${code}. Stderr: ${stderrOutput}`);
+        console.error(`[spotdl] Процесс завершился с кодом ${code}. Stderr: ${redactSecretsInText(stderrOutput)}`);
         return reject(new Error(`spotdl exited with code ${code}`));
       }
       
@@ -227,7 +228,7 @@ async function downloadWithSpotdl(url, quality = 'high') {
         if (allFiles.length > 0) {
             console.error(`[spotdl] Скачаны файлы, но нет .mp3: ${allFiles.join(', ')}. Проверьте работу ffmpeg.`);
         } else {
-            console.error(`[spotdl] Папка пуста, файл не скачан. Stderr: ${stderrOutput}`);
+            console.error(`[spotdl] Папка пуста, файл не скачан. Stderr: ${redactSecretsInText(stderrOutput)}`);
         }
         return reject(new Error('spotdl не создал mp3 файл'));
       }
@@ -316,7 +317,7 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
     proc.on('close', (code) => {
       if (code !== 0) {
         console.error(`[yt-dlp/file] Код выхода: ${code}`);
-        console.error(`[yt-dlp/file] Stderr: ${stderrOutput.slice(-500)}`);
+        console.error(`[yt-dlp/file] Stderr: ${redactSecretsInText(stderrOutput).slice(-500)}`);
         return reject(new Error(`yt-dlp exited with code ${code}`));
       }
       
@@ -424,7 +425,7 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
             }
           }
         }
-        console.error(`[yt-dlp/fallback] Ошибка ${code}: ${stderrOutput.slice(-500)}`);
+        console.error(`[yt-dlp/fallback] Ошибка ${code}: ${redactSecretsInText(stderrOutput).slice(-500)}`);
         return reject(new Error(`yt-dlp exited with code ${code}`));
       }
       
@@ -433,7 +434,7 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
       
       if (files.length === 0) {
         console.error(`[yt-dlp/fallback] Файлы не найдены.`);
-        console.error(`[yt-dlp/fallback] Stderr: ${stderrOutput}`);
+        console.error(`[yt-dlp/fallback] Stderr: ${redactSecretsInText(stderrOutput)}`);
         console.error(`[yt-dlp/fallback] TEMP_DIR содержит: ${fs.readdirSync(TEMP_DIR).slice(0, 10).join(', ')}`);
         return reject(new Error('Файл не найден после скачивания'));
       }

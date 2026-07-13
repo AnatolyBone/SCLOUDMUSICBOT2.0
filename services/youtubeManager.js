@@ -2,6 +2,7 @@
 
 import ytdl from 'youtube-dl-exec';
 import { PROXY_URL, ADMIN_ID } from '../config.js';
+import { redactSecretsInText } from './logSanitizer.js';
 
 async function ytdlWithFallback(url, flags) {
   try {
@@ -9,7 +10,7 @@ async function ytdlWithFallback(url, flags) {
   } catch (err) {
     const errText = err.stderr || err.message || '';
     if (flags.proxy && (errText.includes('Unable to connect to proxy') || errText.includes('ProxyError') || errText.includes('Tunnel connection failed') || errText.includes('Failed to establish a new connection'))) {
-      console.warn(`[YouTubeManager] Прокси (${flags.proxy}) недоступен. Пробую без прокси... Ошибка:`, errText.slice(0, 200));
+      console.warn('[YouTubeManager] Прокси ([REDACTED]) недоступен. Пробую без прокси... Ошибка:', redactSecretsInText(errText).slice(0, 200));
       const flagsCopy = { ...flags };
       delete flagsCopy.proxy;
       return await ytdl(url, flagsCopy);

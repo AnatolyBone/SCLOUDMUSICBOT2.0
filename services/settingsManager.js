@@ -1,6 +1,7 @@
 // НОВЫЙ ФАЙЛ: services/settingsManager.js
 
 import { getAppSettings } from '../db.js';
+import { sanitizeLogValue } from './logSanitizer.js';
 
 let settingsCache = {};
 
@@ -48,7 +49,7 @@ export async function loadSettings() {
   try {
     const dbSettings = await getAppSettings();
     settingsCache = { ...DEFAULTS, ...dbSettings };
-    console.log('[Settings] Настройки успешно загружены:', settingsCache);
+    console.log('[Settings] Настройки успешно загружены:', sanitizeLogValue(settingsCache));
   } catch (e) {
     console.error('[Settings] Не удалось загрузить настройки, использую дефолтные:', e.message);
     settingsCache = DEFAULTS;

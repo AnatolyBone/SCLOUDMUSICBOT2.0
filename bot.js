@@ -19,6 +19,7 @@ import { handleReferralCommand, processNewUserReferral } from './services/referr
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
 import { t as i18n, getUserLanguage, normalizeLanguageCode, getUserLanguageSegment } from './services/i18nService.js';
 import { SUPPORTED_LANGUAGES, LANGUAGE_LABELS } from './config/languages.js';
+import { redactSecretsInText } from './services/logSanitizer.js';
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
@@ -100,7 +101,7 @@ function getYoutubeDl() {
 
             if (isProxyErr) {
                 _botProxyFailCount++;
-                console.warn(`[youtube-dl] Ошибка proxy #${_botProxyFailCount}: ${errText.slice(0, 200)}`);
+                console.warn(`[youtube-dl] Ошибка proxy #${_botProxyFailCount}: ${redactSecretsInText(errText).slice(0, 200)}`);
 
                 if (_botProxyFailCount >= BOT_PROXY_FAIL_THRESHOLD && !_botProxyCircuitOpen) {
                     _botProxyCircuitOpen = true;
@@ -2350,7 +2351,7 @@ async function processUrlInBackground(ctx, url) {
             data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true, ignoreErrors: true });
         } catch (ytdlError) {
             const errText = ytdlError.stderr || ytdlError.message || '';
-            console.error(`[youtube-dl] Ошибка для ${cleanUrl}:`, errText);
+            console.error(`[youtube-dl] Ошибка для ${cleanUrl}:`, redactSecretsInText(errText));
             if (errText.includes('DRM protected')) {
                 throw new Error('DRM_PROTECTED');
             }
@@ -2467,7 +2468,7 @@ async function handleSoundCloudUrl(ctx, url) {
             data = await youtubeDl(cleanUrl, { dumpSingleJson: true, flatPlaylist: true, ignoreErrors: true });
         } catch (ytdlError) {
             const errText = ytdlError.stderr || ytdlError.message || '';
-            console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${cleanUrl}:`, errText);
+            console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${cleanUrl}:`, redactSecretsInText(errText));
             if (errText.includes('DRM protected')) {
                 throw new Error('DRM_PROTECTED');
             }
