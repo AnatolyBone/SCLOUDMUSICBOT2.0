@@ -3564,8 +3564,18 @@ export async function getExcelAnalyticsData(startDate, endDate) {
        t.campaign_name AS name,
        t.campaign_tag AS tag,
        t.scheduled_at::date::text AS date,
-       t.total_count AS recipients,
-       t.sent_count AS delivered,
+       (
+         SELECT COUNT(*) 
+         FROM users u 
+         WHERE u.active = TRUE AND u.can_receive_broadcasts = TRUE
+           AND (
+             t.target_audience = 'all' OR
+             t.target_audience = 'all_users' OR
+             (t.target_audience = 'free_users' AND u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)) OR
+             (t.target_audience = 'premium_users' AND u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (u.premium_until IS NULL OR u.premium_until >= NOW()))
+           )
+       )::int AS recipients,
+       (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id)::int AS delivered,
        COALESCE((SELECT COUNT(*)::int FROM broadcast_clicks WHERE broadcast_id = t.id), 0) AS clicks,
        COALESCE((
          SELECT COUNT(DISTINCT p.user_id)::int
