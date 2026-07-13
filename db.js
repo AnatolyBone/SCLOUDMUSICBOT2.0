@@ -3576,7 +3576,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
            )
        )::int AS recipients,
        (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id)::int AS delivered,
-       COALESCE((SELECT COUNT(*)::int FROM broadcast_clicks WHERE broadcast_id = t.id), 0) AS clicks,
+       COALESCE((SELECT COUNT(*)::int FROM broadcast_clicks WHERE campaign_id = t.id), 0) AS clicks,
        COALESCE((
          SELECT COUNT(DISTINCT p.user_id)::int
          FROM broadcast_log l
