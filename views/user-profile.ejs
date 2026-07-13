@@ -208,7 +208,7 @@
                 <tbody>
                   <% languageHistory.forEach(h => { %>
                     <tr>
-                      <td class="text-nowrap"><%= formatDate(h.changed_at) %></td>
+                      <td class="text-nowrap"><%= formatDate(h.created_at) %></td>
                       <td class="text-nowrap"><code><%= h.previous_language %></code> ➔ <code><%= h.new_language %></code></td>
                       <td class="text-nowrap"><code><%= h.previous_source || '—' %></code> ➔ <code><%= h.new_source %></code></td>
                       <td><%= h.changed_by_type === 'admin' ? 'Админ (' + h.changed_by_user_id + ')' : 'Авто' %></td>

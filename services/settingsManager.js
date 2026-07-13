@@ -7,7 +7,7 @@ let settingsCache = {};
 // Дефолтные значения на случай, если в БД пусто
 const DEFAULTS = {
   xtr_rub_rate: '2.00',
-  daily_limit_free: '5',
+  daily_limit_free: '3',
   daily_limit_plus: '30',
   daily_limit_pro: '100',
   daily_limit_unlim: '10000',

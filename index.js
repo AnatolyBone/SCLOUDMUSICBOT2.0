@@ -748,7 +748,7 @@ app.post('/settings/update', requireAuth, async (req, res) => {
     console.log('[Settings/Update] Получены данные:', JSON.stringify(req.body, null, 2));
     
     // Получаем старые суточные лимиты до обновления
-    const oldFree = parseInt(getSetting('daily_limit_free') || '5', 10);
+    const oldFree = parseInt(getSetting('daily_limit_free') || '3', 10);
     const oldPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const oldPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 
@@ -869,8 +869,9 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       pool.query(`
         SELECT
           COUNT(*) FILTER (
-            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
+            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
                OR (premium_until IS NOT NULL AND premium_until < NOW())
+               OR (premium_limit IS NULL AND premium_until IS NULL)
           ) AS free,
           COUNT(*) FILTER (
             WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)
@@ -881,8 +882,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
               AND (premium_until IS NULL OR premium_until >= NOW())
           ) AS pro,
           COUNT(*) FILTER (
-            WHERE premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
-              AND (premium_until IS NULL OR premium_until >= NOW())
+            WHERE (premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) OR premium_limit IS NULL)
+              AND premium_until IS NOT NULL AND premium_until >= NOW()
           ) AS unlimited
         FROM users
       `),
@@ -890,16 +891,14 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       pool.query(`
         SELECT COUNT(*)::int AS other
         FROM users
-        WHERE premium_limit IS NULL
-           OR (
-             premium_limit NOT IN (
-               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
-               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
-               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
-               COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
-             )
-             AND (premium_until IS NULL OR premium_until >= NOW())
-           )
+        WHERE premium_limit NOT IN (
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
+        )
+        AND premium_limit IS NOT NULL
+        AND (premium_until IS NULL OR premium_until >= NOW())
       `),
       // Истёкшие
       pool.query(`
@@ -907,7 +906,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         FROM users
         WHERE premium_until IS NOT NULL
           AND premium_until < NOW()
-          AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
+          AND (premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL)
       `),
       // Статистика промо Яндекс (воронка акции по yandex_promo_progress; lifetime отдельно)
       pool.query(`
@@ -1965,7 +1964,7 @@ app.post('/set-tariff', requireAuth, async (req, res) => {
       comment: comment || null
     });
 
-    const limitFree = parseInt(getSetting('daily_limit_free') || '5', 10);
+    const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
     const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 

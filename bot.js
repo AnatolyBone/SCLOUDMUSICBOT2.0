@@ -189,7 +189,7 @@ export function isUserUnlimited(user) {
 }
 
 export function getUserLimit(user) {
-    if (!user) return parseInt(getSetting('daily_limit_free') || '5', 10);
+    if (!user) return parseInt(getSetting('daily_limit_free') || '3', 10);
     
     // Проверяем, есть ли активная подписка
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
@@ -198,7 +198,7 @@ export function getUserLimit(user) {
         return user.premium_limit || parseInt(getSetting('daily_limit_plus') || '30', 10);
     }
     
-    return parseInt(getSetting('daily_limit_free') || '5', 10);
+    return parseInt(getSetting('daily_limit_free') || '3', 10);
 }
 
 async function isDownloadLimitReached(ctx, userId) {
@@ -212,7 +212,7 @@ async function isDownloadLimitReached(ctx, userId) {
 
     const downloadsToday = user.downloads_today || 0;
     const userLimit = getUserLimit(user);
-    const limitFreeSetting = parseInt(getSetting('daily_limit_free') || '5', 10);
+    const limitFreeSetting = parseInt(getSetting('daily_limit_free') || '3', 10);
     const limitPlusSetting = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
     
@@ -256,7 +256,7 @@ async function isDownloadLimitReached(ctx, userId) {
 }
 
 function getTariffName(limit) {
-    const limitFree = parseInt(getSetting('daily_limit_free') || '5', 10);
+    const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
     const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
 
@@ -1925,7 +1925,7 @@ bot.on('inline_query', async (ctx) => {
 async function getPlaylistLimitForUser(userId) {
     try {
         const user = await getUser(userId);
-        const limitFree = parseInt(getSetting('daily_limit_free') || '5', 10);
+        const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
         const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
         const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
         

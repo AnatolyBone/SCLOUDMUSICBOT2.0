@@ -268,7 +268,7 @@ export async function resetExpiredPremiumIfNeeded(userId) {
   const sql = `
     UPDATE users
     SET
-      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -277,7 +277,7 @@ export async function resetExpiredPremiumIfNeeded(userId) {
     WHERE id = $1
       AND premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
     RETURNING id
   `;
   try {
@@ -294,7 +294,7 @@ export async function resetExpiredPremiumsBulk() {
   const sql = `
     UPDATE users
     SET
-      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -302,7 +302,7 @@ export async function resetExpiredPremiumsBulk() {
       notified_exp_0d = FALSE
     WHERE premium_until IS NOT NULL
       AND premium_until < NOW()
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
+      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
   `;
   try {
     const { rowCount } = await query(sql);
@@ -566,18 +566,18 @@ export async function getPaginatedUsers(options) {
       whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) AND premium_until > ${now}`);
     } 
     else if (tariff === 'Unlimited') {
-      whereClauses.push(`premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)`);
+      whereClauses.push(`(premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) OR premium_limit IS NULL) AND premium_until > ${now}`);
     } 
     else if (tariff === 'Free') {
-      whereClauses.push(`(premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) OR premium_until IS NULL OR premium_until <= ${now})`);
+      whereClauses.push(`(premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until <= ${now})`);
     } 
     else if (tariff === 'Other') {
       whereClauses.push(`(premium_limit NOT IN (
-        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
+        COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
         COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
         COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
         COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
-      ) AND premium_limit < 10000 AND premium_until > ${now})`);
+      ) AND premium_limit IS NOT NULL AND premium_limit < 10000 AND premium_until > ${now})`);
     }
   }
 
@@ -687,31 +687,32 @@ export async function getUsersAsCsv(options = {}) {
 
   // тариф
   if (tariff) {
-    if (tariff === 'Free') whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`);
-    else if (tariff === 'Plus') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)`);
-    else if (tariff === 'Pro') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100)`);
-    else if (tariff === 'Unlimited') whereClauses.push(`premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)`);
+    if (tariff === 'Free') whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until < NOW()`);
+    else if (tariff === 'Plus') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30) AND premium_until >= NOW()`);
+    else if (tariff === 'Pro') whereClauses.push(`premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) AND premium_until >= NOW()`);
+    else if (tariff === 'Unlimited') whereClauses.push(`(premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) OR premium_limit IS NULL) AND premium_until >= NOW()`);
     else if (tariff === 'Other') {
-      whereClauses.push(`(premium_limit IS NULL OR (
+      whereClauses.push(`(
         premium_limit NOT IN (
-          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
+          COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
         )
+        AND premium_limit IS NOT NULL
         AND premium_limit < 10000
-      ))`);
+      )`);
     }
   }
 
   // состояние премиума
   if (premium) {
     if (premium === 'active') {
-      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND (premium_until IS NULL OR premium_until >= NOW())`);
+      whereClauses.push(`(premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL) AND premium_until >= NOW()`);
     } else if (premium === 'expired') {
-      whereClauses.push(`premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND premium_until IS NOT NULL AND premium_until < NOW()`);
+      whereClauses.push(`(premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL) AND premium_until IS NOT NULL AND premium_until < NOW()`);
     } else if (premium === 'free') {
-      whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`);
+      whereClauses.push(`premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until < NOW()`);
     }
   }
 
@@ -1041,7 +1042,7 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
     // Проверяем, достиг ли пользователь дневного лимита
     const isPremium = updatedUser.premium_until && new Date(updatedUser.premium_until) > new Date();
     const { getSetting } = await import('./services/settingsManager.js');
-    const freeLimit = parseInt(getSetting('daily_limit_free') || '5', 10);
+    const freeLimit = parseInt(getSetting('daily_limit_free') || '3', 10);
     const userLimit = isPremium ? updatedUser.premium_limit : freeLimit;
     if (userLimit !== null && updatedUser.downloads_today === userLimit) {
       try {
@@ -1247,11 +1248,14 @@ export async function getReferralsByUserId(userId) {
 export async function getUsersCountByTariff() {
   const { rows } = await query(`
     SELECT CASE 
-        WHEN premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) THEN 'Free'
-        WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30) THEN 'Plus'
-        WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) THEN 'Pro'
-        WHEN premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) THEN 'Unlimited'
-        ELSE 'Other'
+        WHEN premium_until IS NOT NULL AND premium_until >= NOW() THEN
+          CASE 
+            WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30) THEN 'Plus'
+            WHEN premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100) THEN 'Pro'
+            WHEN premium_limit >= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000) OR premium_limit IS NULL THEN 'Unlimited'
+            ELSE 'Other'
+          END
+        ELSE 'Free'
       END as tariff,
       COUNT(id) as count
     FROM users
@@ -1582,9 +1586,9 @@ export function buildBroadcastAudienceQuery(targetAudience, targetLanguages, unk
 
   // 1. Фильтр по тарифам (Premium учитывает Unlimited с premium_limit IS NULL)
   if (targetAudience === 'free_users') {
-    whereClauses.push(`(premium_until IS NULL OR premium_until < NOW() OR (premium_limit <= 5 AND premium_limit IS NOT NULL))`);
+    whereClauses.push(`(premium_until IS NULL OR premium_until < NOW() OR (premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND premium_limit IS NOT NULL))`);
   } else if (targetAudience === 'premium_users') {
-    whereClauses.push(`(premium_until IS NOT NULL AND premium_until >= NOW() AND (premium_limit > 5 OR premium_limit IS NULL))`);
+    whereClauses.push(`(premium_until IS NOT NULL AND premium_until >= NOW() AND (premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL))`);
   }
 
   // 2. Сегментация языка (динамическая)
@@ -1687,9 +1691,9 @@ export async function estimateBroadcastAudience(targetAudience, targetLanguages,
   let baseAudienceSql = `SELECT COUNT(*)::int AS count FROM users WHERE active = TRUE AND can_receive_broadcasts = TRUE`;
   const baseParams = [];
   if (targetAudience === 'free_users') {
-    baseAudienceSql += ` AND (premium_until IS NULL OR premium_until < NOW() OR (premium_limit <= 5 AND premium_limit IS NOT NULL))`;
+    baseAudienceSql += ` AND (premium_until IS NULL OR premium_until < NOW() OR (premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND premium_limit IS NOT NULL))`;
   } else if (targetAudience === 'premium_users') {
-    baseAudienceSql += ` AND (premium_until IS NOT NULL AND premium_until >= NOW() AND (premium_limit > 5 OR premium_limit IS NULL))`;
+    baseAudienceSql += ` AND (premium_until IS NOT NULL AND premium_until >= NOW() AND (premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL))`;
   }
   if (languageSourceFilter && languageSourceFilter !== 'all') {
     baseParams.push(languageSourceFilter);
@@ -1916,8 +1920,8 @@ export async function getAllBroadcastTasks() {
           AND (
             t.target_audience = 'all' OR
             t.target_audience = 'all_users' OR
-            (t.target_audience = 'free_users' AND (u.premium_until IS NULL OR u.premium_until < NOW() OR (u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND u.premium_limit IS NOT NULL))) OR
-            (t.target_audience = 'premium_users' AND (u.premium_until IS NOT NULL AND u.premium_until >= NOW() AND (u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) OR u.premium_limit IS NULL)))
+            (t.target_audience = 'free_users' AND (u.premium_until IS NULL OR u.premium_until < NOW() OR (u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND u.premium_limit IS NOT NULL))) OR
+            (t.target_audience = 'premium_users' AND (u.premium_until IS NOT NULL AND u.premium_until >= NOW() AND (u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR u.premium_limit IS NULL)))
           )
       )::int AS total_count
       
@@ -1959,16 +1963,19 @@ export async function resetOtherTariffsToFree() {
   const sql = `
     UPDATE users
     SET
-      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
+      premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
       premium_until = NULL,
       notified_about_expiration = FALSE
-    WHERE premium_limit IS NULL
-       OR premium_limit NOT IN (
-            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5),
-            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
-            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
-            COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
-          )
+    WHERE (premium_limit IS NULL AND (premium_until IS NULL OR premium_until < NOW()))
+       OR (
+         premium_limit NOT IN (
+           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30),
+           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100),
+           COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_unlim'), 10000)
+         )
+         AND premium_limit IS NOT NULL
+       )
   `;
   const { rowCount } = await query(sql);
   console.log(`[DB-Admin] Сброшено ${rowCount} пользователей на тариф Free.`);
@@ -1976,7 +1983,7 @@ export async function resetOtherTariffsToFree() {
 }
 
 export async function getActiveFreeUsers() {
-  const { rows } = await query(`SELECT id FROM users WHERE active = TRUE AND premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)`);
+  const { rows } = await query(`SELECT id FROM users WHERE active = TRUE AND (premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_until IS NULL OR premium_until < NOW())`);
   return rows;
 }
 
@@ -1985,8 +1992,8 @@ export async function getActivePremiumUsers() {
     `SELECT id
      FROM users
      WHERE active = TRUE
-       AND premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
-       AND (premium_until IS NULL OR premium_until >= NOW())`
+       AND (premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL)
+       AND premium_until IS NOT NULL AND premium_until >= NOW()`
   );
   return rows;
 }
@@ -2149,7 +2156,7 @@ export async function findUsersExpiringIn(days, flagField) {
     SELECT id, first_name, premium_until
     FROM users
     WHERE active = TRUE
-      AND premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5)
+      AND (premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL)
       AND premium_until IS NOT NULL
       AND premium_until >= date_trunc('day', (NOW() AT TIME ZONE 'UTC')) + make_interval(days => $1::int)
       AND premium_until <  date_trunc('day', (NOW() AT TIME ZONE 'UTC')) + make_interval(days => ($1::int + 1))
@@ -2742,8 +2749,8 @@ export async function runSupportSystemMigration() {
     -- Индекс для быстрого поиска сообщений конкретного пользователя
     CREATE INDEX IF NOT EXISTS idx_support_messages_user ON support_messages(user_id);
 
-    -- 3. Обновляем лимит существующих пользователей с 5 до динамического лимита Free, чтобы соответствовать тарифной сетке
-    UPDATE users SET premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) WHERE premium_limit = 5;
+    -- 3. Обновляем лимит существующих пользователей с 5 до динамического лимита Free, чтобы соответствовать тарифной сетке (отключено по требованию)
+    -- UPDATE users SET premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) WHERE premium_limit = 3;
 
     -- 4. Добавляем колонки для поддержки медиафайлов в техподдержке
     ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS media_type VARCHAR(50) DEFAULT 'text';
@@ -3310,7 +3317,7 @@ export async function getLanguageHistoryForUser(userId) {
   const sql = `
     SELECT * FROM language_history
     WHERE user_id = $1
-    ORDER BY changed_at DESC
+    ORDER BY created_at DESC
   `;
   const { rows } = await query(sql, [userId]);
   return rows;
@@ -3582,8 +3589,8 @@ export async function getExcelAnalyticsData(startDate, endDate) {
            AND (
              t.target_audience = 'all' OR
              t.target_audience = 'all_users' OR
-             (t.target_audience = 'free_users' AND (u.premium_until IS NULL OR u.premium_until < NOW() OR (u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) AND u.premium_limit IS NOT NULL))) OR
-             (t.target_audience = 'premium_users' AND (u.premium_until IS NOT NULL AND u.premium_until >= NOW() AND (u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 5) OR u.premium_limit IS NULL)))
+             (t.target_audience = 'free_users' AND (u.premium_until IS NULL OR u.premium_until < NOW() OR (u.premium_limit <= COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) AND u.premium_limit IS NOT NULL))) OR
+             (t.target_audience = 'premium_users' AND (u.premium_until IS NOT NULL AND u.premium_until >= NOW() AND (u.premium_limit > COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR u.premium_limit IS NULL)))
            )
        )::int AS recipients,
        (SELECT COUNT(*) FROM broadcast_log WHERE broadcast_id = t.id AND status = 'sent')::int AS delivered,
@@ -3753,8 +3760,8 @@ export async function getPeriodComparisonData(startA, endA, startB, endB) {
   keys.forEach(k => {
     const valA = metricsA[k];
     const valB = metricsB[k];
-    const diffVal = valB - valA;
-    const pct = valA > 0 ? (diffVal / valA * 100) : 0;
+    const diffVal = valA - valB;
+    const pct = valB > 0 ? (diffVal / valB * 100) : 0;
     diffs[k] = {
       valA,
       valB,

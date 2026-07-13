@@ -281,7 +281,7 @@ def main():
         else:
             pay.write_number(f'E{curr_row}', row['amount'], num_stars)
             
-        pay.write(f'F{curr_row}', row['plan'].upper(), cell_center)
+        pay.write(f'F{curr_row}', (row['plan'] or '—').upper(), cell_center)
         pay.write_number(f'G{curr_row}', row['count'], num_integer)
 
     # Summary table: RUB vs Stars

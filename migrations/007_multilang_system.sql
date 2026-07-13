@@ -1,4 +1,4 @@
-﻿-- migrations/007_multilang_system.sql
+-- migrations/007_multilang_system.sql
 
 -- 1. Таблица кликов по рассылкам
 CREATE TABLE IF NOT EXISTS public.broadcast_clicks (
@@ -82,4 +82,5 @@ ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS language_source_filt
 ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS message_version INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS broadcast_type VARCHAR(30) DEFAULT 'marketing';
 ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS campaign_name VARCHAR(100) NULL;
+ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS campaign_tag VARCHAR(100) NULL;
 ALTER TABLE public.broadcast_tasks ADD COLUMN IF NOT EXISTS fallback_language VARCHAR(10) DEFAULT 'ru';
