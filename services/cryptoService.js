@@ -1,13 +1,8 @@
-﻿// services/cryptoService.js
+// services/cryptoService.js
 import crypto from 'crypto';
 import { CONFIG } from '../config.js';
 
-const SECRET = process.env.REDIRECT_SECRET;
-if (!SECRET && process.env.NODE_ENV === 'production') {
-  console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная REDIRECT_SECRET не задана в production!');
-  process.exit(1);
-}
-
+const SECRET = process.env.REDIRECT_SECRET || process.env.SESSION_SECRET || process.env.BOT_TOKEN;
 const encryptionSecret = SECRET || 'dev-secret-key-do-not-use-in-production';
 
 /**
