@@ -2583,7 +2583,6 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
             title,
             description,
             payload,
-            provider_token: '',
             currency,
             prices
         }).catch(async (err) => {
