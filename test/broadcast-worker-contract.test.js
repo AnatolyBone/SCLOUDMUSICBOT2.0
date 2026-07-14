@@ -25,7 +25,7 @@ test('broadcast snapshot creation is idempotent and reports inserted rows', () =
   assert.match(dbSource, /ON CONFLICT \(broadcast_id, user_id\) DO NOTHING/);
   assert.match(dbSource, /return result\.rowCount \|\| 0/);
   assert.match(dbSource, /l\.audience_language_segment/);
-  assert.match(dbSource, /status = 'processing'.*INTERVAL '35 minutes'/s);
+  assert.match(dbSource, /status = 'pending'.*launch_confirmed_at IS NOT NULL/s);
 });
 
 test('delivery logging failures stop a batch before a pending row can be sent twice', () => {
@@ -40,6 +40,7 @@ test('broadcast list renders a completed task with the sent counter', () => {
 
   const html = ejs.render(templateSource, {
     contentFor: () => '',
+    broadcastsEnabled: true,
     tasks: [{
       id: 77,
       status: 'completed',
@@ -60,6 +61,7 @@ test('broadcast list renders a completed task with the sent counter', () => {
 test('legacy completed broadcasts render as archived completion without fabricated sent count', () => {
   const html = ejs.render(templateSource, {
     contentFor: () => '',
+    broadcastsEnabled: true,
     tasks: [{
       id: 92,
       status: 'completed',

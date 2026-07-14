@@ -41,6 +41,8 @@ if (!databaseUrl) {
         value TEXT
       );
 
+      INSERT INTO app_settings (key, value) VALUES ('broadcasts_enabled', 'true');
+
       CREATE TABLE users (
         id BIGINT PRIMARY KEY,
         first_name TEXT,
@@ -75,6 +77,8 @@ if (!databaseUrl) {
         report JSONB,
         started_at TIMESTAMPTZ,
         completed_at TIMESTAMPTZ,
+        launch_confirmed_at TIMESTAMPTZ,
+        launch_confirmed_by BIGINT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
@@ -128,6 +132,54 @@ if (!databaseUrl) {
     await adminClient.end().catch(() => {});
   });
 
+  test('worker never claims a pending campaign without launch confirmation', async () => {
+    const inserted = await db.query(
+      `INSERT INTO broadcast_tasks (
+         message, target_audience, status, scheduled_at, target_languages,
+         unknown_language_policy, messages_json, fallback_language
+       ) VALUES ('Unconfirmed', 'all_users', 'pending', $1, ARRAY['all'], 'use_ru',
+                 '{"ru":{"message":"Unconfirmed"}}'::jsonb, 'ru')
+       RETURNING id`,
+      [new Date(0)]
+    );
+    const taskId = inserted.rows[0].id;
+    const sentBefore = recipientMessages.length;
+
+    const result = await processNextBroadcastTask({ bot, adminId, batchDelayMs: 0 });
+    assert.equal(result.status, 'idle');
+    assert.equal(recipientMessages.length, sentBefore);
+
+    const persistedTask = await db.getBroadcastTaskById(taskId);
+    assert.equal(persistedTask.status, 'pending');
+    assert.equal(persistedTask.launch_confirmed_at, null);
+    await db.cancelBroadcastTask(taskId);
+  });
+
+  test('global kill switch prevents a confirmed campaign from being claimed', async () => {
+    const task = await db.createBroadcastTask({
+      message: 'Kill switch',
+      targetAudience: 'all_users',
+      scheduledAt: new Date(0),
+      target_languages: ['all'],
+      unknown_language_policy: 'use_ru',
+      language_source_filter: 'all',
+      messages_json: { ru: { message: 'Kill switch' } },
+      fallback_language: 'ru',
+      launch_confirmed_at: new Date(),
+      launch_confirmed_by: adminId
+    });
+    await db.setBroadcastsEnabled(false);
+    const sentBefore = recipientMessages.length;
+
+    const result = await processNextBroadcastTask({ bot, adminId, batchDelayMs: 0 });
+    assert.equal(result.status, 'disabled');
+    assert.equal(recipientMessages.length, sentBefore);
+    assert.equal((await db.getBroadcastTaskById(task.id)).status, 'pending');
+
+    await db.cancelBroadcastTask(task.id);
+    await db.setBroadcastsEnabled(true);
+  });
+
   test('full broadcast lifecycle creates a snapshot and completes delivery', async () => {
     const task = await db.createBroadcastTask({
       message: 'Integration fallback',
@@ -142,7 +194,9 @@ if (!databaseUrl) {
         ru: { message: 'Привет, {first_name}!' },
         en: { message: 'Hello, {first_name}!' }
       },
-      fallback_language: 'ru'
+      fallback_language: 'ru',
+      launch_confirmed_at: new Date(),
+      launch_confirmed_by: adminId
     });
 
     const result = await processNextBroadcastTask({
@@ -189,33 +243,56 @@ if (!databaseUrl) {
     assert.equal(recipientMessages.length, sentBefore);
   });
 
-  test('a stale processing campaign is reclaimed and completed idempotently', async () => {
+  test('cancelling between batches stops all remaining recipients', async () => {
     const task = await db.createBroadcastTask({
-      message: 'Stale campaign',
+      message: 'Cancel between batches',
       targetAudience: 'all_users',
       scheduledAt: new Date(0),
       target_languages: ['all'],
       unknown_language_policy: 'use_ru',
       language_source_filter: 'all',
-      messages_json: { ru: { message: 'Recovered campaign' } },
-      fallback_language: 'ru'
+      messages_json: { ru: { message: 'Cancel between batches' } },
+      fallback_language: 'ru',
+      launch_confirmed_at: new Date(),
+      launch_confirmed_by: adminId
     });
-    await db.query(
-      `UPDATE broadcast_tasks
-       SET status = 'processing', started_at = NOW() - INTERVAL '1 hour'
-       WHERE id = $1`,
-      [task.id]
-    );
-
     const sentBefore = recipientMessages.length;
-    const result = await processNextBroadcastTask({ bot, adminId, batchDelayMs: 0 });
-    assert.equal(result.status, 'completed');
+    let cancelIssued = false;
+    const cancellingBot = {
+      telegram: {
+        ...bot.telegram,
+        async sendMessage(chatId, text, options) {
+          const sent = await bot.telegram.sendMessage(chatId, text, options);
+          if (Number(chatId) !== adminId && !cancelIssued) {
+            cancelIssued = true;
+            await db.cancelBroadcastTask(task.id);
+          }
+          return sent;
+        }
+      }
+    };
+    const result = await processNextBroadcastTask({
+      bot: cancellingBot,
+      adminId,
+      batchSize: 1,
+      batchDelayMs: 0
+    });
+    assert.equal(result.status, 'cancelled');
     assert.equal(result.taskId, task.id);
-    assert.equal(recipientMessages.length, sentBefore + recipientIds.length);
+    assert.equal(recipientMessages.length, sentBefore + 1);
 
     const persistedTask = await db.getBroadcastTaskById(task.id);
-    assert.equal(persistedTask.status, 'completed');
+    assert.equal(persistedTask.status, 'cancelled');
     assert.ok(persistedTask.completed_at instanceof Date);
+
+    const log = await db.query(
+      `SELECT COUNT(*) FILTER (WHERE status = 'sent')::int AS sent,
+              COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+              COUNT(*) FILTER (WHERE status = 'pending')::int AS pending
+       FROM broadcast_log WHERE broadcast_id = $1`,
+      [task.id]
+    );
+    assert.deepEqual(log.rows[0], { sent: 1, cancelled: 1, pending: 0 });
   });
 
   test('empty audience fails explicitly without completing the campaign', async () => {
@@ -227,7 +304,9 @@ if (!databaseUrl) {
       unknown_language_policy: 'use_ru',
       language_source_filter: 'all',
       messages_json: { ru: { message: 'Premium only' } },
-      fallback_language: 'ru'
+      fallback_language: 'ru',
+      launch_confirmed_at: new Date(),
+      launch_confirmed_by: adminId
     });
 
     const result = await processNextBroadcastTask({ bot, adminId, batchDelayMs: 0 });

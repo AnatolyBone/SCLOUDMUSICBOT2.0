@@ -22,12 +22,13 @@ async function runBroadcastDatabaseSmokeTest() {
     await client.query(
       `INSERT INTO public.broadcast_tasks (
          id, message, target_audience, scheduled_at, status, target_languages,
-         unknown_language_policy, messages_json, language_source_filter, fallback_language
+         unknown_language_policy, messages_json, language_source_filter, fallback_language,
+         launch_confirmed_at, launch_confirmed_by
        ) VALUES (
          $1, 'admin self-test', 'all_users', NOW(), 'processing', ARRAY['all'],
-         'use_ru', '{"ru":{"message":"admin self-test"}}'::jsonb, 'all', 'ru'
+         'use_ru', '{"ru":{"message":"admin self-test"}}'::jsonb, 'all', 'ru', NOW(), $2
        )`,
-      [taskId]
+      [taskId, userResult.rows[0].id]
     );
 
     await client.query(

@@ -12,8 +12,10 @@
 
 <div class="card shadow-sm mb-4">
   <div class="card-body">
-    <form id="broadcastForm" method="POST" action="<%= isEditing ? '/broadcast/edit/' + task.id : '/broadcast/new' %>" enctype="multipart/form-data">
-      <input type="hidden" name="action" id="form_action" value="send">
+    <form id="broadcastForm" method="POST" action="/broadcast/launch" enctype="multipart/form-data">
+      <input type="hidden" name="action" id="form_action" value="">
+      <input type="hidden" name="launch_token" id="launch_token" value="" disabled>
+      <input type="hidden" name="edit_task_id" value="<%= isEditing ? task.id : '' %>">
       <input type="hidden" name="existing_file_id" value="<%= task?.file_id || '' %>">
       <input type="hidden" name="existing_file_mime_type" value="<%= task?.file_mime_type || '' %>">
       
@@ -185,12 +187,13 @@
       </div>
 
       <div class="d-flex flex-wrap gap-2">
-        <button type="button" onclick="submitPreview('ru')" class="btn btn-outline-primary"><i class="bi bi-eye"></i> Предпросмотр RU</button>
-        <button type="button" onclick="submitPreview('en')" class="btn btn-outline-success"><i class="bi bi-eye"></i> Предпросмотр EN</button>
-        <button type="button" onclick="openConfirmModal()" class="btn btn-danger flex-grow-1">
+        <button type="button" onclick="submitPreview(event, 'ru')" class="btn btn-outline-primary"><i class="bi bi-eye"></i> Предпросмотр RU</button>
+        <button type="button" onclick="submitPreview(event, 'en')" class="btn btn-outline-success"><i class="bi bi-eye"></i> Предпросмотр EN</button>
+        <button type="button" onclick="openConfirmModal(event)" class="btn btn-danger flex-grow-1">
           🚀 <%= isEditing ? 'Сохранить изменения' : 'Создать и отправить' %>
         </button>
       </div>
+      <div id="preview_result" class="alert d-none mt-3 mb-0" role="status"></div>
 
     </form>
   </div>
@@ -240,7 +243,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-        <button type="button" onclick="submitForm()" class="btn btn-danger">🚀 Подтвердить отправку</button>
+        <button type="button" id="confirm_launch_button" onclick="submitForm(event)" class="btn btn-danger" disabled>🚀 Подтвердить отправку</button>
       </div>
     </div>
   </div>
@@ -258,13 +261,47 @@
     }
   }
 
-  function submitPreview(lang) {
-    syncTime();
-    document.getElementById('form_action').value = 'preview_' + lang;
-    document.getElementById('broadcastForm').submit();
+  let issuedLaunchToken = null;
+  let launchSubmitArmed = false;
+
+  async function submitPreview(event, lang) {
+    event.preventDefault();
+    event.stopPropagation();
+    issuedLaunchToken = null;
+    document.getElementById('launch_token').value = '';
+    document.getElementById('launch_token').disabled = true;
+    document.getElementById('confirm_launch_button').disabled = true;
+
+    const form = document.getElementById('broadcastForm');
+    const resultBox = document.getElementById('preview_result');
+    const button = event.currentTarget;
+    button.disabled = true;
+    resultBox.className = 'alert alert-info mt-3 mb-0';
+    resultBox.textContent = `Отправляем preview ${lang.toUpperCase()} только администратору...`;
+
+    try {
+      const formData = new FormData(form);
+      formData.delete('action');
+      formData.delete('launch_token');
+      formData.append('preview_language', lang);
+      const response = await fetch('/broadcast/preview', { method: 'POST', body: formData });
+      const result = await response.json();
+      if (!response.ok || !result.ok || result.recipientCount !== 1) {
+        throw new Error(result.error || 'Preview delivery failed.');
+      }
+      resultBox.className = 'alert alert-success mt-3 mb-0';
+      resultBox.textContent = `Preview ${lang.toUpperCase()} отправлен ровно одному администратору.`;
+    } catch (error) {
+      resultBox.className = 'alert alert-danger mt-3 mb-0';
+      resultBox.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
   }
 
-  function openConfirmModal() {
+  async function openConfirmModal(event) {
+    event.preventDefault();
+    event.stopPropagation();
     // Валидация полей HTML5
     const form = document.getElementById('broadcastForm');
     if (!form.checkValidity()) {
@@ -305,12 +342,42 @@
     // Показываем модалку
     const confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
     confirmModal.show();
+    issuedLaunchToken = null;
+    const confirmButton = document.getElementById('confirm_launch_button');
+    confirmButton.disabled = true;
+
+    try {
+      const response = await fetch('/broadcast/launch-token', { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok || !result.launchToken) throw new Error(result.error || 'Не удалось получить launch token.');
+      issuedLaunchToken = result.launchToken;
+      confirmButton.disabled = false;
+    } catch (error) {
+      document.getElementById('modal_time_warning').className = 'alert alert-danger py-2 mb-0';
+      document.getElementById('modal_time_warning').textContent = error.message;
+    }
   }
 
-  function submitForm() {
-    document.getElementById('form_action').value = 'send';
-    document.getElementById('broadcastForm').submit();
+  function submitForm(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!issuedLaunchToken) return;
+
+    const tokenInput = document.getElementById('launch_token');
+    tokenInput.value = issuedLaunchToken;
+    tokenInput.disabled = false;
+    document.getElementById('form_action').value = 'launch';
+    launchSubmitArmed = true;
+    document.getElementById('broadcastForm').requestSubmit();
   }
+
+  document.getElementById('broadcastForm').addEventListener('submit', event => {
+    const tokenInput = document.getElementById('launch_token');
+    if (!launchSubmitArmed || document.getElementById('form_action').value !== 'launch' || !tokenInput.value) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  });
 
   // Логика чекбокса "Все (All)"
   const chkAll = document.getElementById('lang_all');

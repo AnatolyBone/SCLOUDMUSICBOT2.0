@@ -40,6 +40,9 @@ import {
   getUserActions,
   logUserAction,
   createBroadcastTask,
+  cancelBroadcastTask,
+  areBroadcastsEnabled,
+  setBroadcastsEnabled,
   getAllBroadcastTasks,
   deleteBroadcastTask,
   getBroadcastTaskById,
@@ -98,6 +101,11 @@ import { generateExcelReport } from './services/excelReportService.js';
 import { formatSettingForLog, sanitizeLogValue } from './services/logSanitizer.js';
 import { runSystemSelfTest } from './services/systemSelfTest.js';
 import { mapBroadcastTaskToForm } from './services/broadcastFormMapper.js';
+import {
+  issueBroadcastLaunchToken,
+  sendBroadcastPreview,
+  validateBroadcastLaunchRequest
+} from './services/broadcastSafety.js';
 
 const app = express();
 
@@ -1208,8 +1216,16 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
 });
 
   app.get('/broadcasts', requireAuth, async (req, res) => {
-    const tasks = await getAllBroadcastTasks();
-    res.render('broadcasts', { title: 'Управление рассылками', page: 'broadcasts', tasks });
+    const [tasks, broadcastsEnabled] = await Promise.all([
+      getAllBroadcastTasks(),
+      areBroadcastsEnabled()
+    ]);
+    res.render('broadcasts', {
+      title: 'Управление рассылками',
+      page: 'broadcasts',
+      tasks,
+      broadcastsEnabled
+    });
   });
 
     app.get('/broadcast/new', requireAuth, async (req, res) => {
@@ -1296,6 +1312,66 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     res.redirect('/broadcasts');
   });
 
+  app.post('/broadcasts/toggle', requireAuth, async (req, res) => {
+    const enabled = req.body.enabled === 'true';
+    await setBroadcastsEnabled(enabled);
+    console.warn(`[Broadcast Safety] Global kill switch changed by admin ${req.session.userId}: enabled=${enabled}`);
+    res.redirect('/broadcasts');
+  });
+
+  app.post('/broadcast/:id/cancel', requireAuth, async (req, res) => {
+    const cancelled = await cancelBroadcastTask(req.params.id);
+    if (!cancelled) {
+      return res.status(409).json({ ok: false, error: 'Campaign is not pending or processing.' });
+    }
+    console.warn(`[Broadcast Safety] Campaign #${cancelled.id} cancelled by admin ${req.session.userId}; pending recipients cancelled=${cancelled.cancelledRecipients}`);
+    res.redirect('/broadcasts');
+  });
+
+  app.post('/broadcast/launch-token', requireAuth, async (req, res) => {
+    const token = issueBroadcastLaunchToken(req.session);
+    await new Promise((resolve, reject) => {
+      req.session.save(error => error ? reject(error) : resolve());
+    });
+    res.json({ ok: true, launchToken: token, expiresInSeconds: 300 });
+  });
+
+  app.post('/broadcast/preview', requireAuth, upload.single('file'), async (req, res) => {
+    const file = req.file;
+    try {
+      delete req.session.broadcastLaunchToken;
+      await new Promise((resolve, reject) => {
+        req.session.save(error => error ? reject(error) : resolve());
+      });
+      const language = req.body.preview_language;
+      const message = language === 'en' ? req.body.message_en : req.body.message_ru;
+      const buttons = language === 'en' ? req.body.buttons_en : req.body.buttons_ru;
+      const fileId = file ? { source: file.path } : (req.body.existing_file_id || null);
+      const fileMimeType = file
+        ? (file.mimetype || mime.lookup(file.originalname) || '')
+        : (req.body.existing_file_mime_type || null);
+
+      const result = await sendBroadcastPreview({
+        bot,
+        adminId: req.session.userId,
+        language,
+        message,
+        keyboard: parseButtons(buttons),
+        fileId,
+        fileMimeType,
+        disableNotification: Boolean(req.body.disable_notification),
+        disableWebPagePreview: !req.body.enable_web_page_preview,
+        sendBatch: runBroadcastBatch
+      });
+      console.log(`[Broadcast Preview] admin=${req.session.userId} language=${language} recipients=1`);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error.message });
+    } finally {
+      if (file) await fs.promises.unlink(file.path).catch(() => {});
+    }
+  });
+
   app.get('/broadcast/:id/stats', requireAuth, async (req, res) => {
     try {
       const broadcastId = req.params.id;
@@ -1341,9 +1417,17 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     }
   });
 
-    app.post(['/broadcast/new', '/broadcast/edit/:id'], requireAuth, upload.single('file'), async (req, res) => {
-    const isEditing = !!req.params.id;
-    const taskId = req.params.id;
+  app.post(['/broadcast/new', '/broadcast/edit/:id'], requireAuth, upload.single('file'), async (req, res) => {
+    if (req.file) await fs.promises.unlink(req.file.path).catch(() => {});
+    res.status(400).json({
+      ok: false,
+      error: 'Legacy broadcast mutation endpoint is disabled. Use POST /broadcast/launch with action=launch.'
+    });
+  });
+
+  app.post('/broadcast/launch', requireAuth, upload.single('file'), async (req, res) => {
+    const isEditing = Boolean(req.body.edit_task_id);
+    const taskId = req.body.edit_task_id || null;
     const file = req.file;
 
     try {
@@ -1363,8 +1447,17 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         enable_web_page_preview,
         existing_file_id,
         existing_file_mime_type,
+        launch_token,
         action
       } = req.body;
+
+      validateBroadcastLaunchRequest(req.session, { action, launch_token });
+      await new Promise((resolve, reject) => {
+        req.session.save(error => error ? reject(error) : resolve());
+      });
+      if (!(await areBroadcastsEnabled())) {
+        throw new Error('Broadcast launch is blocked by the global kill switch.');
+      }
 
       let targetLanguages = req.body['target_languages[]'] || ['all'];
       if (!Array.isArray(targetLanguages)) {
@@ -1439,30 +1532,6 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         await fs.promises.unlink(file.path).catch(() => {});
       }
 
-      // Обработка превью
-      if (action === 'preview_ru' || action === 'preview_en') {
-        const isEn = action === 'preview_en';
-        const msgText = isEn ? message_en : message_ru;
-        const btnText = isEn ? buttons_en : buttons_ru;
-
-        if (!msgText && !fileId) {
-          renderOptions.error = 'Сообщение для предпросмотра на выбранном языке пустое.';
-          return res.render('broadcast-form', renderOptions);
-        }
-
-        const previewTaskData = {
-          message: msgText,
-          keyboard: parseButtons(btnText),
-          file_id: fileId,
-          file_mime_type: fileMimeType,
-          disable_web_page_preview: !enable_web_page_preview
-        };
-
-        await runBroadcastBatch(bot, previewTaskData, [{ id: ADMIN_ID, first_name: 'Admin' }]);
-        renderOptions.success = `Предпросмотр (${isEn ? 'EN' : 'RU'} версии) успешно отправлен админу в Telegram.`;
-        return res.render('broadcast-form', renderOptions);
-      }
-
       // Сохранение задачи в базу
       const messagesJson = {
         ru: message_ru ? { message: message_ru, keyboard: parseButtons(buttons_ru) } : null,
@@ -1483,15 +1552,20 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         file_mime_type: fileMimeType,
         targetAudience,
         disableNotification: !!disable_notification,
-        disable_web_page_preview: !enable_web_page_preview
+        disable_web_page_preview: !enable_web_page_preview,
+        launch_confirmed_at: new Date(),
+        launch_confirmed_by: req.session.userId
       };
 
       const scheduleTime = scheduledAt ? new Date(scheduledAt) : new Date();
+      let persistedTask;
       if (isEditing) {
-        await updateBroadcastTask(taskId, { ...taskData, scheduledAt: scheduleTime });
+        persistedTask = await updateBroadcastTask(taskId, { ...taskData, scheduledAt: scheduleTime });
       } else {
-        await createBroadcastTask({ ...taskData, scheduledAt: scheduleTime });
+        persistedTask = await createBroadcastTask({ ...taskData, scheduledAt: scheduleTime });
       }
+      if (!persistedTask) throw new Error('Campaign is no longer editable or could not be created.');
+      console.warn(`[Broadcast Launch] Campaign #${persistedTask?.id} confirmed by admin ${req.session.userId}.`);
       res.redirect('/broadcasts');
 
     } catch (e) {
@@ -1519,7 +1593,7 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
       };
       if (isEditing) renderOptionsError.task.id = taskId;
 
-      res.render('broadcast-form', renderOptionsError);
+      res.status(400).render('broadcast-form', renderOptionsError);
     }
   });
 

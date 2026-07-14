@@ -58,6 +58,12 @@
     <span class="badge bg-secondary" data-bs-toggle="tooltip" title="Показывается время в Москве">МСК</span>
   </div>
   <div class="btn-toolbar mb-2 mb-md-0 gap-2">
+    <form method="POST" action="/broadcasts/toggle" class="d-inline" onsubmit="return confirm('Изменить глобальное состояние рассылок?');">
+      <input type="hidden" name="enabled" value="<%= broadcastsEnabled ? 'false' : 'true' %>">
+      <button type="submit" class="btn btn-sm <%= broadcastsEnabled ? 'btn-outline-danger' : 'btn-success' %>">
+        <i class="bi bi-power me-1"></i><%= broadcastsEnabled ? 'Отключить рассылки' : 'Включить рассылки' %>
+      </button>
+    </form>
     <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()">
       <i class="bi bi-arrow-clockwise me-1"></i>Обновить
     </button>
@@ -69,6 +75,12 @@
     </a>
   </div>
 </div>
+
+<% if (!broadcastsEnabled) { %>
+  <div class="alert alert-danger" role="alert">
+    <strong>Emergency kill switch активен.</strong> Worker не запустит ни одну кампанию, пока рассылки явно не включены администратором.
+  </div>
+<% } %>
 
 <% if (tasks && tasks.length) { 
   const total = tasks.length;
@@ -130,6 +142,7 @@
           <option value="processing">В процессе</option>
           <option value="completed">Завершена</option>
           <option value="failed">Ошибка</option>
+          <option value="cancelled">Отменена</option>
         </select>
       </div>
       <div class="col-md-3">
@@ -171,7 +184,8 @@
             pending: { name: 'В ожидании', class: 'bg-warning text-dark' },
             processing: { name: 'В процессе', class: 'bg-info text-dark' },
             completed: { name: 'Завершена', class: 'bg-success' },
-            failed: { name: 'Ошибка', class: 'bg-danger' }
+            failed: { name: 'Ошибка', class: 'bg-danger' },
+            cancelled: { name: 'Отменена', class: 'bg-secondary' }
           };
           const status = statusMap[task.status] || { name: task.status, class: 'bg-secondary' };
           
@@ -276,6 +290,13 @@
                      title="Статистика">
                     <i class="bi bi-bar-chart-fill"></i>
                   </a>
+                <% } %>
+                <% if (task.status === 'pending' || task.status === 'processing') { %>
+                  <form method="POST" action="/broadcast/<%= task.id %>/cancel" class="d-inline" onsubmit="return confirm('Аварийно остановить рассылку #<%= task.id %>?');">
+                    <button type="submit" class="btn btn-danger" title="Аварийно остановить">
+                      <i class="bi bi-stop-fill"></i>
+                    </button>
+                  </form>
                 <% } %>
                 <form method="POST" action="/broadcast/delete" class="d-inline" onsubmit="return confirm('Удалить эту рассылку?');">
                   <input type="hidden" name="taskId" value="<%= task.id %>">

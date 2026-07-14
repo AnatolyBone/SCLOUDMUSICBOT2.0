@@ -130,7 +130,7 @@ async function sendToUser(bot, task, user, retryCount = 0) {
     const isBlocked = e.response?.error_code === 403 || e.response?.description?.includes('chat not found');
     const status = isBlocked ? 'blocked' : 'failed';
 
-    if (isBlocked) {
+    if (isBlocked && !task.isTest) {
       try {
         await updateUserField(user.id, { can_receive_broadcasts: false });
       } catch (err) {}

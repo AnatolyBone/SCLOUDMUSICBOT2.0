@@ -56,16 +56,22 @@ test('Free tier is not hardcoded to five in runtime filters', () => {
   );
 });
 
-test('schema preflight requires migration version 9', () => {
+test('schema preflight requires broadcast safety migration version 10', () => {
   const dbSource = fs.readFileSync(path.join(ROOT, 'db.js'), 'utf8');
   const migration = fs.readFileSync(
-    path.join(ROOT, 'migrations', '009_schema_contract_reconciliation.sql'),
+    path.join(ROOT, 'migrations', '010_broadcast_launch_safety.sql'),
     'utf8'
   );
 
-  assert.match(dbSource, /REQUIRED_SCHEMA_VERSION = 9/);
+  assert.match(dbSource, /REQUIRED_SCHEMA_VERSION = 10/);
   assert.match(dbSource, /actualSchemaVersion === REQUIRED_SCHEMA_VERSION/);
-  assert.match(migration, /VALUES \('schema_version', '9'\)/);
+  assert.match(migration, /VALUES \('schema_version', '10'\)/);
+  assert.match(migration, /launch_confirmed_at TIMESTAMP WITH TIME ZONE/);
+  assert.match(migration, /launch_confirmed_by BIGINT/);
+  assert.match(migration, /ck_broadcast_tasks_pending_confirmed/);
+  assert.match(migration, /VALUES \('broadcasts_enabled', 'false'\)/);
+  assert.match(migration, /v_schema_version[\s\S]*< 10/);
+  assert.doesNotMatch(migration, /DROP\s+(?:COLUMN|TABLE)|RENAME\s+(?:COLUMN|TO)|UPDATE\s+(?:public\.)?users/i);
 });
 
 test('smoke runner keeps the complete administrative contract', () => {

@@ -1490,22 +1490,30 @@ export async function createBroadcastTask(taskData) {
     message, file_id, file_mime_type, keyboard,
     disable_web_page_preview, targetAudience, scheduledAt, disableNotification,
     target_languages, unknown_language_policy, messages_json, language_source_filter,
-    broadcast_type, campaign_name, campaign_tag, fallback_language
+    broadcast_type, campaign_name, campaign_tag, fallback_language,
+    launch_confirmed_at, launch_confirmed_by
   } = taskData;
+  if (!launch_confirmed_at || launch_confirmed_by === null || launch_confirmed_by === undefined) {
+    const error = new Error('Broadcast launch confirmation is required.');
+    error.code = 'BROADCAST_LAUNCH_CONFIRMATION_REQUIRED';
+    throw error;
+  }
   const queryText = `
     INSERT INTO broadcast_tasks (
       message, file_id, file_mime_type, keyboard,
       disable_web_page_preview, target_audience, status, scheduled_at, disable_notification,
       target_languages, unknown_language_policy, messages_json, language_source_filter,
-      broadcast_type, campaign_name, campaign_tag, fallback_language
-    ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      broadcast_type, campaign_name, campaign_tag, fallback_language,
+      launch_confirmed_at, launch_confirmed_by
+    ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
     RETURNING *;
   `;
   const values = [
     message || null, file_id || null, file_mime_type || null, keyboard ? JSON.stringify(keyboard) : null,
     !!disable_web_page_preview, targetAudience || 'all', scheduledAt || new Date(), !!disableNotification,
     target_languages || ['all'], unknown_language_policy || 'use_ru', messages_json ? JSON.stringify(messages_json) : null, language_source_filter || 'all',
-    broadcast_type || 'marketing', campaign_name || null, campaign_tag || null, fallback_language || 'ru'
+    broadcast_type || 'marketing', campaign_name || null, campaign_tag || null, fallback_language || 'ru',
+    launch_confirmed_at, launch_confirmed_by
   ];
   const result = await query(queryText, values);
   return result.rows[0];
@@ -1516,8 +1524,14 @@ export async function updateBroadcastTask(id, taskData) {
     message, file_id, file_mime_type, keyboard,
     disable_web_page_preview, targetAudience, scheduledAt, disableNotification,
     target_languages, unknown_language_policy, messages_json, language_source_filter,
-    broadcast_type, campaign_name, campaign_tag, fallback_language
+    broadcast_type, campaign_name, campaign_tag, fallback_language,
+    launch_confirmed_at, launch_confirmed_by
   } = taskData;
+  if (!launch_confirmed_at || launch_confirmed_by === null || launch_confirmed_by === undefined) {
+    const error = new Error('Broadcast launch confirmation is required.');
+    error.code = 'BROADCAST_LAUNCH_CONFIRMATION_REQUIRED';
+    throw error;
+  }
   const queryText = `
     UPDATE broadcast_tasks SET
       message = $1,
@@ -1536,8 +1550,10 @@ export async function updateBroadcastTask(id, taskData) {
       campaign_name = $14,
       campaign_tag = $15,
       fallback_language = $16,
+      launch_confirmed_at = $17,
+      launch_confirmed_by = $18,
       status = 'pending'
-    WHERE id = $17
+    WHERE id = $19 AND status = 'pending'
     RETURNING *;
   `;
   const values = [
@@ -1545,7 +1561,7 @@ export async function updateBroadcastTask(id, taskData) {
     !!disable_web_page_preview, targetAudience || 'all', scheduledAt || new Date(), !!disableNotification,
     target_languages || ['all'], unknown_language_policy || 'use_ru', messages_json ? JSON.stringify(messages_json) : null, language_source_filter || 'all',
     broadcast_type || 'marketing', campaign_name || null, campaign_tag || null, fallback_language || 'ru',
-    id
+    launch_confirmed_at, launch_confirmed_by, id
   ];
   const result = await query(queryText, values);
   return result.rows[0];
@@ -1557,8 +1573,13 @@ export async function getAndStartPendingBroadcastTask() {
     SET status = 'processing', started_at = NOW()
     WHERE id = (
       SELECT id FROM broadcast_tasks
-      WHERE (status = 'pending' AND scheduled_at <= NOW())
-         OR (status = 'processing' AND (started_at IS NULL OR started_at <= NOW() - INTERVAL '35 minutes'))
+      WHERE status = 'pending'
+        AND launch_confirmed_at IS NOT NULL
+        AND scheduled_at <= NOW()
+        AND COALESCE(
+          (SELECT value::boolean FROM app_settings WHERE key = 'broadcasts_enabled'),
+          FALSE
+        ) = TRUE
       ORDER BY scheduled_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -1567,6 +1588,67 @@ export async function getAndStartPendingBroadcastTask() {
   `;
   const { rows } = await query(sql);
   return rows[0] || null;
+}
+
+export async function areBroadcastsEnabled() {
+  const { rows } = await query(
+    `SELECT COALESCE(
+       (SELECT value::boolean FROM app_settings WHERE key = 'broadcasts_enabled'),
+       FALSE
+     ) AS enabled`
+  );
+  return rows[0]?.enabled === true;
+}
+
+export async function setBroadcastsEnabled(enabled) {
+  await setAppSetting('broadcasts_enabled', enabled ? 'true' : 'false');
+  return Boolean(enabled);
+}
+
+export async function getBroadcastExecutionState(taskId) {
+  const { rows } = await query(
+    `SELECT t.status,
+            t.launch_confirmed_at IS NOT NULL AS launch_confirmed,
+            COALESCE(
+              (SELECT value::boolean FROM app_settings WHERE key = 'broadcasts_enabled'),
+              FALSE
+            ) AS broadcasts_enabled
+     FROM broadcast_tasks t
+     WHERE t.id = $1`,
+    [taskId]
+  );
+  return rows[0] || null;
+}
+
+export async function cancelBroadcastTask(taskId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const taskResult = await client.query(
+      `UPDATE broadcast_tasks
+       SET status = 'cancelled', completed_at = NOW()
+       WHERE id = $1 AND status IN ('pending', 'processing')
+       RETURNING id, status`,
+      [taskId]
+    );
+    if (!taskResult.rows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const logResult = await client.query(
+      `UPDATE broadcast_log
+       SET status = 'cancelled'
+       WHERE broadcast_id = $1 AND status = 'pending'`,
+      [taskId]
+    );
+    await client.query('COMMIT');
+    return { id: taskResult.rows[0].id, cancelledRecipients: logResult.rowCount || 0 };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export function getSqlLanguageSegmentExpr() {
@@ -1771,6 +1853,18 @@ export async function startCampaignTransaction(broadcastId) {
     if (campaign.status !== 'pending') {
       throw new Error('Кампания уже запущена или обработана.');
     }
+    if (!campaign.launch_confirmed_at || campaign.launch_confirmed_by === null) {
+      throw new Error('Campaign launch confirmation is required.');
+    }
+    const switchResult = await client.query(
+      `SELECT COALESCE(
+         (SELECT value::boolean FROM app_settings WHERE key = 'broadcasts_enabled'),
+         FALSE
+       ) AS enabled`
+    );
+    if (switchResult.rows[0]?.enabled !== true) {
+      throw new Error('Broadcasts are disabled by the global kill switch.');
+    }
 
     // Динамическая валидация переводов
     const targetLangs = campaign.target_languages || ['all'];
@@ -1875,6 +1969,7 @@ export async function getBroadcastProgress(broadcastId, audience) {
          COUNT(*) FILTER (WHERE status = 'sent')::int AS sent,
          COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
          COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked,
+         COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
          COUNT(*) FILTER (WHERE status = 'pending')::int AS pending
        FROM broadcast_log
        WHERE broadcast_id = $1`,
@@ -1885,10 +1980,11 @@ export async function getBroadcastProgress(broadcastId, audience) {
     const sent = Number(counts.sent || 0);
     const failed = Number(counts.failed || 0);
     const blocked = Number(counts.blocked || 0);
+    const cancelled = Number(counts.cancelled || 0);
     const pending = Number(counts.pending || 0);
-    const processed = sent + failed + blocked;
+    const processed = sent + failed + blocked + cancelled;
 
-    return { total: targeted, targeted, processed, sent, failed, blocked, pending };
+    return { total: targeted, targeted, processed, sent, failed, blocked, cancelled, pending };
   } catch (err) {
     console.error('[DB] Ошибка в getBroadcastProgress:', err);
     throw err;
@@ -1910,21 +2006,30 @@ export async function updateBroadcastStatus(taskId, status, errorMessage = null)
     SET status = $1,
         report = COALESCE($2, report),
         completed_at = ${completedAt}
-    WHERE id = $3
+    WHERE id = $3 AND status <> 'cancelled'
+    RETURNING status
   `;
-  await query(sql, [status, report, taskId]);
+  const { rows } = await query(sql, [status, report, taskId]);
+  return rows[0] || null;
 }
 
 export async function findAndInterruptActiveBroadcast() {
   const sql = `
     UPDATE broadcast_tasks
-    SET status = 'pending'
+    SET status = CASE
+          WHEN launch_confirmed_at IS NOT NULL THEN 'pending'
+          ELSE 'cancelled'
+        END,
+        completed_at = CASE
+          WHEN launch_confirmed_at IS NULL THEN NOW()
+          ELSE completed_at
+        END
     WHERE status = 'processing'
-    RETURNING id
+    RETURNING id, status
   `;
   const { rows } = await query(sql);
   if (rows.length > 0) {
-    console.log(`[Shutdown] Рассылка #${rows[0].id} возвращена в очередь.`);
+    console.log(`[Shutdown] Рассылка #${rows[0].id} переведена в статус ${rows[0].status}.`);
   }
 }
 
@@ -1937,6 +2042,7 @@ export async function getAllBroadcastTasks({ limit = null } = {}) {
       COALESCE(log_counts.sent_count, 0)::int AS sent_count,
       COALESCE(log_counts.failed_count, 0)::int AS failed_count,
       COALESCE(log_counts.blocked_count, 0)::int AS blocked_count,
+      COALESCE(log_counts.cancelled_count, 0)::int AS cancelled_count,
       COALESCE(log_counts.pending_count, 0)::int AS pending_count,
       COALESCE(log_counts.processed_count, 0)::int AS processed_count,
 
@@ -1960,8 +2066,9 @@ export async function getAllBroadcastTasks({ limit = null } = {}) {
         COUNT(*) FILTER (WHERE status = 'sent')::int AS sent_count,
         COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count,
         COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_count,
+        COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count,
         COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
-        COUNT(*) FILTER (WHERE status IN ('sent', 'failed', 'blocked'))::int AS processed_count
+        COUNT(*) FILTER (WHERE status IN ('sent', 'failed', 'blocked', 'cancelled'))::int AS processed_count
       FROM broadcast_log l
       WHERE l.broadcast_id = t.id
     ) log_counts ON TRUE
@@ -1988,7 +2095,8 @@ export async function resetStaleBroadcasts() {
   const { data, error } = await supabase
     .from('broadcast_tasks')
     .update({ status: 'pending' })
-    .eq('status', 'processing');
+    .eq('status', 'processing')
+    .not('launch_confirmed_at', 'is', null);
   if (error) {
     console.error('[DB] Ошибка при сбросе зависших рассылок:', error);
   } else if (data && data.length > 0) {
@@ -2839,12 +2947,18 @@ export async function runMultilangSystemMigration() {
 
 export async function runPreflightFixesMigration() {
   try {
-    const migrationPath = path.join(__dirname, 'migrations', '009_schema_contract_reconciliation.sql');
-    const sql = fs.readFileSync(migrationPath, 'utf8');
-    await query(sql);
-    console.log('✅ [DB] Сверочная миграция контракта схемы (009) выполнена успешно.');
+    const migrationFiles = [
+      '009_schema_contract_reconciliation.sql',
+      '010_broadcast_launch_safety.sql'
+    ];
+    for (const migrationFile of migrationFiles) {
+      const migrationPath = path.join(__dirname, 'migrations', migrationFile);
+      const sql = fs.readFileSync(migrationPath, 'utf8');
+      await query(sql);
+      console.log(`✅ [DB] Миграция ${migrationFile} выполнена успешно.`);
+    }
   } catch (err) {
-    console.error('❌ [DB] Ошибка сверочной миграции контракта схемы (009):', err.message);
+    console.error('❌ [DB] Ошибка миграций контракта схемы:', err.message);
     throw err;
   }
 }
@@ -4090,7 +4204,7 @@ export async function getAIRecommendationsData() {
 }
 
 export const REQUIRED_SCHEMA = Object.freeze({
-  broadcast_tasks: ['id', 'message', 'file_id', 'target_audience', 'disable_notification', 'scheduled_at', 'status', 'report', 'created_at', 'completed_at', 'keyboard', 'disable_web_page_preview', 'file_mime_type', 'started_at', 'target_languages', 'unknown_language_policy', 'messages_json', 'language_source_filter', 'message_version', 'broadcast_type', 'campaign_tag', 'campaign_name', 'fallback_language'],
+  broadcast_tasks: ['id', 'message', 'file_id', 'target_audience', 'disable_notification', 'scheduled_at', 'status', 'report', 'created_at', 'completed_at', 'keyboard', 'disable_web_page_preview', 'file_mime_type', 'started_at', 'target_languages', 'unknown_language_policy', 'messages_json', 'language_source_filter', 'message_version', 'broadcast_type', 'campaign_tag', 'campaign_name', 'fallback_language', 'launch_confirmed_at', 'launch_confirmed_by'],
   broadcast_log: ['id', 'broadcast_id', 'user_id', 'sent_at', 'audience_language_segment', 'delivered_language', 'status'],
   broadcast_clicks: ['id', 'campaign_id', 'user_id', 'button_index', 'clicked_at', 'user_agent', 'language_code'],
   language_history: ['id', 'user_id', 'previous_language', 'new_language', 'previous_source', 'new_source', 'changed_by_type', 'changed_by_user_id', 'created_at'],
@@ -4102,7 +4216,7 @@ export const REQUIRED_SCHEMA = Object.freeze({
   app_settings: ['key', 'value']
 });
 
-export const REQUIRED_SCHEMA_VERSION = 9;
+export const REQUIRED_SCHEMA_VERSION = 10;
 
 export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   const tableNames = Object.keys(REQUIRED_SCHEMA);

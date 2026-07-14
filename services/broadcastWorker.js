@@ -1,7 +1,9 @@
 import { ADMIN_ID } from '../config.js';
 import {
+  areBroadcastsEnabled,
   createBroadcastSnapshot,
   getAndStartPendingBroadcastTask,
+  getBroadcastExecutionState,
   getBroadcastProgress,
   getUsersForBroadcastBatch,
   updateBroadcastStatus
@@ -35,6 +37,10 @@ export async function processNextBroadcastTask({
 } = {}) {
   if (!bot?.telegram) throw new Error('Broadcast worker requires a Telegram transport.');
 
+  if (!(await areBroadcastsEnabled())) {
+    return { status: 'disabled', taskId: null, reason: 'kill-switch' };
+  }
+
   const task = await getAndStartPendingBroadcastTask();
   if (!task) return { status: 'idle', taskId: null };
 
@@ -47,6 +53,15 @@ export async function processNextBroadcastTask({
   try {
     await onTaskClaimed(task);
     console.log(`[Broadcast] Starting campaign #${task.id}.`);
+
+    const initialState = await getBroadcastExecutionState(task.id);
+    if (!initialState?.launch_confirmed || initialState.status !== 'processing') {
+      return { status: initialState?.status || 'stopped', taskId: task.id, reason: 'not-launchable' };
+    }
+    if (!initialState.broadcasts_enabled) {
+      await updateBroadcastStatus(task.id, 'pending');
+      return { status: 'disabled', taskId: task.id, reason: 'kill-switch' };
+    }
 
     try {
       const initialReport = await notifyAdmin(
@@ -80,6 +95,18 @@ export async function processNextBroadcastTask({
     }
 
     while (true) {
+      const executionState = await getBroadcastExecutionState(task.id);
+      if (!executionState || executionState.status === 'cancelled') {
+        return { status: 'cancelled', taskId: task.id };
+      }
+      if (!executionState.broadcasts_enabled) {
+        await updateBroadcastStatus(task.id, 'pending');
+        return { status: 'disabled', taskId: task.id, reason: 'kill-switch' };
+      }
+      if (!executionState.launch_confirmed || executionState.status !== 'processing') {
+        return { status: executionState.status, taskId: task.id, reason: 'state-changed' };
+      }
+
       if (shouldStop() || Date.now() - startedAt > maxDurationMs) {
         await updateBroadcastStatus(task.id, 'pending');
         return {
@@ -122,7 +149,10 @@ export async function processNextBroadcastTask({
       if (batchDelayMs > 0) await sleep(batchDelayMs);
     }
 
-    await updateBroadcastStatus(task.id, 'completed');
+    const completedTask = await updateBroadcastStatus(task.id, 'completed');
+    if (!completedTask) {
+      return { status: 'cancelled', taskId: task.id };
+    }
     const progress = await getBroadcastProgress(task.id, task.target_audience);
     const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
 
@@ -154,6 +184,10 @@ export async function processNextBroadcastTask({
     };
   } catch (error) {
     console.error('[Broadcast] Worker error:', error);
+    const executionState = await getBroadcastExecutionState(task.id).catch(() => null);
+    if (executionState?.status === 'cancelled') {
+      return { status: 'cancelled', taskId: task.id };
+    }
     await updateBroadcastStatus(task.id, 'failed', error.message);
 
     if (reportMessageId !== null && adminId !== null && adminId !== undefined) {
