@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL, KARAOKE_DATABASE_URL, KARAOKE_SUPABASE_URL, KARAOKE_SUPABASE_KEY } from './config.js';
 import { SUPPORTED_LANGUAGES } from './config/languages.js';
 import { countUndeliverableRecipients } from './services/broadcastAudienceRules.js';
+import { toFiniteNumber } from './services/revenueNumber.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2949,7 +2950,8 @@ export async function runPreflightFixesMigration() {
   try {
     const migrationFiles = [
       '009_schema_contract_reconciliation.sql',
-      '010_broadcast_launch_safety.sql'
+      '010_broadcast_launch_safety.sql',
+      '011_user_activity_bigint.sql'
     ];
     for (const migrationFile of migrationFiles) {
       const migrationPath = path.join(__dirname, 'migrations', migrationFile);
@@ -3988,7 +3990,7 @@ export async function getRevenueDashboardData(startDate, endDate) {
        2.00
      )::float8 AS rate`
   );
-  const rate = Number(rateResult.rows[0]?.rate ?? 2);
+  const rate = toFiniteNumber(rateResult.rows[0]?.rate, 2);
 
   const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
   const mskStart = `${startDate}T00:00:00+03:00`;
@@ -4006,7 +4008,11 @@ export async function getRevenueDashboardData(startDate, endDate) {
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
     [todayMskStart, todayMskEnd]
   );
-  const today = todayRes.rows[0];
+  const today = {
+    count: toFiniteNumber(todayRes.rows[0]?.count),
+    rub: toFiniteNumber(todayRes.rows[0]?.rub),
+    stars: toFiniteNumber(todayRes.rows[0]?.stars)
+  };
 
   // 2. MRR (last 30 days rolling)
   const rollingStart = new Date(Date.now() - 30 * 86400000).toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' }) + 'T00:00:00+03:00';
@@ -4018,7 +4024,10 @@ export async function getRevenueDashboardData(startDate, endDate) {
      WHERE payment_status = 'completed' AND paid_at >= $1`,
     [rollingStart]
   );
-  const mrrData = mrrRes.rows[0];
+  const mrrData = {
+    rub: toFiniteNumber(mrrRes.rows[0]?.rub),
+    stars: toFiniteNumber(mrrRes.rows[0]?.stars)
+  };
   const mrr = mrrData.rub + mrrData.stars * rate;
 
   // 3. ARPPU & conversion for selected period
@@ -4031,13 +4040,17 @@ export async function getRevenueDashboardData(startDate, endDate) {
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
     [mskStart, mskEnd]
   );
-  const rev = revenueRes.rows[0];
+  const rev = {
+    rub: toFiniteNumber(revenueRes.rows[0]?.rub),
+    stars: toFiniteNumber(revenueRes.rows[0]?.stars),
+    paying_users: toFiniteNumber(revenueRes.rows[0]?.paying_users)
+  };
   const totalRevenueRubEquivalent = rev.rub + rev.stars * rate;
   const arppu = rev.paying_users > 0 ? (totalRevenueRubEquivalent / rev.paying_users) : 0;
 
   // Conversion Free -> Paid (users registered in period who paid)
   const regUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2`, [mskStart, mskEnd]);
-  const totalRegistered = regUsersRes.rows[0].count || 0;
+  const totalRegistered = toFiniteNumber(regUsersRes.rows[0]?.count);
 
   const payingRegUsersRes = await query(
     `SELECT COUNT(DISTINCT u.id)::int 
@@ -4046,7 +4059,7 @@ export async function getRevenueDashboardData(startDate, endDate) {
      WHERE u.created_at BETWEEN $1 AND $2`,
     [mskStart, mskEnd]
   );
-  const payingRegistered = payingRegUsersRes.rows[0].count || 0;
+  const payingRegistered = toFiniteNumber(payingRegUsersRes.rows[0]?.count);
   const conversionFreePaid = totalRegistered > 0 ? (payingRegistered / totalRegistered * 100) : 0;
 
   // 4. Breakdown of payments
@@ -4064,12 +4077,13 @@ export async function getRevenueDashboardData(startDate, endDate) {
   );
   
   const breakdown = breakdownRes.rows.map(row => {
-    const sum = row.currency === 'RUB' ? row.sum_minor / 100.0 : Number(row.sum_minor);
+    const sumMinor = toFiniteNumber(row.sum_minor);
+    const sum = row.currency === 'RUB' ? sumMinor / 100.0 : sumMinor;
     const rubEquivalent = row.currency === 'RUB' ? sum : sum * rate;
     return {
       method: row.method,
       currency: row.currency,
-      count: row.count,
+      count: toFiniteNumber(row.count),
       sum,
       rubEquivalent
     };
@@ -4213,10 +4227,15 @@ export const REQUIRED_SCHEMA = Object.freeze({
   analytics_user_daily: ['day', 'user_id', 'downloads_count', 'searches_count', 'limits_reached_count', 'primary_source'],
   payments: ['id', 'user_id', 'plan', 'amount_minor', 'currency', 'payment_method', 'payment_status', 'telegram_payment_charge_id', 'provider_payment_charge_id', 'invoice_payload', 'is_recurring', 'is_first_recurring', 'subscription_expiration_date', 'period_days', 'comment', 'metadata', 'created_at', 'paid_at'],
   users: ['id', 'username', 'first_name', 'active', 'can_receive_broadcasts', 'downloads_today', 'total_downloads', 'tracks_today', 'premium_limit', 'premium_until', 'created_at', 'last_active', 'last_reset_date', 'lang', 'telegram_language_code', 'language_code', 'language_source', 'language_updated_at', 'notified_about_expiration', 'notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d'],
+  user_activity: ['user_id'],
   app_settings: ['key', 'value']
 });
 
-export const REQUIRED_SCHEMA_VERSION = 10;
+export const REQUIRED_COLUMN_TYPES = Object.freeze({
+  'user_activity.user_id': 'int8'
+});
+
+export const REQUIRED_SCHEMA_VERSION = 11;
 
 export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   const tableNames = Object.keys(REQUIRED_SCHEMA);
@@ -4224,7 +4243,7 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
 
   console.log('[Schema Check] Running schema contract preflight...');
   const res = await query(
-    `SELECT table_name, column_name
+    `SELECT table_name, column_name, udt_name
      FROM information_schema.columns
      WHERE table_schema = 'public'
        AND table_name = ANY($1::text[])`,
@@ -4233,17 +4252,25 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
 
   const actualSchema = new Map();
   for (const row of res.rows) {
-    if (!actualSchema.has(row.table_name)) actualSchema.set(row.table_name, new Set());
-    actualSchema.get(row.table_name).add(row.column_name);
+    if (!actualSchema.has(row.table_name)) actualSchema.set(row.table_name, new Map());
+    actualSchema.get(row.table_name).set(row.column_name, row.udt_name);
   }
 
   const missingTables = [];
   const missingColumns = [];
+  const typeMismatches = [];
   for (const [table, columns] of Object.entries(REQUIRED_SCHEMA)) {
     const actualColumns = actualSchema.get(table);
     if (!actualColumns) missingTables.push(table);
     for (const column of columns) {
       if (!actualColumns?.has(column)) missingColumns.push(`${table}.${column}`);
+    }
+  }
+  for (const [qualifiedColumn, expectedType] of Object.entries(REQUIRED_COLUMN_TYPES)) {
+    const [table, column] = qualifiedColumn.split('.');
+    const actualType = actualSchema.get(table)?.get(column);
+    if (actualType && actualType !== expectedType) {
+      typeMismatches.push({ column: qualifiedColumn, expected: expectedType, actual: actualType });
     }
   }
 
@@ -4259,12 +4286,13 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   const schemaVersionMatches = actualSchemaVersion === REQUIRED_SCHEMA_VERSION;
 
   const report = {
-    ok: missingTables.length === 0 && missingColumns.length === 0 && schemaVersionMatches,
+    ok: missingTables.length === 0 && missingColumns.length === 0 && typeMismatches.length === 0 && schemaVersionMatches,
     summary: {
       requiredTables: tableNames.length,
       requiredColumns: requiredColumnCount,
       missingTables: missingTables.length,
       missingColumns: missingColumns.length,
+      typeMismatches: typeMismatches.length,
       schemaVersionMismatch: !schemaVersionMatches
     },
     schemaVersion: {
@@ -4274,7 +4302,8 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
     },
     missing: {
       tables: missingTables.sort(),
-      columns: missingColumns.sort()
+      columns: missingColumns.sort(),
+      types: typeMismatches.sort((a, b) => a.column.localeCompare(b.column))
     }
   };
 
@@ -4289,15 +4318,19 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   console.error('[Schema Check] Missing:');
   for (const table of report.missing.tables) console.error(`- ${table}`);
   for (const column of report.missing.columns) console.error(`- ${column}`);
+  for (const mismatch of report.missing.types) {
+    console.error(`- ${mismatch.column}: expected ${mismatch.expected}, actual ${mismatch.actual}`);
+  }
   if (!schemaVersionMatches) {
     console.error(`- schema_version: required ${REQUIRED_SCHEMA_VERSION}, actual ${actualSchemaVersion ?? 'missing'}`);
   }
 
   if (throwOnMissing) {
     const incompatibilities = [];
-    if (missingTables.length > 0 || missingColumns.length > 0) {
+    if (missingTables.length > 0 || missingColumns.length > 0 || typeMismatches.length > 0) {
       incompatibilities.push(
-        `${missingTables.length} tables and ${missingColumns.length} required columns are missing`
+        `${missingTables.length} tables and ${missingColumns.length} required columns are missing; ` +
+        `${typeMismatches.length} required column types are incompatible`
       );
     }
     if (!schemaVersionMatches) {

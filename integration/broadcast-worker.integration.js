@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import pg from 'pg';
 
@@ -22,6 +23,7 @@ if (!databaseUrl) {
   let processNextBroadcastTask;
   let bot;
   let recipientMessages;
+  let userActivityFkDefinition;
 
   before(async () => {
     await adminClient.connect();
@@ -53,6 +55,15 @@ if (!databaseUrl) {
         language_source TEXT,
         language_code TEXT,
         telegram_language_code TEXT
+      );
+
+      CREATE TABLE user_activity (
+        id BIGSERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        activity_type TEXT,
+        CONSTRAINT user_activity_user_id_fkey
+          FOREIGN KEY (user_id) REFERENCES users(id)
+          ON UPDATE CASCADE ON DELETE CASCADE
       );
 
       CREATE TABLE broadcast_tasks (
@@ -94,6 +105,21 @@ if (!databaseUrl) {
       );
     `);
 
+    const fkBefore = await db.query(
+      `SELECT pg_get_constraintdef(oid, true) AS definition
+         FROM pg_constraint
+        WHERE conname = 'user_activity_user_id_fkey'
+          AND conrelid = 'user_activity'::regclass`
+    );
+    userActivityFkDefinition = fkBefore.rows[0].definition;
+    const migration011 = await readFile(
+      new URL('../migrations/011_user_activity_bigint.sql', import.meta.url),
+      'utf8'
+    );
+    const scopedMigration011 = migration011.replaceAll('public.', `${schemaName}.`);
+    await db.query(scopedMigration011);
+    await db.query(scopedMigration011);
+
     await db.query(
       `INSERT INTO users (id, first_name, language_source, language_code, telegram_language_code)
        VALUES ($1, 'One', 'user_selected', 'ru', 'ru'),
@@ -124,6 +150,38 @@ if (!databaseUrl) {
         }
       }
     };
+  });
+
+  test('migration 011 preserves the FK and accepts Telegram IDs above int4', async () => {
+    const telegramId = 4_294_967_296;
+    const typeResult = await db.query(
+      `SELECT a.atttypid::regtype::text AS data_type
+         FROM pg_attribute a
+        WHERE a.attrelid = 'user_activity'::regclass
+          AND a.attname = 'user_id'
+          AND NOT a.attisdropped`
+    );
+    assert.equal(typeResult.rows[0].data_type, 'bigint');
+
+    const fkAfter = await db.query(
+      `SELECT pg_get_constraintdef(oid, true) AS definition
+         FROM pg_constraint
+        WHERE conname = 'user_activity_user_id_fkey'
+          AND conrelid = 'user_activity'::regclass`
+    );
+    assert.equal(fkAfter.rows[0].definition, userActivityFkDefinition);
+
+    await db.query(`INSERT INTO users (id, first_name) VALUES ($1, 'BIGINT regression')`, [telegramId]);
+    await db.query(
+      `INSERT INTO user_activity (user_id, activity_type) VALUES ($1, 'bigint_regression')`,
+      [telegramId]
+    );
+    const activity = await db.query(
+      `SELECT user_id FROM user_activity WHERE user_id = $1`,
+      [telegramId]
+    );
+    assert.equal(activity.rows[0].user_id, String(telegramId));
+    await db.query(`DELETE FROM users WHERE id = $1`, [telegramId]);
   });
 
   after(async () => {

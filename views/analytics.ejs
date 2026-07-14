@@ -864,6 +864,15 @@
   // ----------------------------------------------------
   // Финансовый мониторинг (Revenue Dashboard)
   // ----------------------------------------------------
+  function formatRevenueNumber(value, fractionDigits = 2) {
+    const number = Number(value);
+    const safeNumber = Number.isFinite(number) ? number : 0;
+    return safeNumber.toLocaleString('ru-RU', {
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits
+    });
+  }
+
   async function loadRevenueDashboard() {
     const start = '<%= startDate %>';
     const end = '<%= endDate %>';
@@ -876,16 +885,16 @@
         const d = res.data;
         
         // Карточки
-        document.getElementById('rev-today-val').innerText = d.today.totalRubEquivalent.toFixed(2) + ' ₽';
-        document.getElementById('rev-today-sub').innerText = `RUB: ${d.today.rub.toFixed(2)} ₽ | XTR: ⭐️ ${d.today.stars} (Заказов: ${d.today.count})`;
+        document.getElementById('rev-today-val').innerText = formatRevenueNumber(d.today.totalRubEquivalent) + ' ₽';
+        document.getElementById('rev-today-sub').innerText = `RUB: ${formatRevenueNumber(d.today.rub)} ₽ | XTR: ⭐️ ${formatRevenueNumber(d.today.stars, 0)} (Заказов: ${formatRevenueNumber(d.today.count, 0)})`;
         
-        document.getElementById('rev-mrr-val').innerText = d.mrr.toFixed(2) + ' ₽';
+        document.getElementById('rev-mrr-val').innerText = formatRevenueNumber(d.mrr) + ' ₽';
         
-        document.getElementById('rev-arppu-val').innerText = d.arppu.toFixed(2) + ' ₽';
-        document.getElementById('rev-arppu-sub').innerText = `Платящих за период: ${d.paying_users}`;
+        document.getElementById('rev-arppu-val').innerText = formatRevenueNumber(d.arppu) + ' ₽';
+        document.getElementById('rev-arppu-sub').innerText = `Платящих за период: ${formatRevenueNumber(d.paying_users, 0)}`;
         
-        document.getElementById('rev-conv-val').innerText = d.conversionFreePaid.toFixed(2) + '%';
-        document.getElementById('rev-conv-sub').innerText = `Регистраций: ${d.totalRegistered}`;
+        document.getElementById('rev-conv-val').innerText = formatRevenueNumber(d.conversionFreePaid) + '%';
+        document.getElementById('rev-conv-sub').innerText = `Регистраций: ${formatRevenueNumber(d.totalRegistered, 0)}`;
         
         // Таблица
         const tbody = document.getElementById('revenue-breakdown-tbody');
@@ -908,15 +917,17 @@
         
         d.breakdown.forEach(row => {
           const methodLabel = methodLabels[row.method] || `Другой метод (${row.method})`;
-          const formattedSum = row.currency === 'RUB' ? row.sum.toFixed(2) + ' ₽' : '⭐️ ' + row.sum;
+          const formattedSum = row.currency === 'RUB'
+            ? formatRevenueNumber(row.sum) + ' ₽'
+            : '⭐️ ' + formatRevenueNumber(row.sum, 0);
           
           tbody.innerHTML += `
             <tr>
               <td class="fw-semibold text-gray-800">${methodLabel}</td>
               <td class="text-center font-monospace">${row.currency}</td>
-              <td class="text-center font-monospace fw-bold text-primary">${row.count}</td>
+              <td class="text-center font-monospace fw-bold text-primary">${formatRevenueNumber(row.count, 0)}</td>
               <td class="text-end font-monospace">${formattedSum}</td>
-              <td class="text-end font-monospace fw-bold text-success">${row.rubEquivalent.toFixed(2)} ₽</td>
+              <td class="text-end font-monospace fw-bold text-success">${formatRevenueNumber(row.rubEquivalent)} ₽</td>
             </tr>
           `;
         });

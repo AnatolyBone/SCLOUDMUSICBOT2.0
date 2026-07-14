@@ -56,22 +56,35 @@ test('Free tier is not hardcoded to five in runtime filters', () => {
   );
 });
 
-test('schema preflight requires broadcast safety migration version 10', () => {
+test('schema preflight requires user_activity BIGINT migration version 11', () => {
   const dbSource = fs.readFileSync(path.join(ROOT, 'db.js'), 'utf8');
-  const migration = fs.readFileSync(
+  const migration010 = fs.readFileSync(
     path.join(ROOT, 'migrations', '010_broadcast_launch_safety.sql'),
     'utf8'
   );
+  const migration011 = fs.readFileSync(
+    path.join(ROOT, 'migrations', '011_user_activity_bigint.sql'),
+    'utf8'
+  );
 
-  assert.match(dbSource, /REQUIRED_SCHEMA_VERSION = 10/);
+  assert.match(dbSource, /REQUIRED_SCHEMA_VERSION = 11/);
   assert.match(dbSource, /actualSchemaVersion === REQUIRED_SCHEMA_VERSION/);
-  assert.match(migration, /VALUES \('schema_version', '10'\)/);
-  assert.match(migration, /launch_confirmed_at TIMESTAMP WITH TIME ZONE/);
-  assert.match(migration, /launch_confirmed_by BIGINT/);
-  assert.match(migration, /ck_broadcast_tasks_pending_confirmed/);
-  assert.match(migration, /VALUES \('broadcasts_enabled', 'false'\)/);
-  assert.match(migration, /v_schema_version[\s\S]*< 10/);
-  assert.doesNotMatch(migration, /DROP\s+(?:COLUMN|TABLE)|RENAME\s+(?:COLUMN|TO)|UPDATE\s+(?:public\.)?users/i);
+  assert.match(dbSource, /'user_activity\.user_id': 'int8'/);
+  assert.match(dbSource, /typeMismatches/);
+
+  assert.match(migration010, /launch_confirmed_at TIMESTAMP WITH TIME ZONE/);
+  assert.match(migration010, /launch_confirmed_by BIGINT/);
+  assert.match(migration010, /ck_broadcast_tasks_pending_confirmed/);
+  assert.match(migration010, /VALUES \('broadcasts_enabled', 'false'\)/);
+  assert.match(migration010, /v_schema_version[\s\S]*< 10/);
+
+  assert.match(migration011, /pg_get_constraintdef\(c\.oid, true\)/);
+  assert.match(migration011, /DROP CONSTRAINT user_activity_user_id_fkey/);
+  assert.match(migration011, /ALTER COLUMN user_id TYPE BIGINT[\s\S]*USING user_id::BIGINT/);
+  assert.match(migration011, /ADD CONSTRAINT %I %s/);
+  assert.match(migration011, /VALUES \('schema_version', '11'\)/);
+  assert.doesNotMatch(migration011, /ALTER\s+COLUMN\s+id\b/i);
+  assert.doesNotMatch(migration011, /UPDATE\s+(?:public\.)?users/i);
 });
 
 test('smoke runner keeps the complete administrative contract', () => {

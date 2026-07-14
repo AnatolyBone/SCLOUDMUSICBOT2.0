@@ -17,25 +17,25 @@ async function runBroadcastDatabaseSmokeTest() {
       throw new Error('Broadcast smoke requires at least one user row.');
     }
 
-    const taskId = -(Date.now() * 1000 + Math.floor(Math.random() * 1000));
-    const logId = taskId - 1;
-    await client.query(
+    const taskResult = await client.query(
       `INSERT INTO public.broadcast_tasks (
-         id, message, target_audience, scheduled_at, status, target_languages,
+         message, target_audience, scheduled_at, status, target_languages,
          unknown_language_policy, messages_json, language_source_filter, fallback_language,
          launch_confirmed_at, launch_confirmed_by
        ) VALUES (
-         $1, 'admin self-test', 'all_users', NOW(), 'processing', ARRAY['all'],
-         'use_ru', '{"ru":{"message":"admin self-test"}}'::jsonb, 'all', 'ru', NOW(), $2
-       )`,
-      [taskId, userResult.rows[0].id]
+         'admin self-test', 'all_users', NOW(), 'processing', ARRAY['all'],
+         'use_ru', '{"ru":{"message":"admin self-test"}}'::jsonb, 'all', 'ru', NOW(), $1
+       )
+       RETURNING id`,
+      [userResult.rows[0].id]
     );
+    const taskId = taskResult.rows[0].id;
 
     await client.query(
       `INSERT INTO public.broadcast_log (
-         id, broadcast_id, user_id, audience_language_segment, delivered_language, status
-       ) VALUES ($1, $2, $3, 'ru', 'ru', 'pending')`,
-      [logId, taskId, userResult.rows[0].id]
+         broadcast_id, user_id, audience_language_segment, delivered_language, status
+       ) VALUES ($1, $2, 'ru', 'ru', 'pending')`,
+      [taskId, userResult.rows[0].id]
     );
     await client.query(
       `UPDATE public.broadcast_log SET status = 'sent', sent_at = NOW()

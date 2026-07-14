@@ -1,3 +1,5 @@
+import 'dotenv/config';
+
 let exitCode = 0;
 if (!process.env.DATABASE_URL) {
   console.error(JSON.stringify({

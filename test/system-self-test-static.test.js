@@ -17,5 +17,7 @@ test('admin self-test endpoint is authenticated and exposes all core checks', ()
 test('broadcast self-test rolls all temporary database writes back', () => {
   assert.match(serviceSource, /await client\.query\('BEGIN'\)/);
   assert.match(serviceSource, /await client\.query\('ROLLBACK'\)/);
+  assert.match(serviceSource, /INSERT INTO public\.broadcast_tasks[\s\S]*RETURNING id/);
+  assert.doesNotMatch(serviceSource, /Date\.now\(\) \* 1000/);
   assert.doesNotMatch(serviceSource, /telegram\.sendMessage|runBroadcastBatch/);
 });
