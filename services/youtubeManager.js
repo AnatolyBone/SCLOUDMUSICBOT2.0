@@ -20,6 +20,8 @@ async function ytdlWithFallback(url, flags) {
 }
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
+import { getDownloadQueuePriority, getRemainingDownloads, isDownloadLimitReachedForUser } from './downloadLimitService.js';
+import { getDownloadCorrelationId, logDownloadFlow } from './downloadFlowService.js';
 
 // ========================= QUALITY PRESETS =========================
 
@@ -79,14 +81,15 @@ function formatDuration(seconds) {
 
 export async function handleYouTubeUrl(ctx, url) {
   let statusMessage = null;
+  const correlationId = getDownloadCorrelationId(ctx);
   
   try {
     // Ранняя проверка лимитов (для всех, кроме админа)
     const isAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
     if (!isAdmin) {
       const user = await getUser(ctx.from.id);
-      const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
-      if (remainingLimit <= 0) {
+      if (isDownloadLimitReachedForUser(user)) {
+        logDownloadFlow(correlationId, 'youtube-limit-rejected', { userId: ctx.from.id, source: 'youtube', queued: false });
         return await ctx.reply('🚫 Дневной лимит загрузок исчерпан.');
       }
     }
@@ -103,7 +106,7 @@ export async function handleYouTubeUrl(ctx, url) {
     }
     
     const user = await getUser(ctx.from.id);
-    const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
+    const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
     
     if (remainingLimit <= 0) {
       return await ctx.telegram.editMessageText(
@@ -117,6 +120,7 @@ export async function handleYouTubeUrl(ctx, url) {
       metadata,
       url,
       userId: ctx.from.id,
+      correlationId,
       createdAt: Date.now()
     });
     
@@ -201,7 +205,7 @@ export async function handleYouTubeQualitySelection(ctx, sessionId, quality) {
   const { metadata, url, userId } = session;
   const user = await getUser(userId);
   const isAdmin = Number(userId) === Number(ADMIN_ID);
-  const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
+  const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
   
   if (remainingLimit <= 0) {
     return ctx.editMessageText('🚫 Дневной лимит загрузок исчерпан.');
@@ -228,7 +232,8 @@ export async function handleYouTubeQualitySelection(ctx, sessionId, quality) {
           duration: entry.duration,
           thumbnail: entry.thumbnail
         },
-        priority: user.premium_limit || 5
+        priority: getDownloadQueuePriority(user),
+        correlationId: session.correlationId
       }).catch(err => {
         if (err.message === 'TASK_TIMEOUT') {
           console.error(`[TaskQueue] Задача отменена по таймауту: ${entry.title}`);
@@ -260,7 +265,8 @@ export async function handleYouTubeQualitySelection(ctx, sessionId, quality) {
         duration: metadata.duration,
         thumbnail: metadata.thumbnail
       },
-      priority: user.premium_limit || 5
+      priority: getDownloadQueuePriority(user),
+      correlationId: session.correlationId
     }).catch(err => {
       if (err.message === 'TASK_TIMEOUT') {
         console.error(`[TaskQueue] Задача отменена по таймауту: ${metadata.title}`);

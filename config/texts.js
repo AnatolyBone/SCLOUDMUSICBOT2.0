@@ -41,9 +41,9 @@ const editableTexts = {
     '📣 Канал: @SCM_BLOG',
 
   // Шаблоны для динамического меню
-  menu_header: '👋 Привет, {first_name}!\n<b>Твой профиль:</b>',
-  menu_referral_block: '🙋‍♂️ <b>Приглашено друзей:</b> <i>{referral_count}</i>\n🔗 <b>Твоя ссылка для бонусов:</b>\n<code>{referral_link}</code>',
-  menu_bonus_block: '🎁 <b>Бонус!</b> Подпишись на {channel_link} и получи <b>+7 дней тарифа Plus</b> бесплатно!',
+  menu_header: '👋 Привет, {{first_name}}!\n<b>Твой профиль:</b>',
+  menu_referral_block: '🙋‍♂️ <b>Приглашено друзей:</b> <i>{{referral_count}}</i>\n🔗 <b>Твоя ссылка для бонусов:</b>\n<code>{{referral_link}}</code>',
+  menu_bonus_block: '🎁 <b>Бонус!</b> Подпишись на {{channel_link}} и получи <b>+7 дней тарифа Plus</b> бесплатно!',
   menu_footer: 'Просто отправь мне ссылку, и я скачаю трек!',
 
   // Системные сообщения

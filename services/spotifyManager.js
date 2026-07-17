@@ -4,6 +4,8 @@ import { Markup } from 'telegraf';
 import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID } from '../config.js';
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
+import { getDownloadQueuePriority, getRemainingDownloads, isDownloadLimitReachedForUser } from './downloadLimitService.js';
+import { getDownloadCorrelationId, logDownloadFlow } from './downloadFlowService.js';
 
 // ========================= QUALITY PRESETS =========================
 
@@ -267,6 +269,7 @@ function generateTrackSelectionMenu(sessionId, session, page = 0) {
  */
 export async function handleSpotifyUrl(ctx, url) {
   let statusMessage = null;
+  const correlationId = getDownloadCorrelationId(ctx);
   
   try {
     if (!SPOTIPY_CLIENT_ID || !SPOTIPY_CLIENT_SECRET) {
@@ -277,8 +280,8 @@ export async function handleSpotifyUrl(ctx, url) {
     const isAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
     if (!isAdmin) {
       const user = await getUser(ctx.from.id);
-      const remainingLimit = (user.premium_limit || 5) - (user.downloads_today || 0);
-      if (remainingLimit <= 0) {
+      if (isDownloadLimitReachedForUser(user)) {
+        logDownloadFlow(correlationId, 'spotify-limit-rejected', { userId: ctx.from.id, source: 'spotify', queued: false });
         return await ctx.reply('🚫 Дневной лимит загрузок исчерпан.');
       }
     }
@@ -296,7 +299,7 @@ export async function handleSpotifyUrl(ctx, url) {
     
     // Проверяем лимиты
     const user = await getUser(ctx.from.id);
-    const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
+    const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
     
     if (remainingLimit <= 0) {
       return await ctx.telegram.editMessageText(
@@ -315,7 +318,8 @@ export async function handleSpotifyUrl(ctx, url) {
       userId: ctx.from.id,
       selectedTracks: new Set(),
       quality: null,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      correlationId
     };
     
     spotifySessions.set(sessionId, session);
@@ -613,7 +617,7 @@ export function registerSpotifyCallbacks(bot) {
     // Проверяем лимиты
     const user = await getUser(session.userId);
     const isAdmin = Number(session.userId) === Number(ADMIN_ID);
-    const remainingLimit = isAdmin ? 99999 : (user.premium_limit || 5) - (user.downloads_today || 0);
+    const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
     
     if (remainingLimit <= 0) {
       return ctx.editMessageText('🚫 Дневной лимит загрузок исчерпан.');
@@ -652,7 +656,8 @@ export function registerSpotifyCallbacks(bot) {
           duration: track.duration,
           thumbnail: track.thumbnail
         },
-        priority: user.premium_limit || 5,
+        priority: getDownloadQueuePriority(user),
+        correlationId: session.correlationId,
         // Передаем statusMessageId для всех треков, чтобы удалить сообщение после обработки
         statusMessageId: statusMessageId
       };

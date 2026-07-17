@@ -20,6 +20,15 @@ import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './service
 import { t as i18n, getUserLanguage, normalizeLanguageCode, getUserLanguageSegment } from './services/i18nService.js';
 import { SUPPORTED_LANGUAGES, LANGUAGE_LABELS } from './config/languages.js';
 import { redactSecretsInText } from './services/logSanitizer.js';
+import {
+    getConfiguredFreeDownloadLimit,
+    getDownloadQueuePriority,
+    getEffectiveDownloadLimit,
+    getRemainingDownloads,
+    isDownloadLimitReachedForUser,
+    isUserUnlimited as checkUserUnlimited
+} from './services/downloadLimitService.js';
+import { claimDownloadRequest, getDownloadCorrelationId, logDownloadFlow } from './services/downloadFlowService.js';
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
@@ -134,7 +143,7 @@ async function addTaskToQueue(task) {
         
         // Получаем приоритет из тарифа пользователя
         const user = await getUser(task.userId);
-        const priority = getUserLimit(user);
+        const priority = getDownloadQueuePriority(user);
         
         // Новый, правильный лог
         console.log('[Queue] Добавляю задачу', {
@@ -184,22 +193,11 @@ function maskConnectionString(url) {
 }
 
 export function isUserUnlimited(user) {
-    if (!user) return false;
-    const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
-    return isPremium && user.premium_limit === null;
+    return checkUserUnlimited(user);
 }
 
 export function getUserLimit(user) {
-    if (!user) return parseInt(getSetting('daily_limit_free') || '3', 10);
-    
-    // Проверяем, есть ли активная подписка
-    const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
-    if (isPremium) {
-        if (user.premium_limit === null) return null; // Безлимит
-        return user.premium_limit ?? parseInt(getSetting('daily_limit_plus') || '30', 10);
-    }
-    
-    return parseInt(getSetting('daily_limit_free') || '3', 10);
+    return getEffectiveDownloadLimit(user, getConfiguredFreeDownloadLimit());
 }
 
 async function isDownloadLimitReached(ctx, userId) {
@@ -209,18 +207,18 @@ async function isDownloadLimitReached(ctx, userId) {
     const user = await getUser(userId);
     if (!user) return false;
 
-    if (isUserUnlimited(user)) return false;
-
-    const downloadsToday = user.downloads_today || 0;
-    const userLimit = getUserLimit(user);
-    const limitFreeSetting = parseInt(getSetting('daily_limit_free') || '3', 10);
+    const downloadsToday = Number(user.downloads_today || 0);
+    const limitFreeSetting = getConfiguredFreeDownloadLimit();
+    const userLimit = getEffectiveDownloadLimit(user, limitFreeSetting);
     const limitPlusSetting = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
     
     const playlistLimit = await getPlaylistLimitForUser(userId);
     
-    const limitSource = isPremium 
-        ? (user.premium_limit ? 'user_premium_limit_db' : 'default_daily_limit_plus_setting')
+    const limitSource = isUserUnlimited(user)
+        ? 'active_unlimited'
+        : isPremium
+        ? 'user_premium_limit_db'
         : 'daily_limit_free_setting';
 
     console.log(`[DEBUG] [Tariffs & Limits] User check:`, {
@@ -229,10 +227,10 @@ async function isDownloadLimitReached(ctx, userId) {
         is_admin: isAdmin,
         is_premium: isPremium,
         premium_until: user.premium_until,
-        daily_limit: userLimit,
+        daily_limit: Number.isFinite(userLimit) ? userLimit : 'unlimited',
         playlist_limit: playlistLimit,
         downloaded_today: downloadsToday,
-        remaining_downloads: Math.max(0, userLimit - downloadsToday),
+        remaining_downloads: Number.isFinite(userLimit) ? getRemainingDownloads(user, limitFreeSetting) : 'unlimited',
         limit_source: limitSource,
         free_setting: limitFreeSetting,
         plus_setting: limitPlusSetting,
@@ -240,7 +238,7 @@ async function isDownloadLimitReached(ctx, userId) {
         karaoke_database_url_masked: maskConnectionString(KARAOKE_DATABASE_URL)
     });
 
-    if (downloadsToday >= userLimit) {
+    if (isDownloadLimitReachedForUser(user, limitFreeSetting)) {
         // Логируем попытку скачивания сверх лимита (только если НЕ только что достигли — то есть уже превышен)
         if (downloadsToday > userLimit) {
             try {
@@ -277,17 +275,17 @@ function getDaysLeft(premiumUntil) {
 
 // bot.js
 
-function formatMenuMessage(user, botUsername, lang = 'ru') {
+export function formatMenuMessage(user, botUsername, lang = 'ru') {
     // 1. Динамические данные
     const userLimit = getUserLimit(user);
     const tariffLabel = getTariffName(userLimit);
     const downloadsToday = user.downloads_today || 0;
     const daysLeft = getDaysLeft(user.premium_until);
-    const referralCount = user.referral_count || 0;
+    const referralCount = Number(user.referral_count ?? 0);
     const referralLink = `https://t.me/${botUsername}?start=ref_${user.id}`;
 
     // 2. Блок статистики (данные, не переводятся)
-    const limitText = userLimit === null ? '∞' : userLimit;
+    const limitText = Number.isFinite(userLimit) ? userLimit : '∞';
     const statsBlock = [
         `💼 <b>${lang === 'en' ? 'Plan' : 'Тариф'}:</b> <i>${tariffLabel}</i>`,
         `⏳ <b>${lang === 'en' ? 'Subscription days left' : 'Осталось дней подписки'}:</b> <i>${daysLeft}</i>`,
@@ -2443,18 +2441,11 @@ async function processUrlInBackground(ctx, url) {
 async function handleSoundCloudUrl(ctx, url) {
     let loadingMessage;
     const userId = ctx.from?.id;
-    // Трекаем запрос на скачивание
-    if (userId) {
-        try {
-            const { analyticsService } = await import('./services/analyticsService.js');
-            await analyticsService.trackEventSafe(userId, 'track_download_requested', 'downloads', {
-                url: url.slice(0, 200),
-                source: 'soundcloud'
-            }, ctx);
-        } catch (_ae) {}
-    }
+    const correlationId = getDownloadCorrelationId(ctx);
+    logDownloadFlow(correlationId, 'limit-check', { userId, source: 'soundcloud' });
     try {
         if (await isDownloadLimitReached(ctx, ctx.from.id)) {
+            logDownloadFlow(correlationId, 'limit-rejected', { userId, source: 'soundcloud', queued: false });
             const user = await getUser(ctx.from.id);
             const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
             const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
@@ -2470,6 +2461,18 @@ async function handleSoundCloudUrl(ctx, url) {
             return;
         }
 
+        logDownloadFlow(correlationId, 'limit-admitted', { userId, source: 'soundcloud' });
+        if (userId) {
+            try {
+                const { analyticsService } = await import('./services/analyticsService.js');
+                await analyticsService.trackEventSafe(userId, 'track_download_requested', 'downloads', {
+                    url: url.slice(0, 200),
+                    source: 'soundcloud',
+                    correlation_id: correlationId
+                }, ctx);
+            } catch (_ae) {}
+        }
+
         loadingMessage = await ctx.reply('🔍 Анализирую ссылку...');
         
         // 1. Расшифровываем и очищаем от рекламных меток
@@ -2478,7 +2481,7 @@ async function handleSoundCloudUrl(ctx, url) {
         
         // 🔥 ДВОЙНАЯ ПРОВЕРКА КЭША: ищем и чистую, и старую "грязную" ссылку
         let cachedTrack = await findCachedTrack(cleanUrl, { source: 'soundcloud' });
-        if (!cachedTrack) {
+        if (!cachedTrack && resolvedUrl !== cleanUrl) {
             cachedTrack = await findCachedTrack(resolvedUrl, { source: 'soundcloud' });
         }
         
@@ -2500,6 +2503,7 @@ async function handleSoundCloudUrl(ctx, url) {
             });
             
             await incrementDownloadsAndSaveTrack(ctx.from.id, cachedTrack.title, cachedTrack.fileId, cleanUrl, 'soundcloud');
+            logDownloadFlow(correlationId, 'delivery-complete', { userId, source: 'soundcloud' });
             return;
         }
 
@@ -2544,7 +2548,7 @@ async function handleSoundCloudUrl(ctx, url) {
         } else {
             // Одиночный трек
             await ctx.deleteMessage(loadingMessage.message_id).catch(() => {});
-            enqueue(ctx, ctx.from.id, cleanUrl, { isSingleTrack: true, metadata: data });
+            await enqueue(ctx, ctx.from.id, cleanUrl, { isSingleTrack: true, metadata: data, correlationId });
         }
         
     } catch (error) {
@@ -2758,7 +2762,11 @@ bot.on('text', async (ctx) => {
         let added = 0;
         for (const scUrl of soundcloudUrls) {
             try {
-                handleSoundCloudUrl(ctx, scUrl);
+                if (!claimDownloadRequest(ctx, scUrl)) {
+                    logDownloadFlow(getDownloadCorrelationId(ctx), 'duplicate-update-url-skipped', { userId: ctx.from.id, source: 'soundcloud', queued: false });
+                    continue;
+                }
+                await handleSoundCloudUrl(ctx, scUrl);
                 added++;
             } catch (e) {
                 console.error(`[Admin/Batch] Ошибка для ${scUrl}:`, e.message);
@@ -2770,21 +2778,11 @@ bot.on('text', async (ctx) => {
     
     const url = urlMatch[0];
 
-    if (await isDownloadLimitReached(ctx, ctx.from.id)) {
-        const user = await getUser(ctx.from.id);
-        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-        const bonusText = bonusAvailable
-          ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-          : '';
-        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-        if (bonusAvailable) {
-          extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
-        }
-        const _lang5 = ctx.state?.lang || 'ru';
-        await ctx.reply(`${i18n(_lang5, 'limit_reached')}${bonusText}`, extra);
+    if (!claimDownloadRequest(ctx, url)) {
+        logDownloadFlow(getDownloadCorrelationId(ctx), 'duplicate-update-url-skipped', { userId: ctx.from.id, queued: false });
         return;
     }
+    logDownloadFlow(getDownloadCorrelationId(ctx), 'update-accepted', { userId: ctx.from.id });
 
     // Определяем источник и обрабатываем
     
@@ -2794,21 +2792,21 @@ bot.on('text', async (ctx) => {
             await ctx.reply('⚠️ Сервис SoundCloud временно отключен администратором. Попробуйте позже или используйте другой сервис.');
             return;
         }
-        handleSoundCloudUrl(ctx, url);
+        await handleSoundCloudUrl(ctx, url);
     } else if (url.includes('open.spotify.com') || url.includes('spotify.com')) {
         // Spotify - показываем меню выбора качества
         if (getSetting('use_spotify') !== 'true') {
             await ctx.reply('⚠️ Сервис Spotify временно отключен администратором. Попробуйте позже или используйте другой сервис.');
             return;
         }
-        handleSpotifyUrl(ctx, url);
+        await handleSpotifyUrl(ctx, url);
     } else if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')) {
         // YouTube / YouTube Music - показываем меню выбора качества
         if (getSetting('use_youtube') !== 'true') {
             await ctx.reply('⚠️ Сервис YouTube временно отключен администратором. Попробуйте позже или используйте другой сервис.');
             return;
         }
-        handleYouTubeUrl(ctx, url);
+        await handleYouTubeUrl(ctx, url);
     } else {
         await ctx.reply(
             '🎵 Я умею скачивать музыку из:\n\n' +

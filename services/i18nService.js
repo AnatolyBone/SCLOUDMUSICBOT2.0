@@ -4,6 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, NEW_USER_FALLBACK_LANGUAGE } from '../config/languages.js';
 import { allTextsSync } from '../config/texts.js';
+import { interpolateTemplate } from './templateInterpolation.js';
+export { interpolateTemplate } from './templateInterpolation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -98,13 +100,13 @@ export function getUserLanguage(user) {
  * @param {Object} variables - Переменные для подстановки {{variable}}
  * @returns {string}
  */
-export function t(lang, key, variables = {}) {
+export function translateWithTexts(lang, key, variables = {}, dbTextsOverride) {
   const targetLang = SUPPORTED_LANGUAGES.includes(lang) ? lang : DEFAULT_LANGUAGE;
   let text = null;
 
   // 1. Попытка получить переопределение из БД (bot_texts) для нужного языка
   try {
-    const dbTexts = allTextsSync(targetLang);
+    const dbTexts = dbTextsOverride === undefined ? allTextsSync(targetLang) : dbTextsOverride;
     if (dbTexts && dbTexts[key]) {
       text = dbTexts[key];
     }
@@ -129,7 +131,11 @@ export function t(lang, key, variables = {}) {
   }
 
   // 5. Подстановка переменных {{variable}}
-  return text.replace(/\{\{(\w+)\}\}/g, (_, k) => {
-    return variables[k] !== undefined ? variables[k] : `{{${k}}}`;
-  });
+  // Double braces are canonical; single braces remain compatible with legacy
+  // bot_texts rows. Missing values are removed and logged without their values.
+  return interpolateTemplate(text, variables, { key, lang: targetLang });
+}
+
+export function t(lang, key, variables = {}) {
+  return translateWithTexts(lang, key, variables);
 }

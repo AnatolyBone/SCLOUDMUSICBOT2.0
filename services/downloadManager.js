@@ -77,6 +77,12 @@ import { TaskQueue } from '../lib/TaskQueue.js';
 import * as db from '../db.js';
 import { taskBroker } from './taskBroker.js';
 import { getSetting } from './settingsManager.js';
+import {
+  getConfiguredFreeDownloadLimit,
+  getDownloadQueuePriority,
+  isDownloadLimitReachedForUser
+} from './downloadLimitService.js';
+import { logDownloadFlow } from './downloadFlowService.js';
 
 // Папка для обложек
 const THUMB_DIR = path.join(os.tmpdir(), 'sc-thumbs');
@@ -746,6 +752,15 @@ export async function trackDownloadProcessor(task) {
   const userId = parseInt(task.userId, 10);
   const source = task.source || 'soundcloud';
   const quality = task.quality || 'high';
+  const correlationId = task.correlationId || `worker-${userId}-${Date.now()}`;
+  logDownloadFlow(correlationId, 'worker-start', { userId, source });
+
+  const initialUsage = await getUserUsage(userId);
+  if (!initialUsage || isDownloadLimitReachedForUser(initialUsage, getConfiguredFreeDownloadLimit())) {
+    logDownloadFlow(correlationId, 'worker-limit-rejected', { userId, source, reason: initialUsage ? 'limit_reached' : 'user_not_found' });
+    await safeSendMessage(userId, T('limitReached'));
+    return;
+  }
 
   // ⚠️ ГИБРИДНАЯ АРХИТЕКТУРА — управляется из админки
   // Читаем настройку из БД (можно переключать без перезапуска)
@@ -798,12 +813,6 @@ export async function trackDownloadProcessor(task) {
 
   try {
     // 1. Проверка лимитов
-    const usage = await getUserUsage(userId);
-    if (!usage || usage.downloads_today >= usage.premium_limit) {
-      await safeSendMessage(userId, T('limitReached'));
-      return;
-    }
-
     // 2. Получение метаданных
     let metadata, cacheKey, fullUrl, title, uploader, roundedDuration;
     
@@ -844,12 +853,19 @@ export async function trackDownloadProcessor(task) {
     
     if (cached?.fileId) {
       console.log(`[Worker/Cache] ХИТ! Отправляю "${cached.title}" из кэша.`);
+      const deliveryUsage = await getUserUsage(userId);
+      if (!deliveryUsage || isDownloadLimitReachedForUser(deliveryUsage, getConfiguredFreeDownloadLimit())) {
+        logDownloadFlow(correlationId, 'delivery-limit-rejected', { userId, source, queued: false });
+        await safeSendMessage(userId, T('limitReached'));
+        return;
+      }
       await bot.telegram.sendAudio(userId, cached.fileId, { 
         title: cached.title, 
         performer: cached.artist || uploader, 
         duration: roundedDuration 
       });
       await incrementDownload(userId, cached.title, cached.fileId, cacheKey, source);
+      logDownloadFlow(correlationId, 'delivery-complete', { userId, source });
       return;
     }
 
@@ -1348,6 +1364,13 @@ export async function trackDownloadProcessor(task) {
       });
       
       console.log(`✅ [Cache] Трек "${title}" (${quality}) сохранён (key: ${cacheKey}).`);
+
+      const deliveryUsage = await getUserUsage(userId);
+      if (!deliveryUsage || isDownloadLimitReachedForUser(deliveryUsage, getConfiguredFreeDownloadLimit())) {
+        logDownloadFlow(correlationId, 'delivery-limit-rejected', { userId, source, queued: false });
+        await safeSendMessage(userId, T('limitReached'));
+        return;
+      }
       
       await bot.telegram.sendAudio(userId, finalFileId, { 
         title, 
@@ -1366,6 +1389,7 @@ export async function trackDownloadProcessor(task) {
       }
       
       await incrementDownload(userId, title, finalFileId, task.originalUrl || cacheKey, source);
+      logDownloadFlow(correlationId, 'delivery-complete', { userId, source });
 
     } else {
       // В) Если хранилище недоступно -> Отправляем напрямую юзеру
@@ -1415,6 +1439,13 @@ export async function trackDownloadProcessor(task) {
         stream = fs.createReadStream(tempFilePath);
       }
 
+      const deliveryUsage = await getUserUsage(userId);
+      if (!deliveryUsage || isDownloadLimitReachedForUser(deliveryUsage, getConfiguredFreeDownloadLimit())) {
+        logDownloadFlow(correlationId, 'delivery-limit-rejected', { userId, source, queued: false });
+        await safeSendMessage(userId, T('limitReached'));
+        return;
+      }
+
       const directMsg = await bot.telegram.sendAudio(
         userId, 
         { source: stream, filename: `${sanitizeFilename(title)}.mp3` },
@@ -1434,6 +1465,7 @@ export async function trackDownloadProcessor(task) {
       const directFileId = directMsg?.audio?.file_id;
       if (directFileId) {
         await incrementDownload(userId, title, directFileId, task.originalUrl || cacheKey, source);
+        logDownloadFlow(correlationId, 'delivery-complete', { userId, source });
       } else {
         console.warn('[Worker/Direct] Нет file_id после sendAudio — счётчики и лог не обновлены');
       }
@@ -1533,15 +1565,15 @@ console.log(`[DownloadManager] Очередь (threads=${MAX_CONCURRENT_DOWNLOAD
 //                                 ФУНКЦИЯ ENQUEUE
 // =====================================================================================
 
-export function enqueue(ctx, userId, url, earlyData = {}) {
-  (async () => {
+export async function enqueue(ctx, userId, url, earlyData = {}) {
     let statusMessage = null;
-    console.log(`[Enqueue] User ${userId}, URL: ${url}`);
+    const correlationId = earlyData.correlationId || `enqueue-${userId}-${Date.now()}`;
     
     try {
       // Проверка бонусов/лимитов
       const user = await db.getUser(userId);
-      if ((user.downloads_today || 0) >= user.premium_limit) {
+      if (!user || isDownloadLimitReachedForUser(user, getConfiguredFreeDownloadLimit())) {
+          logDownloadFlow(correlationId, 'enqueue-limit-rejected', { userId, reason: user ? 'limit_reached' : 'user_not_found', queued: false });
           const bonusAvailable = Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used);
           const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
           const bonusText = bonusAvailable ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.` : '';
@@ -1551,8 +1583,11 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
             extra.reply_markup = { inline_keyboard: [[Markup.button.callback('✅ Я подписался, забрать бонус', 'check_subscription')]] };
           }
           await safeSendMessage(userId, text, extra);
-          return;
+          return { queued: false, reason: user ? 'limit_reached' : 'user_not_found' };
       }
+
+      console.log(`[Enqueue] User ${userId}, correlationId=${correlationId}`);
+      logDownloadFlow(correlationId, 'enqueue-admitted', { userId });
 
       // 1. FAST PATH (если метаданные уже есть из поиска)
       if (earlyData.isSingleTrack && earlyData.metadata) {
@@ -1567,26 +1602,31 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
         else if (url.includes('youtube.com') || url.includes('youtu.be')) detectedSource = 'youtube';
 
         // Проверка кэша
-        const cached = await db.findCachedTrack(url, { source: detectedSource }) 
-          || await db.findCachedTrack(fullUrl, { source: detectedSource }) 
-          || (cacheKey && await db.findCachedTrack(cacheKey, { source: detectedSource }));
+        let cached = null;
+        const cacheCandidates = [...new Set([url, fullUrl, cacheKey].filter(Boolean))];
+        for (const candidate of cacheCandidates) {
+          cached = await db.findCachedTrack(candidate, { source: detectedSource });
+          if (cached) break;
+        }
         
         if (cached?.fileId) {
           console.log(`[Enqueue/Fast] ХИТ КЭША!`);
           await bot.telegram.sendAudio(userId, cached.fileId, { title: cached.title, performer: cached.artist });
           await incrementDownload(userId, cached.title, cached.fileId, url, detectedSource);
+          logDownloadFlow(correlationId, 'delivery-complete', { userId, source: detectedSource });
           return;
         }
 
         // Добавляем в очередь
-        const task = { userId, url: fullUrl, originalUrl: url, source: detectedSource, cacheKey, metadata };
-        downloadQueue.add({ ...task, priority: user.premium_limit || 5 }).catch(err => {
+        const task = { userId, url: fullUrl, originalUrl: url, source: detectedSource, cacheKey, metadata, correlationId };
+        downloadQueue.add({ ...task, priority: getDownloadQueuePriority(user) }).catch(err => {
           if (err.message === 'TASK_TIMEOUT') {
             console.error(`[TaskQueue] Задача отменена по таймауту: ${metadata.title}`);
           } else {
             console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
           }
         });
+        logDownloadFlow(correlationId, 'queue-created', { userId, source: detectedSource, queued: true });
         await safeSendMessage(userId, `✅ Трек "${metadata.title}" добавлен в очередь.`);
         return;
       }
@@ -1602,6 +1642,7 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
           console.log(`[Enqueue/Slow] ХИТ КЭША по URL!`);
           await bot.telegram.sendAudio(userId, quickCache.fileId, { title: quickCache.title, performer: quickCache.artist });
           await incrementDownload(userId, quickCache.title, quickCache.fileId, url, detectedSource);
+          logDownloadFlow(correlationId, 'delivery-complete', { userId, source: detectedSource });
           return;
       }
 
@@ -1623,10 +1664,11 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
           for (const entry of info.entries) {
               const meta = extractMetadataFromInfo(entry);
               if (meta) {
-                  const task = { userId, url: meta.webpage_url, originalUrl: url, source: detectedSource, metadata: meta };
-                  downloadQueue.add({ ...task, priority: user.premium_limit || 5 }).catch(err => {
+                  const task = { userId, url: meta.webpage_url, originalUrl: url, source: detectedSource, metadata: meta, correlationId };
+                  downloadQueue.add({ ...task, priority: getDownloadQueuePriority(user) }).catch(err => {
                     console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
                   });
+                  logDownloadFlow(correlationId, 'queue-created', { userId, source: detectedSource, queued: true });
                   addedCount++;
               }
           }
@@ -1635,10 +1677,11 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
           // Одиночный трек
           const meta = extractMetadataFromInfo(info);
           if (meta) {
-              const task = { userId, url: meta.webpage_url, originalUrl: url, source: detectedSource, metadata: meta };
-              downloadQueue.add({ ...task, priority: user.premium_limit || 5 }).catch(err => {
+              const task = { userId, url: meta.webpage_url, originalUrl: url, source: detectedSource, metadata: meta, correlationId };
+              downloadQueue.add({ ...task, priority: getDownloadQueuePriority(user) }).catch(err => {
                 console.error('[TaskQueue] Ошибка выполнения задачи:', err.message);
               });
+              logDownloadFlow(correlationId, 'queue-created', { userId, source: detectedSource, queued: true });
               await safeSendMessage(userId, `✅ Трек "${meta.title}" добавлен в очередь.`);
           } else {
               throw new Error('Не удалось извлечь данные о треке.');
@@ -1652,7 +1695,6 @@ export function enqueue(ctx, userId, url, earlyData = {}) {
       }
       await safeSendMessage(userId, `❌ Ошибка при чтении ссылки. Возможно, она приватная или неверная.`);
     }
-  })().catch(e => console.error('Async Enqueue Error:', e));
 }
 export async function initializeDownloadManager() {
   // Подключаемся к Upstash Redis для гибридной архитектуры
@@ -1667,6 +1709,12 @@ export async function initializeDownloadManager() {
       
       try {
         if (result.success && result.fileId) {
+          const deliveryUsage = await getUserUsage(result.userId);
+          if (!deliveryUsage || isDownloadLimitReachedForUser(deliveryUsage, getConfiguredFreeDownloadLimit())) {
+            logDownloadFlow(result.correlationId, 'delivery-limit-rejected', { userId: result.userId, source: result.source, queued: false });
+            await safeSendMessage(result.userId, T('limitReached'));
+            return;
+          }
           // Сохраняем в кэш
           await db.cacheTrack({
             url: result.cacheKey,
@@ -1697,6 +1745,7 @@ export async function initializeDownloadManager() {
             result.source || 'spotify'
           );
           if (updatedUser) checkAndSendPromos(result.userId, updatedUser);
+          logDownloadFlow(result.correlationId, 'delivery-complete', { userId: result.userId, source: result.source || 'spotify' });
           
           // Удаляем статусное сообщение (если есть и еще не удалено)
           if (result.statusMessageId) {
