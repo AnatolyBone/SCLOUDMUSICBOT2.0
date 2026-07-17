@@ -2427,6 +2427,71 @@ app.get('/admin/analytics/revenue', requireAuth, async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+app.get('/admin/user-journey', requireAuth, (req, res) => {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  const monthAgo = new Date(Date.now() - 29 * 86_400_000)
+    .toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  res.render('user-journey', {
+    title: 'Путь пользователя',
+    page: 'user-journey',
+    initialUserId: String(req.query.user_id || '').trim(),
+    defaultStartDate: monthAgo,
+    defaultEndDate: today
+  });
+});
+
+app.get('/admin/api/user-journey/:userId', requireAuth, async (req, res) => {
+  try {
+    const { getUserTimeline } = await import('./services/userInsightsService.js');
+    const data = await getUserTimeline(req.params.userId, {
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      limit: req.query.limit,
+      beforeOccurredAt: req.query.beforeOccurredAt,
+      beforeEventId: req.query.beforeEventId
+    });
+    if (!data) return res.status(404).json({ ok: false, error: 'Пользователь не найден.' });
+    res.json({ ok: true, data });
+  } catch (error) {
+    const status = /user_id|startDate|endDate|limit|beforeOccurredAt|beforeEventId|формат|некоррект|диапазон/i.test(error.message) ? 400 : 500;
+    res.status(status).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/admin/api/retention-explorer', requireAuth, async (req, res) => {
+  try {
+    const { getRetentionExplorer } = await import('./services/userInsightsService.js');
+    const data = await getRetentionExplorer({ ...req.query, view: 'summary' });
+    res.json({ ok: true, data });
+  } catch (error) {
+    const status = /startDate|endDate|source|позже|диапазон/i.test(error.message) ? 400 : 500;
+    res.status(status).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/admin/api/retention-explorer/users', requireAuth, async (req, res) => {
+  try {
+    const { getRetentionExplorer } = await import('./services/userInsightsService.js');
+    const data = await getRetentionExplorer({ ...req.query, view: 'users' });
+    res.json({ ok: true, data });
+  } catch (error) {
+    const status = /startDate|endDate|source|day|segment|page|limit|Поддерживаются|позже|диапазон/i.test(error.message) ? 400 : 500;
+    res.status(status).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/admin/api/acquisition-sources', requireAuth, async (req, res) => {
+  try {
+    const { getAcquisitionSourceExplorer } = await import('./services/userInsightsService.js');
+    const data = await getAcquisitionSourceExplorer(req.query);
+    res.json({ ok: true, data });
+  } catch (error) {
+    const status = /startDate|endDate|source|позже|диапазон/i.test(error.message) ? 400 : 500;
+    res.status(status).json({ ok: false, error: error.message });
+  }
+});
+
   app.post('/reset-bonus', requireAuth, async (req, res) => {
     const { userId } = req.body;
     if (userId) { await updateUserField(userId, 'subscribed_bonus_used', false); }

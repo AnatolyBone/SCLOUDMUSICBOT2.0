@@ -2951,12 +2951,23 @@ export async function runPreflightFixesMigration() {
     const migrationFiles = [
       '009_schema_contract_reconciliation.sql',
       '010_broadcast_launch_safety.sql',
-      '011_user_activity_bigint.sql'
+      '011_user_activity_bigint.sql',
+      '012_user_insights_indexes.sql'
     ];
     for (const migrationFile of migrationFiles) {
       const migrationPath = path.join(__dirname, 'migrations', migrationFile);
       const sql = fs.readFileSync(migrationPath, 'utf8');
-      await query(sql);
+      if (migrationFile === '012_user_insights_indexes.sql') {
+        const statements = sql.split(';').map(statement => statement.trim()).filter(Boolean);
+        for (const statement of statements) await query(statement);
+        await query(
+          `INSERT INTO public.app_settings (key, value) VALUES ($1, $2)
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+          ['schema_version', '12']
+        );
+      } else {
+        await query(sql);
+      }
       console.log(`✅ [DB] Миграция ${migrationFile} выполнена успешно.`);
     }
   } catch (err) {
@@ -4226,7 +4237,9 @@ export const REQUIRED_SCHEMA = Object.freeze({
   analytics_daily: ['day', 'dau', 'wau', 'mau', 'registrations', 'downloads_total', 'downloads_from_cache', 'downloads_new', 'limits_reached', 'tariffs_shown', 'tariffs_clicked', 'payments_started', 'payments_completed', 'revenue_rub_minor', 'revenue_xtr', 'updated_at', 'aggregation_version'],
   analytics_user_daily: ['day', 'user_id', 'downloads_count', 'searches_count', 'limits_reached_count', 'primary_source'],
   payments: ['id', 'user_id', 'plan', 'amount_minor', 'currency', 'payment_method', 'payment_status', 'telegram_payment_charge_id', 'provider_payment_charge_id', 'invoice_payload', 'is_recurring', 'is_first_recurring', 'subscription_expiration_date', 'period_days', 'comment', 'metadata', 'created_at', 'paid_at'],
-  users: ['id', 'username', 'first_name', 'active', 'can_receive_broadcasts', 'downloads_today', 'total_downloads', 'tracks_today', 'premium_limit', 'premium_until', 'created_at', 'last_active', 'last_reset_date', 'lang', 'telegram_language_code', 'language_code', 'language_source', 'language_updated_at', 'notified_about_expiration', 'notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d'],
+  downloads_log: ['id', 'user_id', 'track_title', 'url', 'source', 'downloaded_at'],
+  user_actions_log: ['id', 'user_id', 'action_type', 'details', 'created_at'],
+  users: ['id', 'username', 'first_name', 'active', 'can_receive_broadcasts', 'downloads_today', 'total_downloads', 'tracks_today', 'premium_limit', 'premium_until', 'created_at', 'last_active', 'last_reset_date', 'lang', 'telegram_language_code', 'language_code', 'language_source', 'language_updated_at', 'notified_about_expiration', 'notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d', 'referrer_id', 'referral_source'],
   user_activity: ['user_id'],
   app_settings: ['key', 'value']
 });
@@ -4235,7 +4248,15 @@ export const REQUIRED_COLUMN_TYPES = Object.freeze({
   'user_activity.user_id': 'int8'
 });
 
-export const REQUIRED_SCHEMA_VERSION = 11;
+export const REQUIRED_SCHEMA_VERSION = 12;
+
+export const RECOMMENDED_SCHEMA_INDEXES = Object.freeze([
+  'idx_analytics_events_user_created', 'idx_payments_user_created',
+  'idx_payments_user_paid_completed', 'idx_broadcast_log_user_sent',
+  'idx_broadcast_clicks_user_clicked', 'idx_downloads_log_user_downloaded',
+  'idx_language_history_user_created', 'idx_user_actions_log_user_created',
+  'idx_analytics_user_daily_user_day', 'idx_users_created_at_id'
+]);
 
 export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   const tableNames = Object.keys(REQUIRED_SCHEMA);
@@ -4285,6 +4306,23 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   }
   const schemaVersionMatches = actualSchemaVersion === REQUIRED_SCHEMA_VERSION;
 
+  let missingRecommendedIndexes = [];
+  let indexCheckError = null;
+  try {
+    const indexResult = await query(
+      `SELECT c.relname AS index_name FROM pg_catalog.pg_class c
+       JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND i.indisvalid AND i.indisready
+         AND c.relname = ANY($1::text[])`,
+      [RECOMMENDED_SCHEMA_INDEXES]
+    );
+    const actualIndexes = new Set(indexResult.rows.map(row => row.index_name));
+    missingRecommendedIndexes = RECOMMENDED_SCHEMA_INDEXES.filter(name => !actualIndexes.has(name));
+  } catch (error) {
+    indexCheckError = error.message;
+  }
+
   const report = {
     ok: missingTables.length === 0 && missingColumns.length === 0 && typeMismatches.length === 0 && schemaVersionMatches,
     summary: {
@@ -4293,7 +4331,8 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
       missingTables: missingTables.length,
       missingColumns: missingColumns.length,
       typeMismatches: typeMismatches.length,
-      schemaVersionMismatch: !schemaVersionMatches
+      schemaVersionMismatch: !schemaVersionMatches,
+      missingRecommendedIndexes: missingRecommendedIndexes.length
     },
     schemaVersion: {
       required: REQUIRED_SCHEMA_VERSION,
@@ -4304,6 +4343,10 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
       tables: missingTables.sort(),
       columns: missingColumns.sort(),
       types: typeMismatches.sort((a, b) => a.column.localeCompare(b.column))
+    },
+    warnings: {
+      indexes: missingRecommendedIndexes,
+      indexCheckError
     }
   };
 
@@ -4312,6 +4355,8 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
       `[Schema Check] OK: version ${REQUIRED_SCHEMA_VERSION}, ` +
       `${tableNames.length} tables, ${requiredColumnCount} required columns`
     );
+    if (missingRecommendedIndexes.length) console.warn(`[Schema Check] Warning: ${missingRecommendedIndexes.length} recommended indexes are missing.`);
+    if (indexCheckError) console.warn(`[Schema Check] Warning: index check failed: ${indexCheckError}`);
     return report;
   }
 
@@ -4324,6 +4369,8 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
   if (!schemaVersionMatches) {
     console.error(`- schema_version: required ${REQUIRED_SCHEMA_VERSION}, actual ${actualSchemaVersion ?? 'missing'}`);
   }
+  if (missingRecommendedIndexes.length) console.warn(`[Schema Check] Warning only: recommended indexes missing: ${missingRecommendedIndexes.join(', ')}`);
+  if (indexCheckError) console.warn(`[Schema Check] Warning only: index check failed: ${indexCheckError}`);
 
   if (throwOnMissing) {
     const incompatibilities = [];

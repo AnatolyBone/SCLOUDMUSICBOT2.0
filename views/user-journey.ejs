@@ -1,0 +1,112 @@
+<%- contentFor('styles') %>
+<style>
+  .insights-shell { max-width: 1600px; margin: 0 auto; }
+  .metric-card { border: 1px solid var(--bs-border-color); border-radius: .8rem; padding: 1rem; height: 100%; }
+  .metric-value { font-size: 1.6rem; font-weight: 700; }
+  .timeline { border-left: 2px solid var(--bs-border-color); margin-left: .75rem; padding-left: 1.5rem; }
+  .timeline-item { border: 1px solid var(--bs-border-color); border-radius: .75rem; padding: .85rem; margin-bottom: .8rem; background: var(--bs-tertiary-bg); }
+  .details-grid { display: grid; grid-template-columns: 170px 1fr; gap: .25rem 1rem; }
+  .details-grid dd { margin: 0; overflow-wrap: anywhere; }
+</style>
+
+<div class="insights-shell">
+  <div class="d-flex justify-content-between align-items-start mb-4">
+    <div><h1 class="h2 mb-1"><i class="bi bi-signpost-split-fill text-primary me-2"></i>Путь пользователя</h1>
+      <p class="text-muted mb-0">Event Timeline, Retention Explorer и источники привлечения.</p></div>
+    <span class="badge text-bg-light border">Europe/Moscow</span>
+  </div>
+
+  <ul class="nav nav-tabs mb-4" role="tablist">
+    <li class="nav-item"><button class="nav-link active" id="timeline-tab" data-bs-toggle="tab" data-bs-target="#timeline-pane" type="button">Event Timeline</button></li>
+    <li class="nav-item"><button class="nav-link" id="retention-tab" data-bs-toggle="tab" data-bs-target="#retention-pane" type="button">Retention Explorer</button></li>
+    <li class="nav-item"><button class="nav-link" id="sources-tab" data-bs-toggle="tab" data-bs-target="#sources-pane" type="button">Источники</button></li>
+  </ul>
+
+  <div class="tab-content">
+    <section class="tab-pane fade show active" id="timeline-pane">
+      <form id="timeline-form" class="card shadow-sm mb-4"><div class="card-body"><div class="row g-3 align-items-end">
+        <div class="col-lg-4"><label class="form-label fw-semibold" for="timeline-user-id">Telegram user_id</label><input id="timeline-user-id" class="form-control" inputmode="numeric" value="<%= initialUserId %>" required></div>
+        <div class="col-lg-2"><label class="form-label" for="timeline-start">С даты</label><input id="timeline-start" type="date" class="form-control"></div>
+        <div class="col-lg-2"><label class="form-label" for="timeline-end">По дату</label><input id="timeline-end" type="date" class="form-control"></div>
+        <div class="col-lg-2"><label class="form-label" for="timeline-limit">Событий</label><select id="timeline-limit" class="form-select"><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></div>
+        <div class="col-lg-2 d-grid"><button type="submit" class="btn btn-primary">Показать путь</button></div>
+      </div></div></form>
+      <div id="timeline-alert" class="alert d-none"></div><div id="timeline-user-card" class="mb-3"></div>
+      <div id="timeline-results"></div><div id="timeline-pagination" class="text-center mt-3"></div>
+    </section>
+
+    <section class="tab-pane fade" id="retention-pane">
+      <form id="retention-form" class="card shadow-sm mb-4"><div class="card-body"><div class="row g-3 align-items-end">
+        <div class="col-lg-4"><label class="form-label" for="retention-start">Регистрация с</label><input id="retention-start" type="date" class="form-control" value="<%= defaultStartDate %>" required></div>
+        <div class="col-lg-4"><label class="form-label" for="retention-end">Регистрация по</label><input id="retention-end" type="date" class="form-control" value="<%= defaultEndDate %>" required></div>
+        <div class="col-lg-4 d-grid"><button type="submit" class="btn btn-primary">Рассчитать агрегаты</button></div>
+      </div></div></form>
+      <div id="retention-alert" class="alert d-none"></div><div id="retention-summary" class="row g-3 mb-4"></div>
+      <div id="retention-controls" class="card shadow-sm mb-3 d-none"><div class="card-body"><div class="row g-3 align-items-end">
+        <div class="col-md-3"><label class="form-label" for="retention-day">Контрольный день</label><select id="retention-day" class="form-select"><option value="1">D1</option><option value="7" selected>D7</option><option value="30">D30</option><option value="90">D90</option></select></div>
+        <div class="col-md-5"><label class="form-label" for="retention-segment">Сегмент</label><select id="retention-segment" class="form-select"><option value="not_returned">Не вернулись к контрольному дню</option><option value="returned">Вернулись</option><option value="all">Все eligible</option></select></div>
+        <div class="col-md-4 d-grid"><button id="retention-load-users" type="button" class="btn btn-outline-primary">Загрузить список</button></div>
+      </div></div></div>
+      <div id="retention-users"></div><nav id="retention-pagination" class="d-flex justify-content-between mt-3"></nav>
+    </section>
+
+    <section class="tab-pane fade" id="sources-pane">
+      <form id="sources-form" class="card shadow-sm mb-4"><div class="card-body"><div class="row g-3 align-items-end">
+        <div class="col-lg-4"><label class="form-label" for="sources-start">Когорта с</label><input id="sources-start" type="date" class="form-control" value="<%= defaultStartDate %>" required></div>
+        <div class="col-lg-4"><label class="form-label" for="sources-end">Когорта по</label><input id="sources-end" type="date" class="form-control" value="<%= defaultEndDate %>" required></div>
+        <div class="col-lg-4 d-grid"><button type="submit" class="btn btn-primary">Рассчитать</button></div>
+      </div><div class="form-text mt-2">Observed LTV — наблюдаемое значение за доступный период, не прогноз.</div></div></form>
+      <div id="sources-alert" class="alert d-none"></div><div id="sources-results"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+  const SOURCE_LABELS = { organic:'Органика', unknown:'Неизвестно', referrals:'Рефералы', broadcasts:'Рассылки', advertising:'Реклама', vpn_bot:'VPN бот', yandex:'Яндекс', telegram_channel:'Telegram канал', other:'Другие' };
+  let timelineCursor = null;
+  let timelineEvents = [];
+  const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+  const number = (value, digits=0) => (Number.isFinite(Number(value)) ? Number(value) : 0).toLocaleString('ru-RU',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+  const date = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}) : '—';
+  function alertBox(id, message='') { const el=document.getElementById(id); el.className=message?'alert alert-danger':'alert d-none'; el.textContent=message; }
+  async function json(url) { const response=await fetch(url,{headers:{Accept:'application/json'}}); const body=await response.json().catch(()=>({ok:false,error:'Некорректный ответ.'})); if(!response.ok||!body.ok) throw new Error(body.error||`HTTP ${response.status}`); return body.data; }
+  function details(data) { const entries=Object.entries(data||{}).filter(([,v])=>v!==null&&v!==''&&v!==undefined); return entries.length?`<details class="mt-2"><summary class="small text-primary">Детали</summary><dl class="details-grid small mt-2">${entries.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(typeof v==='object'?JSON.stringify(v):v)}</dd>`).join('')}</dl></details>`:''; }
+
+  function renderTimeline(data, append=false) {
+    timelineCursor=data.pagination.nextCursor; timelineEvents=append?timelineEvents.concat(data.events):data.events;
+    const u=data.user;
+    document.getElementById('timeline-user-card').innerHTML=`<div class="card shadow-sm"><div class="card-body d-flex justify-content-between"><div><strong>${esc(u.first_name||u.username||u.id)}</strong><div class="small text-muted">ID ${esc(u.id)} · ${esc(SOURCE_LABELS[u.acquisitionCategory]||u.acquisitionCategory)}</div></div><div>Загружено: <strong>${number(timelineEvents.length)}</strong></div></div></div>`;
+    document.getElementById('timeline-results').innerHTML=timelineEvents.length?`<div class="timeline">${timelineEvents.map(e=>`<article class="timeline-item"><div class="d-flex justify-content-between"><div><span class="badge text-bg-${esc(e.tone)}"><i class="bi bi-${esc(e.icon)}"></i></span> <strong>${esc(e.label)}</strong> <span class="badge text-bg-light border">${esc(e.source)}</span></div><time class="small text-muted">${esc(date(e.occurredAt))}</time></div>${details(e.details)}</article>`).join('')}</div>`:'<div class="alert alert-info">Событий нет.</div>';
+    document.getElementById('timeline-pagination').innerHTML=data.pagination.hasMore?'<button id="timeline-load-more" type="button" class="btn btn-outline-primary">Показать ещё</button>':'<span class="small text-muted">Вся история выбранного периода загружена.</span>';
+  }
+  async function loadTimeline(append=false) {
+    const userId=document.getElementById('timeline-user-id').value.trim(); alertBox('timeline-alert');
+    try { if(!/^\d{1,20}$/.test(userId)) throw new Error('Введите корректный user_id.');
+      if(!append){ timelineCursor=null; timelineEvents=[]; document.getElementById('timeline-results').innerHTML='<div class="text-center py-4"><div class="spinner-border"></div></div>'; }
+      const p=new URLSearchParams({limit:document.getElementById('timeline-limit').value});
+      const start=document.getElementById('timeline-start').value,end=document.getElementById('timeline-end').value;
+      if(start)p.set('startDate',start); if(end)p.set('endDate',end);
+      if(append&&timelineCursor){p.set('beforeOccurredAt',timelineCursor.beforeOccurredAt);p.set('beforeEventId',timelineCursor.beforeEventId);}
+      renderTimeline(await json(`/admin/api/user-journey/${encodeURIComponent(userId)}?${p}`),append);
+      history.replaceState(null,'',`/admin/user-journey?user_id=${encodeURIComponent(userId)}`);
+    } catch(error){alertBox('timeline-alert',error.message);}
+  }
+
+  const retentionParams=()=>({startDate:document.getElementById('retention-start').value,endDate:document.getElementById('retention-end').value});
+  function metric(day,m){return `<div class="col-md-3"><div class="metric-card"><div class="d-flex justify-content-between"><strong>D${day}</strong><span class="badge text-bg-light border">eligible ${number(m.eligible)}</span></div><div class="metric-value mt-2">${m.rate===null?'—':number(m.rate,1)+'%'}</div>${m.rate===null?'<small class="text-muted">Когорта ещё молода</small>':''}<div class="mt-2"><button type="button" class="btn btn-link btn-sm p-0 me-2 retention-action" data-day="${day}" data-segment="returned">${number(m.returned)} вернулись</button><button type="button" class="btn btn-link btn-sm p-0 text-danger retention-action" data-day="${day}" data-segment="not_returned">${number(m.notReturned)} не вернулись к контрольному дню</button></div></div></div>`;}
+  async function loadRetentionSummary(){alertBox('retention-alert');try{const p=new URLSearchParams(retentionParams());const data=await json(`/admin/api/retention-explorer?${p}`);document.getElementById('retention-summary').innerHTML=[1,7,30,90].map(d=>metric(d,data.summary[`d${d}`])).join('');document.getElementById('retention-controls').classList.remove('d-none');document.getElementById('retention-users').innerHTML='<div class="alert alert-light border">Список загружается отдельно по клику.</div>';document.getElementById('retention-pagination').innerHTML='';}catch(e){alertBox('retention-alert',e.message);}}
+  async function loadRetentionUsers(page=1){alertBox('retention-alert');try{const p=new URLSearchParams({...retentionParams(),day:document.getElementById('retention-day').value,segment:document.getElementById('retention-segment').value,page:String(page),limit:'50'});const data=await json(`/admin/api/retention-explorer/users?${p}`);const rows=data.users.map(u=>`<tr><td><a href="/user/${encodeURIComponent(u.id)}">${esc(u.id)}</a><div class="small text-muted">@${esc(u.username||'—')}</div></td><td>${esc(date(u.createdAt))}</td><td>${esc(date(u.lastActive))}</td><td>${number(u.downloads)}</td><td>${u.reachedLimit?'Да':'Нет'}</td><td>${u.openedTariffs?'Да':'Нет'}</td><td>${u.receivedBroadcast?'Да':'Нет'}</td><td>${u.paid?'Да':'Нет'}</td><td><a class="btn btn-sm btn-outline-primary" href="/admin/user-journey?user_id=${encodeURIComponent(u.id)}">Timeline</a></td></tr>`).join('');document.getElementById('retention-users').innerHTML=`<div class="card shadow-sm"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>ID</th><th>Регистрация</th><th>Активность</th><th>Скачивания</th><th>Лимит</th><th>Тарифы</th><th>Рассылка</th><th>Оплата</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="9">Нет пользователей.</td></tr>'}</tbody></table></div></div>`;const pg=data.pagination;document.getElementById('retention-pagination').innerHTML=`<button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page-1}" ${pg.page<=1?'disabled':''}>← Назад</button><span>Страница ${pg.page} из ${pg.totalPages}; всего ${number(pg.total)}</span><button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page+1}" ${pg.page>=pg.totalPages?'disabled':''}>Далее →</button>`;}catch(e){alertBox('retention-alert',e.message);}}
+
+  async function loadSources(){alertBox('sources-alert');try{const p=new URLSearchParams({startDate:document.getElementById('sources-start').value,endDate:document.getElementById('sources-end').value});const data=await json(`/admin/api/acquisition-sources?${p}`);const rows=data.sources.map(s=>`<tr><td>${esc(SOURCE_LABELS[s.source]||s.source)}</td><td>${number(s.registrations)}</td><td>${number(s.payingUsers)}</td><td>${number(s.conversion,2)}%</td><td>${number(s.revenueRubEquivalent,2)} ₽</td><td>${number(s.ltv,2)} ₽</td><td>${number(s.arppu,2)} ₽</td><td>${s.retentionD7===null?'—':number(s.retentionD7,1)+'%'}</td></tr>`).join('');const raw=data.rawSources.map(s=>`<tr><td>${esc(s.rawSource)}</td><td>${esc(SOURCE_LABELS[s.normalizedSource]||s.normalizedSource)}</td><td>${number(s.registrations)}</td></tr>`).join('');document.getElementById('sources-results').innerHTML=`<div class="card shadow-sm mb-4"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Normalized source</th><th>Регистрации</th><th>Уникальные платящие</th><th>Конверсия</th><th>Completed revenue</th><th>Observed LTV</th><th>ARPPU</th><th>D7</th></tr></thead><tbody>${rows}</tbody></table></div></div><div class="card shadow-sm"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Raw source</th><th>Normalized source</th><th>Регистрации</th></tr></thead><tbody>${raw}</tbody></table></div></div>`;}catch(e){alertBox('sources-alert',e.message);}}
+
+  document.getElementById('timeline-form').addEventListener('submit',e=>{e.preventDefault();loadTimeline();});
+  document.getElementById('timeline-pagination').addEventListener('click',e=>{if(e.target.closest('#timeline-load-more'))loadTimeline(true);});
+  document.getElementById('retention-form').addEventListener('submit',e=>{e.preventDefault();loadRetentionSummary();});
+  document.getElementById('retention-load-users').addEventListener('click',()=>loadRetentionUsers(1));
+  document.getElementById('retention-summary').addEventListener('click',e=>{const b=e.target.closest('.retention-action');if(!b)return;document.getElementById('retention-day').value=b.dataset.day;document.getElementById('retention-segment').value=b.dataset.segment;loadRetentionUsers(1);});
+  document.getElementById('retention-pagination').addEventListener('click',e=>{const b=e.target.closest('.retention-page');if(b&&!b.disabled)loadRetentionUsers(Number(b.dataset.page));});
+  document.getElementById('retention-tab').addEventListener('shown.bs.tab',()=>{if(!document.getElementById('retention-summary').children.length)loadRetentionSummary();});
+  document.getElementById('sources-tab').addEventListener('shown.bs.tab',()=>{if(!document.getElementById('sources-results').children.length)loadSources();});
+  document.getElementById('sources-form').addEventListener('submit',e=>{e.preventDefault();loadSources();});
+  if(document.getElementById('timeline-user-id').value.trim())loadTimeline();
+</script>

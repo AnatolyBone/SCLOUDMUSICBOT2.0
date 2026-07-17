@@ -7,9 +7,11 @@
   "scripts": {
     "start": "node index.js",
     "migrate:schema": "node scripts/migrate-schema.js",
+    "migrate:insights:twice": "node scripts/migrate-user-insights.js",
     "check:schema": "node scripts/schema-preflight.js",
     "smoke:analytics": "node scripts/smoke-analytics.js",
     "test:broadcast:integration": "node scripts/run-broadcast-integration.js",
+    "test:insights:integration": "node scripts/run-user-insights-integration.js",
     "release:check": "node scripts/release-check.js",
     "test": "node --test --test-isolation=none"
   },

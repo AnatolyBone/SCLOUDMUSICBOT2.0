@@ -12,6 +12,11 @@ import {
   query
 } from '../db.js';
 import { generateExcelReport } from './excelReportService.js';
+import {
+  getAcquisitionSourceExplorer,
+  getRetentionExplorer,
+  getUserTimeline
+} from './userInsightsService.js';
 
 function moscowDate(daysAgo = 0) {
   return new Date(Date.now() - daysAgo * 86_400_000)
@@ -116,6 +121,24 @@ export async function runAnalyticsSmokeTest() {
   await run('cohort_analysis', async () => {
     const rows = await getCohortRetentionData();
     return { rows: rows.length };
+  });
+  await run('user_timeline', async () => {
+    const userResult = await query('SELECT id FROM public.users ORDER BY created_at DESC, id DESC LIMIT 1');
+    if (!userResult.rows[0]) return { rows: 0 };
+    const timeline = await getUserTimeline(userResult.rows[0].id, { limit: 5 });
+    return { rows: timeline?.events.length || 0 };
+  });
+  await run('retention_explorer', async () => {
+    const summary = await getRetentionExplorer({ startDate: yesterday, endDate: today });
+    const users = await getRetentionExplorer({
+      startDate: yesterday, endDate: today, view: 'users', day: 1,
+      segment: 'all', limit: 1
+    });
+    return { cohortSize: summary.summary.cohortSize, users: users.users.length };
+  });
+  await run('acquisition_sources', async () => {
+    const sources = await getAcquisitionSourceExplorer({ startDate: yesterday, endDate: today });
+    return { rows: sources.sources.length };
   });
   await run('revenue_dashboard', async () => {
     await getRevenueDashboardData(yesterday, today);

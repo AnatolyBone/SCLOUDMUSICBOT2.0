@@ -1,7 +1,10 @@
+import 'dotenv/config';
+
 let exitCode = 0;
 if (!process.env.DATABASE_URL) {
   const names = [
     'schema_preflight', 'analytics_dashboard', 'period_comparison', 'cohort_analysis',
+    'user_timeline', 'retention_explorer', 'acquisition_sources',
     'revenue_dashboard', 'growth_assistant', 'excel_data_query', 'excel_generation',
     'broadcast_list', 'broadcast_stats', 'broadcast_audience_estimate',
     'user_language_profile', 'language_history', 'redirect_click_query',
