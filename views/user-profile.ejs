@@ -62,7 +62,7 @@
 
 <%- contentFor('styles') %>
 <style>
-  .profile-workspace { max-width: 1800px; margin: 0 auto; }
+  .profile-workspace { max-width: 1800px; margin: 0 auto; min-width: 0; overflow-x: clip; }
   .profile-card, .profile-header-card {
     border: 1px solid var(--bs-border-color);
     border-radius: 12px;
@@ -99,6 +99,7 @@
   }
   .profile-heading { min-width: 0; }
   .profile-heading h1, .profile-heading .username { overflow-wrap: anywhere; }
+  .profile-workspace code { white-space: normal; overflow-wrap: anywhere; }
   .profile-workspace .text-muted { color: var(--bs-body-color) !important; opacity: .68; }
   .profile-header-meta { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .65rem; }
   .profile-header-meta .badge { font-weight: 600; }
@@ -127,6 +128,7 @@
   .profile-summary-label { color: var(--bs-body-color); opacity: .68; font-size: .72rem; font-weight: 650; text-transform: uppercase; letter-spacing: .035em; }
   .profile-summary-value { margin-top: .2rem; font-size: .92rem; font-weight: 700; overflow-wrap: anywhere; }
   .profile-header-actions { display: flex; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
+  .profile-header-actions .btn { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; }
   .profile-columns { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 1.25rem; align-items: start; }
   .profile-stack { display: grid; gap: 1.25rem; min-width: 0; }
   .info-list { display: grid; grid-template-columns: minmax(130px, 42%) minmax(0, 1fr); gap: .7rem 1rem; margin: 0; }
@@ -154,16 +156,21 @@
   .profile-form-grid .form-control, .profile-form-grid .form-select { min-width: 0; }
   .profile-action-grid { display: flex; flex-wrap: wrap; gap: .55rem; }
   .profile-action-grid form { display: inline-flex; }
-  .profile-table-wrap { max-height: 390px; overflow: auto; }
+  .profile-table-wrap { width: 100%; max-width: 100%; max-height: 390px; overflow: auto; overscroll-behavior-inline: contain; }
   .profile-table-wrap .table { margin-top: 0; min-width: 680px; }
   .profile-table-wrap .table th, .profile-table-wrap .table td { padding: .7rem .8rem; }
   .compact-table { font-size: .86rem; }
   .empty-card-state { padding: 1.25rem 1rem; text-align: center; color: var(--bs-body-color); opacity: .68; }
-  .profile-balanced-card { min-height: 174px; }
+  .profile-balanced-card, .profile-history-card { min-height: 174px; }
   .profile-history-card .empty-card-state { min-height: 120px; display: grid; place-content: center; }
   .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
   .service-panel { padding: 1rem; border: 1px solid var(--bs-border-color); border-radius: 10px; background: var(--table-header-bg); }
   .text-break-safe { overflow-wrap: anywhere; word-break: break-word; }
+  [data-theme="dark"] .profile-workspace .text-bg-light,
+  [data-theme="dark"] .profile-workspace .bg-light {
+    color: var(--bs-body-color) !important;
+    background: var(--table-header-bg) !important;
+  }
 
   @media (max-width: 1199.98px) {
     .profile-columns { grid-template-columns: minmax(0, 4.5fr) minmax(0, 7.5fr); }
@@ -193,6 +200,7 @@
     .info-grid, .activity-grid, .service-grid { grid-template-columns: 1fr; }
     .language-actions .btn { min-width: 0; flex: 1 1 auto; }
     .profile-action-grid form, .profile-action-grid .btn { width: 100%; }
+    .profile-table-wrap .table { min-width: 620px; }
   }
 </style>
 

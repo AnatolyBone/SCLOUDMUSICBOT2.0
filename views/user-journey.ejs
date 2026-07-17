@@ -1,6 +1,6 @@
 <%- contentFor('styles') %>
 <style>
-  .admin-workspace { max-width: 1800px; margin: 0 auto; }
+  .admin-workspace { max-width: 1800px; margin: 0 auto; min-width: 0; overflow-x: clip; }
   .workspace-header { gap: 1rem; }
   .workspace-card {
     border: 1px solid var(--bs-border-color);
@@ -96,6 +96,8 @@
     color: var(--event-color, var(--bs-primary-color));
     flex: 0 0 auto;
   }
+  .timeline-description { color: var(--bs-body-color); opacity: .78; line-height: 1.45; }
+  .timeline-source { font-size: .72rem; font-weight: 600; letter-spacing: .02em; }
   .event-primary { --event-color: #0d6efd; }
   .event-success { --event-color: #198754; }
   .event-warning { --event-color: #d59000; }
@@ -109,8 +111,10 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 1rem;
   }
-  .retention-card { border-top: 4px solid var(--bs-primary-color); }
+  .retention-card { border-top: 4px solid var(--bs-primary-color); min-height: 260px; }
   .retention-card:hover { transform: none; }
+  .retention-card .card-body { display: flex; flex-direction: column; }
+  .retention-card .retention-rows { margin-top: auto; }
   .retention-rate { font-size: clamp(2rem, 3vw, 2.65rem); font-weight: 750; line-height: 1; }
   .retention-row {
     display: flex;
@@ -134,9 +138,18 @@
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 1rem;
   }
-  .kpi-card { min-height: 126px; }
+  .kpi-card { min-height: 132px; }
   .kpi-card:hover { transform: none; }
   .kpi-value { font-size: 1.7rem; font-weight: 750; line-height: 1.15; }
+  .kpi-icon {
+    width: 38px;
+    height: 38px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 10px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    font-size: 1.1rem;
+  }
   .source-bars { display: grid; gap: .9rem; }
   .source-bar-track { height: .7rem; border-radius: 999px; overflow: hidden; background: var(--bs-tertiary-bg); }
   .source-bar-fill { height: 100%; min-width: 3px; border-radius: inherit; background: linear-gradient(90deg, var(--bs-primary-color), #6f42c1); }
@@ -149,7 +162,14 @@
   .source-toggle:hover { transform: none; opacity: .75; }
   .source-raw-row td { background: var(--bs-tertiary-bg); }
   .raw-source-list { display: flex; flex-wrap: wrap; gap: .45rem; }
+  .source-table { min-width: 920px; font-size: .86rem; }
+  .source-table th, .source-table td { padding: .72rem .8rem !important; }
   .pagination-panel { min-height: 42px; }
+  [data-theme="dark"] .admin-workspace .text-bg-light,
+  [data-theme="dark"] .admin-workspace .bg-light {
+    color: var(--bs-body-color) !important;
+    background: var(--table-header-bg) !important;
+  }
 
   @media (max-width: 1199.98px) {
     .journey-user-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -158,7 +178,8 @@
   }
   @media (max-width: 767.98px) {
     .workspace-header { align-items: flex-start !important; }
-    .workspace-tabs { gap: 0; overflow-x: auto; flex-wrap: nowrap; }
+    .workspace-tabs { gap: 0; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
+    .workspace-tabs::-webkit-scrollbar { display: none; }
     .workspace-tabs .nav-link { padding: .65rem .45rem; font-size: .86rem; white-space: nowrap; }
     .journey-user-card .card-body > .d-flex { flex-wrap: wrap; }
     .journey-user-card .card-body > .d-flex .btn { width: 100%; margin-left: 0 !important; }
@@ -239,7 +260,7 @@
           <div>
             <span class="empty-state-icon mb-3"><i class="bi bi-signpost-split"></i></span>
             <h2 class="h5 mb-2">Найдите пользователя</h2>
-            <p class="text-muted mb-0">Введите Telegram ID, чтобы увидеть последовательность событий и точки выхода из воронки.</p>
+            <p class="text-muted mb-0">Введите Telegram ID для просмотра полной истории действий.</p>
           </div>
         </div>
       </div>
@@ -291,6 +312,25 @@
 <script>
   const SOURCE_LABELS = { organic:'Органика', unknown:'Неизвестно', referrals:'Рефералы', broadcasts:'Рассылки', advertising:'Реклама', vpn_bot:'VPN-бот', yandex:'Яндекс', telegram_channel:'Telegram-канал', other:'Другие' };
   const TONE_LABELS = { primary:'Воронка', success:'Успех', warning:'Внимание', danger:'Ошибка', info:'Действие', secondary:'Система' };
+  const EVENT_DESCRIPTIONS = {
+    registration:'Пользователь зарегистрировался в боте.',
+    session_started:'Пользователь начал новую сессию.',
+    track_search_started:'Запущен поиск музыкального трека.',
+    track_download_requested:'Пользователь запросил скачивание трека.',
+    track_download_success:'Трек успешно доставлен пользователю.',
+    download:'Скачивание завершено и записано в историю.',
+    daily_limit_reached:'Доступный дневной лимит был исчерпан.',
+    download_attempt_over_limit:'Зафиксирована попытка скачивания сверх лимита.',
+    star_payment_option_shown:'Пользователь открыл экран выбора тарифа.',
+    subscription_plan_clicked:'Пользователь выбрал тарифный план.',
+    star_invoice_created:'Для оплаты сформирован счёт Telegram Stars.',
+    payment_created:'Создана платёжная операция.',
+    payment_completed:'Платёж подтверждён и завершён.',
+    subscription_operation:'Изменилось состояние подписки пользователя.',
+    broadcast_received:'Сообщение рассылки доставлено пользователю.',
+    broadcast_clicked:'Пользователь перешёл по кнопке из рассылки.',
+    language_history:'Изменена языковая настройка профиля.'
+  };
   let timelineCursor = null;
   let timelineEvents = [];
   const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
@@ -300,6 +340,7 @@
   function alertBox(id, message='') { const el=document.getElementById(id); el.className=message?'alert alert-danger':'alert d-none'; el.textContent=message; }
   async function json(url) { const response=await fetch(url,{headers:{Accept:'application/json'}}); const body=await response.json().catch(()=>({ok:false,error:'Некорректный ответ.'})); if(!response.ok||!body.ok) throw new Error(body.error||`HTTP ${response.status}`); return body.data; }
   function details(data) { const entries=Object.entries(data||{}).filter(([,v])=>v!==null&&v!==''&&v!==undefined); return entries.length?`<details class="mt-2"><summary class="small text-primary">Детали события</summary><dl class="details-grid small mt-2 mb-0">${entries.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(typeof v==='object'?JSON.stringify(v):v)}</dd>`).join('')}</dl></details>`:''; }
+  function eventDescription(event) { return EVENT_DESCRIPTIONS[event.name] || `Системное событие категории «${TONE_LABELS[event.tone]||event.category||'Событие'}».`; }
   function userPlan(user) { const active=user.premium_until&&new Date(user.premium_until)>new Date(); if(!active)return 'Free'; if(user.premium_limit===null)return 'Unlimited'; if(Number(user.premium_limit)===30)return 'Plus'; if(Number(user.premium_limit)===100)return 'Pro'; return `Тариф ${number(user.premium_limit)}`; }
 
   function renderTimeline(data, append=false) {
@@ -324,7 +365,7 @@
           </div>
         </div>
       </div>`;
-    document.getElementById('timeline-results').innerHTML=timelineEvents.length?`<div class="event-timeline">${timelineEvents.map(e=>`<article class="card workspace-card timeline-event event-${esc(e.tone)}"><div class="card-body"><div class="timeline-event-header d-flex justify-content-between gap-3"><div class="d-flex align-items-start gap-2"><span class="timeline-icon"><i class="bi bi-${esc(e.icon)}"></i></span><div><div><strong>${esc(e.label)}</strong> <span class="badge text-bg-light border ms-1">${esc(TONE_LABELS[e.tone]||e.category||'Событие')}</span></div><div class="small text-muted mt-1">${esc(e.source)}</div></div></div><time class="small text-muted text-nowrap">${esc(date(e.occurredAt))}</time></div>${details(e.details)}</div></article>`).join('')}</div>`:'<div class="empty-state"><div><span class="empty-state-icon mb-3"><i class="bi bi-calendar2-x"></i></span><h2 class="h5">Событий нет</h2><p class="text-muted mb-0">В выбранном диапазоне событий пользователя не найдено.</p></div></div>';
+    document.getElementById('timeline-results').innerHTML=timelineEvents.length?`<div class="event-timeline">${timelineEvents.map(e=>`<article class="card workspace-card timeline-event event-${esc(e.tone)}"><div class="card-body"><div class="timeline-event-header d-flex justify-content-between gap-3"><div class="d-flex align-items-start gap-2"><span class="timeline-icon"><i class="bi bi-${esc(e.icon)}"></i></span><div><div><strong>${esc(e.label)}</strong> <span class="badge text-bg-light border ms-1">${esc(TONE_LABELS[e.tone]||e.category||'Событие')}</span></div><div class="timeline-description small mt-1">${esc(eventDescription(e))}</div><div class="timeline-source text-muted mt-1"><i class="bi bi-database me-1"></i>${esc(e.source)}</div></div></div><time class="small text-muted text-nowrap">${esc(date(e.occurredAt))}</time></div>${details(e.details)}</div></article>`).join('')}</div>`:'<div class="empty-state"><div><span class="empty-state-icon mb-3"><i class="bi bi-calendar2-x"></i></span><h2 class="h5">Событий нет</h2><p class="text-muted mb-0">В выбранном диапазоне событий пользователя не найдено.</p></div></div>';
     document.getElementById('timeline-pagination').innerHTML=data.pagination.hasMore?`<button id="timeline-load-more" type="button" class="btn btn-sm btn-outline-primary"><i class="bi bi-chevron-down me-1"></i>Показать ещё</button>`:`<span class="small text-muted"><i class="bi bi-check-circle me-1"></i>Загружено событий: ${number(timelineEvents.length)}</span>`;
   }
   async function loadTimeline(append=false) {
@@ -342,7 +383,7 @@
   }
 
   const retentionParams=()=>({startDate:document.getElementById('retention-start').value,endDate:document.getElementById('retention-end').value});
-  function metric(day,m){return `<article class="card workspace-card retention-card"><div class="card-body"><div class="d-flex align-items-start justify-content-between mb-3"><div><div class="text-muted small">Контрольный день</div><h2 class="h5 mb-0">D${day}</h2></div><span class="badge text-bg-light border" title="Пользователи, для которых контрольный день уже наступил">Доступно: ${number(m.eligible)}</span></div><div class="retention-rate ${m.rate===null?'text-muted':'text-primary'}">${m.rate===null?'—':number(m.rate,1)+'%'}</div><div class="small text-muted mt-1 mb-3">${m.rate===null?'Когорта ещё не достигла контрольного дня':'вернулись в контрольный день'}</div><div class="retention-row"><span class="text-success"><i class="bi bi-arrow-return-left me-1"></i>Вернулись</span><button type="button" class="retention-action text-success" data-day="${day}" data-segment="returned" aria-label="Показать вернувшихся D${day}">${number(m.returned)}</button></div><div class="retention-row"><span class="text-danger"><i class="bi bi-person-dash me-1"></i>Не вернулись</span><button type="button" class="retention-action text-danger" data-day="${day}" data-segment="not_returned" aria-label="Показать не вернувшихся D${day}">${number(m.notReturned)}</button></div></div></article>`;}
+  function metric(day,m){return `<article class="card workspace-card retention-card"><div class="card-body"><div class="d-flex align-items-start justify-content-between mb-3"><div><div class="text-muted small fw-semibold text-uppercase">Удержание</div><h2 class="h4 mb-0">D${day}</h2></div><span class="badge text-bg-light border" title="Пользователи, для которых контрольный день уже наступил"><i class="bi bi-info-circle me-1"></i>Доступно: ${number(m.eligible)}</span></div><div class="retention-rate ${m.rate===null?'text-muted':'text-primary'}">${m.rate===null?'—':number(m.rate,1)+'%'}</div><div class="small text-muted mt-1 mb-3">${m.rate===null?'Когорта ещё не достигла контрольного дня':'доля вернувшихся пользователей'}</div><div class="retention-rows"><div class="retention-row"><span class="text-success fw-semibold"><i class="bi bi-arrow-return-left me-1"></i>Вернулось</span><button type="button" class="retention-action text-success" data-day="${day}" data-segment="returned" aria-label="Показать вернувшихся D${day}">${number(m.returned)}</button></div><div class="retention-row"><span class="text-danger fw-semibold"><i class="bi bi-person-dash me-1"></i>Не вернулось</span><button type="button" class="retention-action text-danger" data-day="${day}" data-segment="not_returned" aria-label="Показать не вернувшихся D${day}">${number(m.notReturned)}</button></div></div></div></article>`;}
   async function loadRetentionSummary(){alertBox('retention-alert');try{const p=new URLSearchParams(retentionParams());const data=await json(`/admin/api/retention-explorer?${p}`);document.getElementById('retention-summary').innerHTML=[1,7,30,90].map(d=>metric(d,data.summary[`d${d}`])).join('');document.getElementById('retention-controls').classList.remove('d-none');document.getElementById('retention-users').innerHTML='<div class="empty-state"><div><span class="empty-state-icon mb-3"><i class="bi bi-person-lines-fill"></i></span><h2 class="h5">Выберите сегмент</h2><p class="text-muted mb-0">Нажмите число в карточке или используйте панель фильтров.</p></div></div>';document.getElementById('retention-pagination').innerHTML='';}catch(e){alertBox('retention-alert',e.message);}}
   async function loadRetentionUsers(page=1){alertBox('retention-alert');try{const p=new URLSearchParams({...retentionParams(),day:document.getElementById('retention-day').value,segment:document.getElementById('retention-segment').value,page:String(page),limit:'50'});const data=await json(`/admin/api/retention-explorer/users?${p}`);const rows=data.users.map(u=>`<tr><td><a href="/user/${encodeURIComponent(u.id)}" class="fw-semibold">${esc(u.id)}</a><div class="small text-muted">${u.username?'@'+esc(u.username):'Без username'}</div></td><td>${esc(date(u.createdAt))}</td><td>${esc(date(u.lastActive))}</td><td>${number(u.downloads)}</td><td>${u.reachedLimit?'<span class="badge text-bg-warning">Да</span>':'Нет'}</td><td>${u.openedTariffs?'<span class="badge text-bg-info">Да</span>':'Нет'}</td><td>${u.receivedBroadcast?'Да':'Нет'}</td><td>${u.paid?'<span class="badge text-bg-success">Да</span>':'Нет'}</td><td><a class="btn btn-sm btn-outline-primary" href="/admin/user-journey?user_id=${encodeURIComponent(u.id)}">Путь</a></td></tr>`).join('');document.getElementById('retention-users').innerHTML=`<div class="card workspace-card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>ID</th><th>Регистрация</th><th>Активность</th><th>Скачивания</th><th>Лимит</th><th>Тарифы</th><th>Рассылка</th><th>Оплата</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="9" class="text-center text-muted py-4">Пользователей нет.</td></tr>'}</tbody></table></div></div>`;const pg=data.pagination;document.getElementById('retention-pagination').innerHTML=`<button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page-1}" ${pg.page<=1?'disabled':''}>← Назад</button><span class="small text-muted text-center">Страница ${pg.page} из ${pg.totalPages} · всего ${number(pg.total)}</span><button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page+1}" ${pg.page>=pg.totalPages?'disabled':''}>Далее →</button>`;}catch(e){alertBox('retention-alert',e.message);}}
 
@@ -350,10 +391,10 @@
     const totals=data.sources.reduce((a,s)=>({registrations:a.registrations+s.registrations,payers:a.payers+s.payingUsers,revenue:a.revenue+s.revenueRubEquivalent,unknown:a.unknown+(s.source==='unknown'?s.registrations:0)}),{registrations:0,payers:0,revenue:0,unknown:0});
     const known=Math.max(totals.registrations-totals.unknown,0); const knownShare=totals.registrations?known/totals.registrations*100:0; const unknownShare=totals.registrations?totals.unknown/totals.registrations*100:0; const maxRegistrations=Math.max(...data.sources.map(s=>s.registrations),1);
     const rawBySource=data.rawSources.reduce((acc,row)=>{(acc[row.normalizedSource]??=[]).push(row);return acc;},{});
-    const kpis=[['bi-people','Регистрации',number(totals.registrations),'primary'],['bi-patch-check','Известный источник',number(knownShare,1)+'%','success'],['bi-question-circle','Неизвестный источник',number(unknownShare,1)+'%','warning'],['bi-person-check','Платящие',number(totals.payers),'info'],['bi-cash-coin','Подтверждённая выручка',number(totals.revenue,2)+' ₽','success']];
+    const kpis=[['bi-people','Регистрации',number(totals.registrations),'primary'],['bi-person-check','Платящие',number(totals.payers),'info'],['bi-patch-check','Известный источник',number(knownShare,1)+'%','success'],['bi-question-circle','Неизвестный источник',number(unknownShare,1)+'%','warning'],['bi-cash-coin','Подтверждённая выручка',number(totals.revenue,2)+' ₽','success']];
     const bars=data.sources.map(s=>`<div><div class="d-flex justify-content-between gap-3 small mb-1"><span class="fw-semibold">${esc(SOURCE_LABELS[s.source]||s.source)}</span><span>${number(s.registrations)} регистраций</span></div><div class="source-bar-track" role="img" aria-label="${esc(SOURCE_LABELS[s.source]||s.source)}: ${number(s.registrations)}"><div class="source-bar-fill" style="width:${Math.max(1,s.registrations/maxRegistrations*100)}%"></div></div></div>`).join('');
     const rows=data.sources.map((s,index)=>{const raw=rawBySource[s.source]||[];return `<tr><td><button type="button" class="source-toggle" data-target="source-raw-${index}" aria-expanded="false"><i class="bi bi-chevron-right me-1"></i></button><strong>${esc(SOURCE_LABELS[s.source]||s.source)}</strong></td><td>${number(s.registrations)}</td><td>${number(s.payingUsers)}</td><td>${number(s.conversion,2)}%</td><td>${number(s.revenueRubEquivalent,2)} ₽</td><td>${number(s.ltv,2)} ₽</td><td>${number(s.arppu,2)} ₽</td><td>${s.retentionD7===null?'—':number(s.retentionD7,1)+'%'}</td></tr><tr id="source-raw-${index}" class="source-raw-row d-none"><td colspan="8"><div class="small fw-semibold mb-2">Исходные источники</div><div class="raw-source-list">${raw.length?raw.map(r=>`<span class="badge text-bg-light border">${esc(r.rawSource)} · ${number(r.registrations)}</span>`).join(''):'<span class="text-muted small">Исходных значений нет</span>'}</div></td></tr>`;}).join('');
-    document.getElementById('sources-results').innerHTML=`<div class="kpi-grid mb-4">${kpis.map(([icon,label,value,tone])=>`<article class="card workspace-card kpi-card"><div class="card-body"><i class="bi ${icon} text-${tone} fs-4"></i><div class="small text-muted mt-2">${label}</div><div class="kpi-value mt-1">${value}</div></div></article>`).join('')}</div><div class="row g-4 mb-4"><div class="col-xl-4"><div class="card workspace-card h-100"><div class="card-body"><h2 class="h6 mb-3"><i class="bi bi-bar-chart-fill text-primary me-2"></i>Регистрации по источникам</h2><div class="source-bars">${bars||'<div class="text-muted">Нет данных</div>'}</div></div></div></div><div class="col-xl-8"><div class="card workspace-card h-100"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Нормализованный источник</th><th>Регистрации</th><th>Платящие</th><th>Конверсия</th><th>Подтверждённая выручка</th><th>Наблюдаемый LTV</th><th>ARPPU</th><th>D7</th></tr></thead><tbody>${rows||'<tr><td colspan="8" class="text-center text-muted py-4">Нет данных.</td></tr>'}</tbody></table></div></div></div></div>`;
+    document.getElementById('sources-results').innerHTML=`<div class="kpi-grid mb-4">${kpis.map(([icon,label,value,tone])=>`<article class="card workspace-card kpi-card"><div class="card-body"><span class="kpi-icon text-${tone}"><i class="bi ${icon}"></i></span><div class="small text-muted mt-2">${label}</div><div class="kpi-value mt-1">${value}</div></div></article>`).join('')}</div><div class="row g-4 mb-4"><div class="col-xl-4"><div class="card workspace-card h-100"><div class="card-body"><h2 class="h6 mb-3"><i class="bi bi-bar-chart-fill text-primary me-2"></i>Регистрации по источникам</h2><div class="source-bars">${bars||'<div class="text-muted">Нет данных</div>'}</div></div></div></div><div class="col-xl-8"><div class="card workspace-card h-100"><div class="table-responsive"><table class="table table-hover align-middle mb-0 source-table"><thead><tr><th>Нормализованный источник</th><th>Регистрации</th><th>Платящие</th><th>Конверсия</th><th>Подтверждённая выручка</th><th>Наблюдаемый LTV</th><th>ARPPU</th><th>D7</th></tr></thead><tbody>${rows||'<tr><td colspan="8" class="text-center text-muted py-4">Нет данных.</td></tr>'}</tbody></table></div></div></div></div>`;
   }
   async function loadSources(){alertBox('sources-alert');try{const p=new URLSearchParams({startDate:document.getElementById('sources-start').value,endDate:document.getElementById('sources-end').value});renderSources(await json(`/admin/api/acquisition-sources?${p}`));}catch(e){alertBox('sources-alert',e.message);}}
 
