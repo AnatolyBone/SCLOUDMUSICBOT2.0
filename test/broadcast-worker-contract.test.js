@@ -35,7 +35,7 @@ test('delivery logging failures stop a batch before a pending row can be sent tw
   assert.match(workerSource, /will continue without an admin report/);
 });
 
-test('broadcast list renders a completed task with the sent counter', () => {
+test('broadcast progress is based only on sent / total and never jumps to 100 early', () => {
   assert.match(templateSource, /const sent = task\.sent_count \|\| 0/);
 
   const html = ejs.render(templateSource, {
@@ -47,15 +47,17 @@ test('broadcast list renders a completed task with the sent counter', () => {
       target_audience: 'all_users',
       message: 'Regression test',
       scheduled_at: new Date('2026-07-13T12:00:00Z'),
-      sent_count: 3,
-      targeted_count: 4,
-      processed_count: 4,
-      estimated_count: 4
+      sent_count: 10_542,
+      targeted_count: 10_631,
+      processed_count: 10_631,
+      estimated_count: 10_631
     }]
   });
 
-  assert.match(html, /title="Отправлено: 3 из 4"/);
-  assert.match(html, /style="width: 100%;"/);
+  assert.match(html, /title="Отправлено: 10542 из 10631"/);
+  assert.match(html, /10542 \/ 10631 \(99,2%\)/);
+  assert.match(html, /style="width: 99\.16%;"/);
+  assert.doesNotMatch(html, /style="width: 100%;"/);
 });
 
 test('legacy completed broadcasts render as archived completion without fabricated sent count', () => {
@@ -75,8 +77,29 @@ test('legacy completed broadcasts render as archived completion without fabricat
     }]
   });
 
-  assert.match(html, /style="width: 100%;"/);
-  assert.match(html, /100% архив/);
+  assert.match(html, /style="width: 0%;"/);
+  assert.match(html, /0 \/ 10665 \(0%\) · архив/);
   assert.match(html, /детальная статистика до snapshot недоступна/);
-  assert.doesNotMatch(html, /Отправлено: 0 из 10665/);
+  assert.doesNotMatch(html, /style="width: 100%;"/);
+});
+
+test('broadcast progress shows completed only when every recipient was sent', () => {
+  const html = ejs.render(templateSource, {
+    contentFor: () => '',
+    broadcastsEnabled: true,
+    tasks: [{
+      id: 99,
+      status: 'completed',
+      target_audience: 'all_users',
+      message: 'Done',
+      scheduled_at: new Date('2026-07-13T12:00:00Z'),
+      sent_count: 10_631,
+      targeted_count: 10_631,
+      processed_count: 10_631,
+      estimated_count: 10_631
+    }]
+  });
+
+  assert.match(html, /style="width: 100%;"/);
+  assert.match(html, /Завершено · 10631 \/ 10631 \(100%\)/);
 });
