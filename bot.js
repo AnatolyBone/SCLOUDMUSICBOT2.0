@@ -1561,6 +1561,47 @@ const supportCommandHandler = async (ctx) => {
     }
 };
 
+const paySupportHandler = async (ctx) => {
+    try {
+        const user = ctx.state.user || await getUser(ctx.from.id);
+        const lang = ctx.state.lang || getUserLanguage(user);
+        const configuredAdmin = String(getSetting('admin_username') || '')
+            .trim()
+            .replace(/^@/, '');
+        const adminUsername = /^[A-Za-z0-9_]{5,32}$/.test(configuredAdmin)
+            ? configuredAdmin
+            : null;
+        const adminContact = adminUsername
+            ? `@${adminUsername}`
+            : i18n(lang, 'pay_support_chat_contact');
+        const buttons = [
+            [Markup.button.callback(i18n(lang, 'pay_support_alt_button'), 'other_payment_methods')]
+        ];
+
+        if (adminUsername) {
+            buttons.push([
+                Markup.button.url(
+                    i18n(lang, 'pay_support_admin_button'),
+                    `https://t.me/${adminUsername}`
+                )
+            ]);
+        } else {
+            buttons.push([
+                Markup.button.callback(i18n(lang, 'pay_support_admin_button'), 'support_enter')
+            ]);
+        }
+
+        await ctx.reply(i18n(lang, 'pay_support_info', { admin_contact: adminContact }), {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            ...Markup.inlineKeyboard(buttons)
+        });
+    } catch (e) {
+        console.error('[Bot] Error in paySupportHandler:', e.message);
+        await ctx.reply(i18n(ctx.state.lang || 'ru', 'pay_support_error')).catch(() => {});
+    }
+};
+
 const helpHandler = async (ctx) => {
     const lang = ctx.state.lang || 'ru';
     return ctx.reply(i18n(lang, 'help_info'), {
@@ -1627,6 +1668,7 @@ bot.command('subs', menuHandler);
 bot.command('mytracks', mytracksHandler);
 bot.command('help', helpHandler);
 bot.command('support', supportCommandHandler);
+bot.command('paysupport', paySupportHandler);
 bot.command('upgrade', upgradeHandler);
 bot.command('tariffs', upgradeHandler);
 bot.command('premium', upgradeHandler);

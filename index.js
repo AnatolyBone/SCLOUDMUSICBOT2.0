@@ -2014,7 +2014,9 @@ app.post('/register-manual-payment', requireAuth, async (req, res) => {
   const adminId = 0; // Системный ID или ID сессии админа
   const { userId, plan, amountMinor, currency, paymentMethod, periodDays, comment } = req.body;
 
-  if (currency === 'XTR' || paymentMethod === 'telegram_stars') {
+  const normalizedCurrency = String(currency || '').trim().toUpperCase();
+  const normalizedPaymentMethod = String(paymentMethod || '').trim().toLowerCase();
+  if (normalizedCurrency === 'XTR' || normalizedPaymentMethod === 'telegram_stars') {
     return res.status(400).send('Ошибка: Валюта Telegram Stars (XTR) не может быть зачислена вручную.');
   }
 

@@ -35,5 +35,10 @@
   "shazam_resolving": "🎙 Identifying audio...",
   "shazam_success": "🎵 Track found: {{title}} - {{artist}}",
   "shazam_failed": "❌ Could not identify the track.",
-  "track_unavailable": "❌ This track is unavailable for download."
+  "track_unavailable": "❌ This track is unavailable for download.",
+  "pay_support_info": "<b>💳 Payment support</b>\n\n⭐️ <b>Telegram Stars</b>\nIf Stars were charged but your plan was not activated, contact the administrator: {{admin_contact}}.\n\n💳 <b>Alternative payment methods</b>\nYooMoney, T-Bank/SBP and Boosty are available. Choose a method with the button below.\n\nWhen reporting a problem, attach the <b>Telegram charge ID</b> (if available), a payment receipt or error screenshot, the selected plan, and the approximate payment time. Never send bank card details.",
+  "pay_support_alt_button": "💳 Alternative payment methods",
+  "pay_support_admin_button": "👤 Contact administrator",
+  "pay_support_chat_contact": "the bot support chat",
+  "pay_support_error": "❌ Payment support is temporarily unavailable. Try /support."
 }

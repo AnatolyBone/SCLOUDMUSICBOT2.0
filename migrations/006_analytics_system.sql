@@ -345,6 +345,18 @@ DECLARE
     v_prev_plan VARCHAR(50);
     v_prev_is_unlim BOOLEAN;
 BEGIN
+    -- Telegram Stars must only be credited through the verified Stars flow.
+    -- Keep this guard inside the RPC so direct service-role calls cannot bypass
+    -- the HTTP validation and manually activate an XTR payment.
+    IF UPPER(COALESCE(BTRIM(p_currency), '')) = 'XTR'
+       OR LOWER(COALESCE(BTRIM(p_payment_method), '')) = 'telegram_stars' THEN
+        RETURN jsonb_build_object(
+            'status', 'validation_failed',
+            'reason', 'manual_stars_forbidden',
+            'error', 'Telegram Stars payments must be processed by process_stars_payment'
+        );
+    END IF;
+
     -- 1. Валидация тарифа
     IF p_plan NOT IN ('plus', 'pro', 'unlim') THEN
         RETURN jsonb_build_object('status', 'validation_failed', 'reason', 'invalid_plan');
