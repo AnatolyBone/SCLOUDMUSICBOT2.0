@@ -3248,6 +3248,8 @@ export async function aggregateDailyStats(targetDayStr = null) {
     // Границы суток МСК в формате ISO со смещением +03:00
     const mskStart = `${day}T00:00:00+03:00`;
     const mskEnd = `${day}T23:59:59.999+03:00`;
+    const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+    const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
 
     // 1. DAU: Уникальные пользователи, совершившие live-действия (исключая системные)
     const dauRes = await client.query(
@@ -3255,8 +3257,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
        FROM analytics_events 
        WHERE created_at BETWEEN $1 AND $2 
          AND event_origin = 'live'
-         AND event_name NOT IN ('session_started')`,
-      [mskStart, mskEnd]
+         AND event_name NOT IN ('session_started')
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const dau = dauRes.rows[0].dau || 0;
 
@@ -3267,8 +3270,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
        FROM analytics_events 
        WHERE created_at BETWEEN $1 AND $2 
          AND event_origin = 'live'
-         AND event_name NOT IN ('session_started')`,
-      [wskStart, mskEnd]
+         AND event_name NOT IN ('session_started')
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [wskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const wau = wauRes.rows[0].wau || 0;
 
@@ -3279,8 +3283,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
        FROM analytics_events 
        WHERE created_at BETWEEN $1 AND $2 
          AND event_origin = 'live'
-         AND event_name NOT IN ('session_started')`,
-      [mskStart30, mskEnd]
+         AND event_name NOT IN ('session_started')
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart30, mskEnd, excludedAnalyticsUserIds]
     );
     const mau = mauRes.rows[0].mau || 0;
 
@@ -3288,8 +3293,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const regRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM users 
-       WHERE created_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+       WHERE created_at BETWEEN $1 AND $2
+         AND NOT (id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const registrations = regRes.rows[0].count || 0;
 
@@ -3297,8 +3303,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const dlTotalRes = await client.query(
       `SELECT COUNT(*)::int AS total 
        FROM downloads_log 
-       WHERE downloaded_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+       WHERE downloaded_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const downloadsTotal = dlTotalRes.rows[0].total || 0;
 
@@ -3308,8 +3315,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
        FROM analytics_events 
        WHERE event_name = 'track_download_success' 
          AND event_data->>'delivery_source' = 'cache'
-         AND created_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         AND created_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const cacheHits = cacheHitsRes.rows[0].cache_hits || 0;
     const downloadsNew = Math.max(downloadsTotal - cacheHits, 0);
@@ -3318,9 +3326,10 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const limitsRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
-       WHERE event_name = 'daily_limit_reached' 
-         AND created_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         WHERE event_name = 'daily_limit_reached'
+         AND created_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const limitsReached = limitsRes.rows[0].count || 0;
 
@@ -3328,18 +3337,20 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const shownRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
-       WHERE event_name = 'star_payment_option_shown' 
-         AND created_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         WHERE event_name = 'star_payment_option_shown'
+         AND created_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const tariffsShown = shownRes.rows[0].count || 0;
 
     const clickedRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
-       WHERE event_name = 'subscription_plan_clicked' 
-         AND created_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         WHERE event_name = 'subscription_plan_clicked'
+         AND created_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const tariffsClicked = clickedRes.rows[0].count || 0;
 
@@ -3347,18 +3358,20 @@ export async function aggregateDailyStats(targetDayStr = null) {
     const payStartedRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM analytics_events 
-       WHERE event_name IN ('payment_method_selected', 'star_invoice_created') 
-         AND created_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         WHERE event_name IN ('payment_method_selected', 'star_invoice_created')
+         AND created_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const paymentsStarted = payStartedRes.rows[0].count || 0;
 
     const payCompletedRes = await client.query(
       `SELECT COUNT(*)::int AS count 
        FROM payments 
-       WHERE payment_status = 'completed' 
-         AND paid_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         WHERE payment_status = 'completed'
+         AND paid_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const paymentsCompleted = payCompletedRes.rows[0].count || 0;
 
@@ -3368,8 +3381,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
        FROM payments 
        WHERE payment_status = 'completed' 
          AND currency = 'RUB' 
-         AND paid_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         AND paid_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const revenueRub = revRubRes.rows[0].sum || 0;
 
@@ -3378,8 +3392,9 @@ export async function aggregateDailyStats(targetDayStr = null) {
        FROM payments 
        WHERE payment_status = 'completed' 
          AND currency = 'XTR' 
-         AND paid_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+         AND paid_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const revenueXtr = revXtrRes.rows[0].sum || 0;
 
@@ -3416,10 +3431,16 @@ export async function aggregateDailyStats(targetDayStr = null) {
 
     // 11. Заполнение детальной пользовательской активности за эти сутки
     await client.query(
+      `DELETE FROM analytics_user_daily WHERE day = $1::date AND user_id = ANY($2::bigint[])`,
+      [day, excludedAnalyticsUserIds]
+    );
+    await client.query(
       `WITH active_users AS (
-         SELECT DISTINCT user_id FROM public.analytics_events WHERE created_at BETWEEN $2 AND $3
+         SELECT DISTINCT user_id FROM public.analytics_events
+         WHERE created_at BETWEEN $2 AND $3 AND NOT (user_id = ANY($4::bigint[]))
          UNION
-         SELECT DISTINCT user_id FROM public.downloads_log WHERE downloaded_at BETWEEN $2 AND $3
+         SELECT DISTINCT user_id FROM public.downloads_log
+         WHERE downloaded_at BETWEEN $2 AND $3 AND NOT (user_id = ANY($4::bigint[]))
        )
        INSERT INTO analytics_user_daily (day, user_id, downloads_count, searches_count, limits_reached_count, primary_source)
        SELECT 
@@ -3436,7 +3457,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
            searches_count = EXCLUDED.searches_count,
            limits_reached_count = EXCLUDED.limits_reached_count,
            primary_source = EXCLUDED.primary_source`,
-      [day, mskStart, mskEnd]
+      [day, mskStart, mskEnd, excludedAnalyticsUserIds]
     );
 
     await client.query('COMMIT');
@@ -3627,12 +3648,14 @@ export async function getBroadcastTaskStats(broadcastId) {
 export async function getExcelAnalyticsData(startDate, endDate) {
   const mskStart = `${startDate}T00:00:00+03:00`;
   const mskEnd = `${endDate}T23:59:59.999+03:00`;
+  const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+  const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
 
   // 1. Summary from analytics_daily & payments
-  const totalUsersRes = await query(`SELECT COUNT(*)::int FROM users`);
+  const totalUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE NOT (id = ANY($1::bigint[]))`, [excludedAnalyticsUserIds]);
   const totalUsers = totalUsersRes.rows[0].count || 0;
 
-  const newUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2`, [mskStart, mskEnd]);
+  const newUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2 AND NOT (id = ANY($3::bigint[]))`, [mskStart, mskEnd, excludedAnalyticsUserIds]);
   const newUsers = newUsersRes.rows[0].count || 0;
 
   const dailyAggRes = await query(
@@ -3650,8 +3673,9 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   const revRubRes = await query(
     `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum, COUNT(*)::int AS count
      FROM payments
-     WHERE payment_status = 'completed' AND currency = 'RUB' AND paid_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE payment_status = 'completed' AND currency = 'RUB' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const revenueRub = (revRubRes.rows[0].sum || 0) / 100.0;
   const paymentsRubCount = revRubRes.rows[0].count || 0;
@@ -3659,8 +3683,9 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   const revStarsRes = await query(
     `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum, COUNT(*)::int AS count
      FROM payments
-     WHERE payment_status = 'completed' AND currency = 'XTR' AND paid_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE payment_status = 'completed' AND currency = 'XTR' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const revenueStars = revStarsRes.rows[0].sum || 0;
   const paymentsStarsCount = revStarsRes.rows[0].count || 0;
@@ -3670,43 +3695,48 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   // 2. Funnel
   const searchedUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
-     WHERE event_name = 'track_search_started' AND created_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE event_name = 'track_search_started' AND created_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const searchedUsers = searchedUsersRes.rows[0].count || 0;
 
   const downloadedUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int AS count FROM downloads_log 
-     WHERE downloaded_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE downloaded_at BETWEEN $1 AND $2 AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const downloadedUsers = downloadedUsersRes.rows[0].count || 0;
 
   const reachedLimitUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
-     WHERE event_name = 'daily_limit_reached' AND created_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE event_name = 'daily_limit_reached' AND created_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const reachedLimitUsers = reachedLimitUsersRes.rows[0].count || 0;
 
   const openedTariffsUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
-     WHERE event_name = 'star_payment_option_shown' AND created_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE event_name = 'star_payment_option_shown' AND created_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const openedTariffsUsers = openedTariffsUsersRes.rows[0].count || 0;
 
   const startedPaymentUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events 
-     WHERE event_name IN ('payment_method_selected', 'star_invoice_created') AND created_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE event_name IN ('payment_method_selected', 'star_invoice_created') AND created_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const startedPaymentUsers = startedPaymentUsersRes.rows[0].count || 0;
 
   const paidUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int AS count FROM payments 
-     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const paidUsers = paidUsersRes.rows[0].count || 0;
 
@@ -3729,9 +3759,10 @@ export async function getExcelAnalyticsData(startDate, endDate) {
        COUNT(*) FILTER (WHERE plan = 'unlim')::int AS unlim
      FROM payments
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))
      GROUP BY paid_at::date
      ORDER BY day ASC`,
-    [mskStart, mskEnd]
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const tariffs = tariffsRes.rows;
 
@@ -3746,9 +3777,10 @@ export async function getExcelAnalyticsData(startDate, endDate) {
        COUNT(*)::int AS count
      FROM payments
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))
      GROUP BY paid_at::date, payment_method, currency, amount_minor, plan
      ORDER BY date DESC`,
-    [mskStart, mskEnd]
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const paymentsList = paymentsRes.rows;
 
@@ -3836,6 +3868,12 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   );
   const dailyStats = dailyStatsRes.rows;
 
+  // Read-only payment-loss analytics uses the same period and attribution contract
+  // as the admin tab. Dynamic import avoids a module-initialization cycle because
+  // the service itself uses this module's parameterized query helper.
+  const { getPaymentLossAnalytics } = await import('./services/paymentLossAnalyticsService.js');
+  const paymentLoss = await getPaymentLossAnalytics({ startDate, endDate, window: '24h' });
+
   return {
     startDate,
     endDate,
@@ -3855,17 +3893,23 @@ export async function getExcelAnalyticsData(startDate, endDate) {
     payments: paymentsList,
     campaigns,
     languages,
-    daily_stats: dailyStats
+    daily_stats: dailyStats,
+    payment_loss: paymentLoss
   };
 }
 
 export async function getPeriodComparisonData(startA, endA, startB, endB) {
+  const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+  const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
   const getMetrics = async (start, end) => {
     const mskStart = `${start}T00:00:00+03:00`;
     const mskEnd = `${end}T23:59:59.999+03:00`;
 
     // 1. Registrations
-    const regRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2`, [mskStart, mskEnd]);
+    const regRes = await query(
+      `SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2 AND NOT (id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
+    );
     const registrations = regRes.rows[0].count || 0;
 
     // 2. Daily metrics from analytics_daily
@@ -3889,22 +3933,25 @@ export async function getPeriodComparisonData(startA, endA, startB, endB) {
     // 3. Financials
     const rubRes = await query(
       `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum FROM payments 
-       WHERE payment_status = 'completed' AND currency = 'RUB' AND paid_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+       WHERE payment_status = 'completed' AND currency = 'RUB' AND paid_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const revRub = (rubRes.rows[0].sum || 0) / 100.0;
 
     const xtrRes = await query(
       `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum FROM payments 
-       WHERE payment_status = 'completed' AND currency = 'XTR' AND paid_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+       WHERE payment_status = 'completed' AND currency = 'XTR' AND paid_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const revStars = xtrRes.rows[0].sum || 0;
 
     const payingUsersRes = await query(
       `SELECT COUNT(DISTINCT user_id)::int FROM payments 
-       WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
-      [mskStart, mskEnd]
+       WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [mskStart, mskEnd, excludedAnalyticsUserIds]
     );
     const payingUsers = payingUsersRes.rows[0].count || 0;
 
@@ -3951,6 +3998,8 @@ export async function getPeriodComparisonData(startA, endA, startB, endB) {
 }
 
 export async function getCohortRetentionData() {
+  const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+  const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
   const sql = `
     WITH cohorts AS (
       SELECT 
@@ -3958,6 +4007,7 @@ export async function getCohortRetentionData() {
         created_at::date AS reg_date,
         DATE_TRUNC('month', created_at)::date AS cohort_month
       FROM users
+      WHERE NOT (id = ANY($1::bigint[]))
     ),
     retention AS (
       SELECT 
@@ -3990,11 +4040,13 @@ export async function getCohortRetentionData() {
     ORDER BY r.cohort_month DESC
     LIMIT 12
   `;
-  const { rows } = await query(sql);
+  const { rows } = await query(sql, [excludedAnalyticsUserIds]);
   return rows;
 }
 
 export async function getRevenueDashboardData(startDate, endDate) {
+  const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+  const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
   const rateResult = await query(
     `SELECT COALESCE(
        (SELECT value::numeric FROM app_settings WHERE key = 'xtr_rub_rate'),
@@ -4016,8 +4068,9 @@ export async function getRevenueDashboardData(startDate, endDate) {
        COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'RUB'), 0) / 100.0 AS rub,
        COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'XTR'), 0) AS stars
      FROM payments
-     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
-    [todayMskStart, todayMskEnd]
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [todayMskStart, todayMskEnd, excludedAnalyticsUserIds]
   );
   const today = {
     count: toFiniteNumber(todayRes.rows[0]?.count),
@@ -4032,8 +4085,9 @@ export async function getRevenueDashboardData(startDate, endDate) {
        COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'RUB'), 0) / 100.0 AS rub,
        COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'XTR'), 0) AS stars
      FROM payments
-     WHERE payment_status = 'completed' AND paid_at >= $1`,
-    [rollingStart]
+     WHERE payment_status = 'completed' AND paid_at >= $1
+       AND NOT (user_id = ANY($2::bigint[]))`,
+    [rollingStart, excludedAnalyticsUserIds]
   );
   const mrrData = {
     rub: toFiniteNumber(mrrRes.rows[0]?.rub),
@@ -4048,8 +4102,9 @@ export async function getRevenueDashboardData(startDate, endDate) {
        COALESCE(SUM(amount_minor) FILTER (WHERE currency = 'XTR'), 0) AS stars,
        COUNT(DISTINCT user_id)::int AS paying_users
      FROM payments
-     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const rev = {
     rub: toFiniteNumber(revenueRes.rows[0]?.rub),
@@ -4060,15 +4115,19 @@ export async function getRevenueDashboardData(startDate, endDate) {
   const arppu = rev.paying_users > 0 ? (totalRevenueRubEquivalent / rev.paying_users) : 0;
 
   // Conversion Free -> Paid (users registered in period who paid)
-  const regUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2`, [mskStart, mskEnd]);
+  const regUsersRes = await query(
+    `SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2 AND NOT (id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
+  );
   const totalRegistered = toFiniteNumber(regUsersRes.rows[0]?.count);
 
   const payingRegUsersRes = await query(
     `SELECT COUNT(DISTINCT u.id)::int 
      FROM users u
      JOIN payments p ON p.user_id = u.id AND p.payment_status = 'completed'
-     WHERE u.created_at BETWEEN $1 AND $2`,
-    [mskStart, mskEnd]
+     WHERE u.created_at BETWEEN $1 AND $2
+       AND NOT (u.id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   const payingRegistered = toFiniteNumber(payingRegUsersRes.rows[0]?.count);
   const conversionFreePaid = totalRegistered > 0 ? (payingRegistered / totalRegistered * 100) : 0;
@@ -4082,9 +4141,10 @@ export async function getRevenueDashboardData(startDate, endDate) {
        SUM(amount_minor) AS sum_minor
      FROM payments
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
+       AND NOT (user_id = ANY($3::bigint[]))
      GROUP BY payment_method, currency
      ORDER BY count DESC`,
-    [mskStart, mskEnd]
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
   
   const breakdown = breakdownRes.rows.map(row => {
@@ -4119,6 +4179,8 @@ export async function getRevenueDashboardData(startDate, endDate) {
 }
 
 export async function getAIRecommendationsData() {
+  const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+  const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
   const getMoscowDateStrForOffset = (offsetDays) => {
     const d = new Date(Date.now() - offsetDays * 86400000);
     return d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
@@ -4173,14 +4235,15 @@ export async function getAIRecommendationsData() {
   // Active users reached limit percentage
   const activeUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int FROM analytics_user_daily 
-     WHERE day BETWEEN $1 AND $2`,
-    [startA, endA]
+     WHERE day BETWEEN $1 AND $2 AND NOT (user_id = ANY($3::bigint[]))`,
+    [startA, endA, excludedAnalyticsUserIds]
   );
   const activeUsersCount = activeUsersRes.rows[0].count || 1;
   const limitReachedUsersRes = await query(
     `SELECT COUNT(DISTINCT user_id)::int FROM analytics_user_daily 
-     WHERE day BETWEEN $1 AND $2 AND limits_reached_count > 0`,
-    [startA, endA]
+     WHERE day BETWEEN $1 AND $2 AND limits_reached_count > 0
+       AND NOT (user_id = ANY($3::bigint[]))`,
+    [startA, endA, excludedAnalyticsUserIds]
   );
   const limitReachedUsersCount = limitReachedUsersRes.rows[0].count || 0;
   const limitReachedPct = (limitReachedUsersCount / activeUsersCount) * 100;

@@ -15,6 +15,7 @@ SHEET_PAYMENTS = 'Платежи'
 SHEET_CAMPAIGNS = 'Рассылки'
 SHEET_LANGUAGES = 'Языки'
 SHEET_DAILY = 'Дневная статистика'
+SHEET_PAYMENT_LOSS = 'Потери в оплате'
 
 
 def number(value, default=0):
@@ -112,6 +113,7 @@ def main():
     payments = data.get('payments', [])
     campaigns = data.get('campaigns', [])
     language_rows = data.get('languages', [])
+    payment_loss = data.get('payment_loss', {})
 
     start_date = display_date(data.get('startDate'))
     end_date = display_date(data.get('endDate'))
@@ -306,7 +308,8 @@ def main():
     navigation = [
         ('📈 Dashboard', SHEET_DASHBOARD), ('→ Воронка', SHEET_FUNNEL),
         ('→ Платежи', SHEET_PAYMENTS), ('→ Рассылки', SHEET_CAMPAIGNS),
-        ('→ Языки', SHEET_LANGUAGES), ('→ Дневная статистика', SHEET_DAILY)
+        ('→ Языки', SHEET_LANGUAGES), ('→ Дневная статистика', SHEET_DAILY),
+        ('→ Потери в оплате', SHEET_PAYMENT_LOSS)
     ]
     for index, (label, sheet_name) in enumerate(navigation):
         row = 19 + index // 3
@@ -337,7 +340,8 @@ def main():
     dashboard_nav = [
         ('Executive Summary', SHEET_EXECUTIVE), ('Воронка', SHEET_FUNNEL),
         ('Платежи', SHEET_PAYMENTS), ('Рассылки', SHEET_CAMPAIGNS),
-        ('Языки', SHEET_LANGUAGES), ('Дневная статистика', SHEET_DAILY)
+        ('Языки', SHEET_LANGUAGES), ('Дневная статистика', SHEET_DAILY),
+        ('Потери в оплате', SHEET_PAYMENT_LOSS)
     ]
     for index, (label, sheet_name) in enumerate(dashboard_nav):
         dashboard.write_url(5, 1 + index, f"internal:'{sheet_name}'!A1", nav_format, label)
@@ -632,6 +636,156 @@ def main():
     daily.set_column('C:C', 12)
     daily.set_column('J:J', 12)
     daily.set_column('L:L', 12)
+
+    # ================================================================
+    # SHEET 9: Payment loss analytics
+    # ================================================================
+    payment_loss_sheet = workbook.add_worksheet(SHEET_PAYMENT_LOSS)
+    configure_sheet(payment_loss_sheet, '#B54708')
+    write_back_link(payment_loss_sheet, link_format)
+    payment_loss_sheet.write('B2', 'Почему не купили', section_title_format)
+    payment_loss_sheet.write('B3', f'Уникальные пользователи · окно атрибуции 24 часа · {start_date} — {end_date}', subtitle_format)
+    completeness = payment_loss.get('dataCompleteness', {})
+    complete_from = completeness.get('completeFrom') or 'н/д'
+    completeness_note = completeness.get('note') or 'Полнота событий не определена'
+    payment_loss_sheet.merge_range(
+        'B4:H4',
+        f'Данные полноценно собираются с {complete_from}. {completeness_note}',
+        summary_text_format
+    )
+
+    def write_optional_number(row, col, value, cell_format, divisor=1):
+        if value is None or value == '':
+            payment_loss_sheet.write(row, col, 'н/д', cell_center)
+        else:
+            payment_loss_sheet.write_number(row, col, number(value) / divisor, cell_format)
+
+    payment_loss_sheet.write_row('B6', [
+        'Этап', 'Уникальные пользователи', 'События', 'От предыдущего',
+        'От входа', 'Потеря, чел.', 'Потеря, %'
+    ], header_format)
+    loss_funnel = payment_loss.get('funnel', [])
+    for index, row_data in enumerate(loss_funnel, start=7):
+        payment_loss_sheet.write(f'B{index}', row_data.get('label') or '—', cell_left)
+        payment_loss_sheet.write_number(f'C{index}', number(row_data.get('users')), integer_format)
+        payment_loss_sheet.write_number(f'D{index}', number(row_data.get('events')), integer_format)
+        write_optional_number(index - 1, 4, row_data.get('conversionFromPrevious'), percent_format, 100)
+        write_optional_number(index - 1, 5, row_data.get('conversionFromFirst'), percent_format, 100)
+        write_optional_number(index - 1, 6, row_data.get('dropoutUsers'), integer_format)
+        write_optional_number(index - 1, 7, row_data.get('dropoutPercent'), percent_format, 100)
+    if loss_funnel:
+        payment_loss_sheet.autofilter(f'B6:H{len(loss_funnel) + 6}')
+        payment_loss_sheet.conditional_format(f'H7:H{len(loss_funnel) + 6}', {
+            'type': '3_color_scale', 'min_color': '#D1FADF', 'mid_color': '#FEF0C7', 'max_color': '#FEE4E2'
+        })
+
+    plan_start = max(14, len(loss_funnel) + 9)
+    payment_loss_sheet.write(plan_start, 1, 'Разрез по тарифам', section_title_format)
+    payment_loss_sheet.write_row(plan_start + 2, 1, [
+        'Тариф', 'Выбрали', 'Invoice', 'Pre-checkout', 'Оплатили',
+        'Конверсия', 'Среднее время, сек.', 'Скачиваний до меню', 'Достигали лимита'
+    ], header_format)
+    for offset, row_data in enumerate(payment_loss.get('plans', []), start=plan_start + 3):
+        payment_loss_sheet.write(offset, 1, row_data.get('plan') or '—', cell_left)
+        for col, key in enumerate(['selectedUsers', 'invoiceUsers', 'preCheckoutUsers', 'paymentUsers'], start=2):
+            payment_loss_sheet.write_number(offset, col, number(row_data.get(key)), integer_format)
+        write_optional_number(offset, 6, row_data.get('conversion'), percent_format, 100)
+        payment_loss_sheet.write_number(offset, 7, number(row_data.get('avgSecondsToPayment')), integer_format)
+        payment_loss_sheet.write_number(offset, 8, number(row_data.get('avgDownloadsBefore')), integer_format)
+        payment_loss_sheet.write_number(offset, 9, number(row_data.get('reachedLimitUsers')), integer_format)
+
+    alternative = payment_loss.get('alternative', {})
+    alt_row = plan_start + 9
+    payment_loss_sheet.write(alt_row, 1, 'Альтернативная оплата', section_title_format)
+    payment_loss_sheet.write_row(alt_row + 2, 1, ['Открыли', 'Оплатили RUB 24ч', 'Конверсия 24ч', 'Оплатили RUB 7д', 'Конверсия 7д'], header_format)
+    payment_loss_sheet.write_number(alt_row + 3, 1, number(alternative.get('openedUsers')), integer_format)
+    payment_loss_sheet.write_number(alt_row + 3, 2, number(alternative.get('paid24hUsers')), integer_format)
+    write_optional_number(alt_row + 3, 3, alternative.get('conversion24h'), percent_format, 100)
+    payment_loss_sheet.write_number(alt_row + 3, 4, number(alternative.get('paid7dUsers')), integer_format)
+    write_optional_number(alt_row + 3, 5, alternative.get('conversion7d'), percent_format, 100)
+
+    payment_loss_sheet.write_row(alt_row + 5, 1, ['Способ', 'Пользователи', 'Запросы', 'RUB 24ч', 'RUB 7д', 'Конверсия 24ч', 'Конверсия 7д', 'Среднее до оплаты, сек.'], header_format)
+    for offset, row_data in enumerate(alternative.get('methods', []), start=alt_row + 6):
+        payment_loss_sheet.write(offset, 1, row_data.get('method') or 'Другой способ', cell_left)
+        for col, key in enumerate(['openedUsers', 'requestEvents', 'paid24hUsers', 'paid7dUsers'], start=2):
+            payment_loss_sheet.write_number(offset, col, number(row_data.get(key)), integer_format)
+        write_optional_number(offset, 6, row_data.get('conversion24h'), percent_format, 100)
+        write_optional_number(offset, 7, row_data.get('conversion7d'), percent_format, 100)
+        write_optional_number(offset, 8, row_data.get('avgSecondsToPayment'), integer_format)
+
+    source_row = alt_row + max(12, len(alternative.get('methods', [])) + 9)
+    payment_loss_sheet.write(source_row, 1, 'Источник последнего скачивания перед тарифами', section_title_format)
+    payment_loss_sheet.write_row(source_row + 2, 1, ['Источник', 'Путь', 'Пользователи', 'Скачивания', 'Ошибки', 'Лимит', 'Выбор тарифа', 'Invoice', 'Pre-checkout', 'Платящие', 'Конверсия', 'D1', 'D7'], header_format)
+    for offset, row_data in enumerate(payment_loss.get('contentSources', []), start=source_row + 3):
+        payment_loss_sheet.write(offset, 1, row_data.get('source') or 'Не определён', cell_left)
+        payment_loss_sheet.write(offset, 2, row_data.get('entrySource') or 'Не определён', cell_left)
+        for col, key in enumerate(['users','successfulDownloads','errors','reachedLimitUsers','selectedUsers','invoiceUsers','preCheckoutUsers','payers'], start=3):
+            write_optional_number(offset, col, row_data.get(key), integer_format)
+        write_optional_number(offset, 11, row_data.get('conversion'), percent_format, 100)
+        payment_loss_sheet.write_number(offset, 12, number(row_data.get('returnedD1')), integer_format)
+        payment_loss_sheet.write_number(offset, 13, number(row_data.get('returnedD7')), integer_format)
+
+    error_row = source_row + max(8, len(payment_loss.get('contentSources', [])) + 5)
+    payment_loss_sheet.write(error_row, 1, 'Подтверждённые ошибки оплаты', section_title_format)
+    payment_loss_sheet.write_row(error_row + 2, 1, ['Категория', 'Пользователи', 'События'], header_format)
+    for offset, row_data in enumerate(payment_loss.get('paymentErrors', []), start=error_row + 3):
+        payment_loss_sheet.write(offset, 1, row_data.get('category') or 'Прочая техническая ошибка', cell_left)
+        payment_loss_sheet.write_number(offset, 2, number(row_data.get('users')), integer_format)
+        payment_loss_sheet.write_number(offset, 3, number(row_data.get('events')), integer_format)
+
+    segment_row = error_row + max(8, len(payment_loss.get('paymentErrors', [])) + 5)
+    payment_loss_sheet.write(segment_row, 1, 'Сегменты пользователей', section_title_format)
+    payment_loss_sheet.write_row(segment_row + 2, 1, ['Сегмент', 'Пользователи', 'Платящие', 'Конверсия'], header_format)
+    for offset, row_data in enumerate(payment_loss.get('segments', []), start=segment_row + 3):
+        payment_loss_sheet.write(offset, 1, row_data.get('segment') or '—', cell_left)
+        payment_loss_sheet.write_number(offset, 2, number(row_data.get('users')), integer_format)
+        payment_loss_sheet.write_number(offset, 3, number(row_data.get('payers')), integer_format)
+        write_optional_number(offset, 4, row_data.get('conversion'), percent_format, 100)
+
+    behavior_row = segment_row + max(14, len(payment_loss.get('segments', [])) + 5)
+    payment_loss_sheet.write(behavior_row, 1, 'Поведение после незавершённой оплаты', section_title_format)
+    payment_loss_sheet.write_row(behavior_row + 2, 1, ['Метрика', 'Пользователи'], header_format)
+    for offset, (key, value) in enumerate(payment_loss.get('postFunnel', {}).items(), start=behavior_row + 3):
+        payment_loss_sheet.write(offset, 1, key, cell_left)
+        payment_loss_sheet.write_number(offset, 2, number(value), integer_format)
+
+    derived_row = behavior_row + max(15, len(payment_loss.get('postFunnel', {})) + 5)
+    payment_loss_sheet.write(derived_row, 1, 'Производные метрики', section_title_format)
+    payment_loss_sheet.write_row(derived_row + 2, 1, ['Метрика', 'Значение'], header_format)
+    for offset, (key, value) in enumerate(payment_loss.get('derivedMetrics', {}).items(), start=derived_row + 3):
+        payment_loss_sheet.write(offset, 1, key, cell_left)
+        write_optional_number(offset, 2, value, cell_center)
+
+    context_row = derived_row + max(15, len(payment_loss.get('derivedMetrics', {})) + 5)
+    payment_loss_sheet.write(context_row, 1, 'Контекст скачиваний', section_title_format)
+    payment_loss_sheet.write_row(context_row + 2, 1, ['Метрика', 'Значение'], header_format)
+    download_context = payment_loss.get('downloadContext', {})
+    for offset, (key, value) in enumerate(download_context.items(), start=context_row + 3):
+        payment_loss_sheet.write(offset, 1, key, cell_left)
+        if isinstance(value, (list, dict)):
+            payment_loss_sheet.write(offset, 2, ', '.join(value) if isinstance(value, list) else json.dumps(value, ensure_ascii=False), cell_left)
+        elif isinstance(value, bool):
+            payment_loss_sheet.write(offset, 2, 'да' if value else 'нет', cell_center)
+        else:
+            write_optional_number(offset, 2, value, cell_center)
+
+    contract_row = context_row + max(14, len(download_context) + 5)
+    payment_loss_sheet.write(contract_row, 1, 'Аудит контракта событий', section_title_format)
+    payment_loss_sheet.write_row(contract_row + 2, 1, [
+        'Событие', 'События', 'Пользователи', 'plan', 'placement',
+        'order_id', 'payment_method', 'source', 'deduplication_key'
+    ], header_format)
+    for offset, row_data in enumerate(payment_loss.get('eventContract', []), start=contract_row + 3):
+        fields = row_data.get('fields', {})
+        payment_loss_sheet.write(offset, 1, row_data.get('eventName') or '—', cell_left)
+        payment_loss_sheet.write_number(offset, 2, number(row_data.get('events')), integer_format)
+        payment_loss_sheet.write_number(offset, 3, number(row_data.get('users')), integer_format)
+        for col, key in enumerate(['plan', 'placement', 'orderId', 'paymentMethod', 'source', 'deduplicationKey'], start=4):
+            payment_loss_sheet.write(offset, col, 'да' if fields.get(key) else 'нет', cell_center)
+
+    payment_loss_sheet.freeze_panes(6, 1)
+    safe_autofit(payment_loss_sheet)
+    payment_loss_sheet.set_column('B:B', 32)
 
     workbook.close()
     print(f'Excel report successfully generated: {os.path.basename(output_path)}')

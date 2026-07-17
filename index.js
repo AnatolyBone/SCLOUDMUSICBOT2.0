@@ -2075,6 +2075,8 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
 
   try {
     const { query } = await import('./db.js');
+    const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+    const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
     
     // 1. Детальная статистика по дням
     const dailyRowsRes = await query(
@@ -2141,8 +2143,9 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
       `SELECT COUNT(DISTINCT user_id)::int AS count
        FROM public.analytics_events
        WHERE event_name = 'daily_limit_reached'
-         AND created_at BETWEEN $1::date AND ($2::date + 1)`,
-      [startDate, endDate]
+         AND created_at BETWEEN $1::date AND ($2::date + 1)
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [startDate, endDate, excludedAnalyticsUserIds]
     );
     const reachedLimit = reachedLimitRes.rows[0].count;
 
@@ -2151,8 +2154,9 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
       `SELECT COUNT(DISTINCT user_id)::int AS count
        FROM public.analytics_events
        WHERE event_name = 'download_attempt_over_limit'
-         AND created_at BETWEEN $1::date AND ($2::date + 1)`,
-      [startDate, endDate]
+         AND created_at BETWEEN $1::date AND ($2::date + 1)
+         AND NOT (user_id = ANY($3::bigint[]))`,
+      [startDate, endDate, excludedAnalyticsUserIds]
     );
     const attemptedOverLimit = attemptedOverLimitRes.rows[0].count;
 
@@ -2162,8 +2166,9 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
        FROM public.analytics_events a
        JOIN public.analytics_events b ON a.user_id = b.user_id AND b.event_name = 'daily_limit_reached' AND b.created_at < a.created_at
        WHERE a.event_name = 'star_payment_option_shown'
-         AND a.created_at BETWEEN $1::date AND ($2::date + 1)`,
-      [startDate, endDate]
+         AND a.created_at BETWEEN $1::date AND ($2::date + 1)
+         AND NOT (a.user_id = ANY($3::bigint[]))`,
+      [startDate, endDate, excludedAnalyticsUserIds]
     );
     const openedOffersAfterLimit = openedOffersAfterLimitRes.rows[0].count;
 
@@ -2173,8 +2178,9 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
        FROM public.payments a
        JOIN public.analytics_events b ON a.user_id = b.user_id AND b.event_name = 'daily_limit_reached' AND b.created_at < a.paid_at
        WHERE a.payment_status = 'completed'
-         AND a.paid_at BETWEEN $1::date AND ($2::date + 1)`,
-      [startDate, endDate]
+         AND a.paid_at BETWEEN $1::date AND ($2::date + 1)
+         AND NOT (a.user_id = ANY($3::bigint[]))`,
+      [startDate, endDate, excludedAnalyticsUserIds]
     );
     const paidAfterLimit = paidAfterLimitRes.rows[0].count;
 
@@ -2184,8 +2190,9 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
        FROM public.analytics_events a
        JOIN public.analytics_events b ON a.user_id = b.user_id AND b.event_name = 'daily_limit_reached'
        WHERE a.created_at::date = b.created_at::date + 1
-         AND b.created_at BETWEEN $1::date AND ($2::date + 1)`,
-      [startDate, endDate]
+         AND b.created_at BETWEEN $1::date AND ($2::date + 1)
+         AND NOT (a.user_id = ANY($3::bigint[]))`,
+      [startDate, endDate, excludedAnalyticsUserIds]
     );
     const returnedNextDay = returnedNextDayRes.rows[0].count;
 
@@ -2195,12 +2202,13 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
        FROM public.analytics_events e
        WHERE event_name = 'daily_limit_reached'
          AND created_at BETWEEN $1::date AND ($2::date + 1)
+         AND NOT (e.user_id = ANY($3::bigint[]))
          AND NOT EXISTS (
            SELECT 1 FROM public.analytics_events a
            WHERE a.user_id = e.user_id
              AND a.created_at > e.created_at
          )`,
-      [startDate, endDate]
+      [startDate, endDate, excludedAnalyticsUserIds]
     );
     const churnedAfterLimit = churnedAfterLimitRes.rows[0].count;
 
@@ -2427,6 +2435,28 @@ app.get('/admin/analytics/revenue', requireAuth, async (req, res) => {
     res.json({ ok: true, data });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/admin/analytics/payment-loss', requireAuth, async (req, res) => {
+  try {
+    const { getPaymentLossAnalytics } = await import('./services/paymentLossAnalyticsService.js');
+    res.json(await getPaymentLossAnalytics(req.query));
+  } catch (error) {
+    const isValidationError = /startDate|Date range/i.test(error.message);
+    console.error('[PaymentLoss] Analytics error:', error.message);
+    res.status(isValidationError ? 400 : 500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/admin/analytics/payment-loss/users', requireAuth, async (req, res) => {
+  try {
+    const { getPaymentLossUsers } = await import('./services/paymentLossAnalyticsService.js');
+    res.json(await getPaymentLossUsers(req.query));
+  } catch (error) {
+    const isValidationError = /startDate|Date range/i.test(error.message);
+    console.error('[PaymentLoss] Drilldown error:', error.message);
+    res.status(isValidationError ? 400 : 500).json({ ok: false, error: error.message });
   }
 });
 

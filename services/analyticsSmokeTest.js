@@ -17,6 +17,7 @@ import {
   getRetentionExplorer,
   getUserTimeline
 } from './userInsightsService.js';
+import { getPaymentLossAnalytics, getPaymentLossUsers } from './paymentLossAnalyticsService.js';
 
 function moscowDate(daysAgo = 0) {
   return new Date(Date.now() - daysAgo * 86_400_000)
@@ -139,6 +140,23 @@ export async function runAnalyticsSmokeTest() {
   await run('acquisition_sources', async () => {
     const sources = await getAcquisitionSourceExplorer({ startDate: yesterday, endDate: today });
     return { rows: sources.sources.length };
+  });
+  await run('payment_loss_analytics', async () => {
+    const report = await getPaymentLossAnalytics({ startDate: yesterday, endDate: today, window: '24h' });
+    const users = await getPaymentLossUsers({
+      startDate: yesterday, endDate: today, window: '24h', stage: 'menu', limit: 1
+    });
+    if (!report.derivedMetrics || !Array.isArray(report.eventContract) || !report.downloadContext) {
+      throw new Error('Payment-loss analytics response is incomplete.');
+    }
+    return {
+      stages: report.funnel.length,
+      plans: report.plans.length,
+      segments: report.segments.length,
+      sources: report.contentSources.length,
+      eventContractRows: report.eventContract.length,
+      users: users.users.length
+    };
   });
   await run('revenue_dashboard', async () => {
     await getRevenueDashboardData(yesterday, today);
