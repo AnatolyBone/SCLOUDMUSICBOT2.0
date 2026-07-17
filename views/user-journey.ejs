@@ -1,88 +1,337 @@
 <%- contentFor('styles') %>
 <style>
-  .insights-shell { max-width: 1600px; margin: 0 auto; }
-  .metric-card { border: 1px solid var(--bs-border-color); border-radius: .8rem; padding: 1rem; height: 100%; }
-  .metric-value { font-size: 1.6rem; font-weight: 700; }
-  .timeline { border-left: 2px solid var(--bs-border-color); margin-left: .75rem; padding-left: 1.5rem; }
-  .timeline-item { border: 1px solid var(--bs-border-color); border-radius: .75rem; padding: .85rem; margin-bottom: .8rem; background: var(--bs-tertiary-bg); }
-  .details-grid { display: grid; grid-template-columns: 170px 1fr; gap: .25rem 1rem; }
+  .admin-workspace { max-width: 1800px; margin: 0 auto; }
+  .workspace-header { gap: 1rem; }
+  .workspace-card {
+    border: 1px solid var(--bs-border-color);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+  .workspace-card:hover { transform: none; box-shadow: var(--shadow-sm); }
+  .workspace-tabs { gap: .35rem; border-bottom: 1px solid var(--bs-border-color); }
+  .workspace-tabs .nav-link {
+    border: 0;
+    border-bottom: 3px solid transparent;
+    border-radius: .65rem .65rem 0 0;
+    color: var(--bs-body-color);
+    padding: .75rem 1rem;
+    font-weight: 600;
+  }
+  .workspace-tabs .nav-link.active {
+    color: var(--bs-primary-color);
+    background: color-mix(in srgb, var(--bs-primary-color) 8%, transparent);
+    border-bottom-color: var(--bs-primary-color);
+  }
+  .filter-panel .card-body { padding: 1rem 1.25rem; }
+  .empty-state {
+    min-height: 260px;
+    display: grid;
+    place-items: center;
+    padding: 2rem;
+    text-align: center;
+    border: 1px dashed var(--bs-border-color);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bs-card-bg) 82%, var(--bs-primary-color) 2%);
+  }
+  .empty-state-icon {
+    width: 64px;
+    height: 64px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--bs-primary-color) 12%, transparent);
+    color: var(--bs-primary-color);
+    font-size: 1.75rem;
+  }
+  .journey-user-card .card-body { padding: 1.1rem 1.25rem; }
+  .journey-user-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1rem;
+  }
+  .journey-user-meta { min-width: 0; }
+  .journey-user-meta .value { font-weight: 650; overflow-wrap: anywhere; }
+  .journey-avatar {
+    width: 48px;
+    height: 48px;
+    display: grid;
+    place-items: center;
+    border-radius: 14px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--bs-primary-color), #6f42c1);
+    font-weight: 750;
+    flex: 0 0 auto;
+  }
+  .event-timeline { position: relative; padding-left: 2.6rem; }
+  .event-timeline::before {
+    content: '';
+    position: absolute;
+    left: 1rem;
+    top: .65rem;
+    bottom: .75rem;
+    width: 2px;
+    background: var(--bs-border-color);
+  }
+  .timeline-event { position: relative; margin-bottom: .85rem; }
+  .timeline-event::before {
+    content: '';
+    position: absolute;
+    left: -2.05rem;
+    top: 1.1rem;
+    width: .9rem;
+    height: .9rem;
+    border: 3px solid var(--bs-card-bg);
+    border-radius: 50%;
+    background: var(--event-color, var(--bs-primary-color));
+    box-shadow: 0 0 0 1px var(--bs-border-color);
+  }
+  .timeline-event .card-body { padding: .9rem 1rem; }
+  .timeline-icon {
+    width: 34px;
+    height: 34px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--event-color, var(--bs-primary-color)) 13%, transparent);
+    color: var(--event-color, var(--bs-primary-color));
+    flex: 0 0 auto;
+  }
+  .event-primary { --event-color: #0d6efd; }
+  .event-success { --event-color: #198754; }
+  .event-warning { --event-color: #d59000; }
+  .event-danger { --event-color: #dc3545; }
+  .event-info { --event-color: #0dcaf0; }
+  .event-secondary { --event-color: #6c757d; }
+  .details-grid { display: grid; grid-template-columns: minmax(120px, 170px) 1fr; gap: .3rem 1rem; }
   .details-grid dd { margin: 0; overflow-wrap: anywhere; }
+  .retention-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1rem;
+  }
+  .retention-card { border-top: 4px solid var(--bs-primary-color); }
+  .retention-card:hover { transform: none; }
+  .retention-rate { font-size: clamp(2rem, 3vw, 2.65rem); font-weight: 750; line-height: 1; }
+  .retention-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    padding: .55rem 0;
+    border-top: 1px solid var(--bs-border-color);
+  }
+  .retention-action {
+    border: 0;
+    padding: 0;
+    background: transparent !important;
+    font-weight: 750;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .retention-action:hover { transform: none; opacity: .75; }
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1rem;
+  }
+  .kpi-card { min-height: 126px; }
+  .kpi-card:hover { transform: none; }
+  .kpi-value { font-size: 1.7rem; font-weight: 750; line-height: 1.15; }
+  .source-bars { display: grid; gap: .9rem; }
+  .source-bar-track { height: .7rem; border-radius: 999px; overflow: hidden; background: var(--bs-tertiary-bg); }
+  .source-bar-fill { height: 100%; min-width: 3px; border-radius: inherit; background: linear-gradient(90deg, var(--bs-primary-color), #6f42c1); }
+  .source-toggle {
+    padding: .15rem .35rem;
+    border: 0;
+    background: transparent !important;
+    color: var(--bs-primary-color);
+  }
+  .source-toggle:hover { transform: none; opacity: .75; }
+  .source-raw-row td { background: var(--bs-tertiary-bg); }
+  .raw-source-list { display: flex; flex-wrap: wrap; gap: .45rem; }
+  .pagination-panel { min-height: 42px; }
+
+  @media (max-width: 1199.98px) {
+    .journey-user-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .retention-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 767.98px) {
+    .workspace-header { align-items: flex-start !important; }
+    .workspace-tabs { gap: 0; overflow-x: auto; flex-wrap: nowrap; }
+    .workspace-tabs .nav-link { padding: .65rem .45rem; font-size: .86rem; white-space: nowrap; }
+    .journey-user-card .card-body > .d-flex { flex-wrap: wrap; }
+    .journey-user-card .card-body > .d-flex .btn { width: 100%; margin-left: 0 !important; }
+    .journey-user-grid, .retention-grid, .kpi-grid { grid-template-columns: 1fr; }
+    .event-timeline { padding-left: 2rem; }
+    .event-timeline::before { left: .65rem; }
+    .timeline-event::before { left: -1.78rem; }
+    .timeline-event-header { align-items: flex-start !important; }
+    .timeline-event time { display: block; margin-top: .35rem; }
+    .details-grid { grid-template-columns: 1fr; gap: .15rem; }
+    .details-grid dt { margin-top: .35rem; }
+    .filter-panel .btn { width: 100%; }
+  }
 </style>
 
-<div class="insights-shell">
-  <div class="d-flex justify-content-between align-items-start mb-4">
-    <div><h1 class="h2 mb-1"><i class="bi bi-signpost-split-fill text-primary me-2"></i>Путь пользователя</h1>
-      <p class="text-muted mb-0">Event Timeline, Retention Explorer и источники привлечения.</p></div>
-    <span class="badge text-bg-light border">Europe/Moscow</span>
-  </div>
+<%- contentFor('body') %>
+<%# Compatibility note: Observed LTV is displayed below as «Наблюдаемый LTV». %>
+<div class="admin-workspace">
+  <header class="workspace-header d-flex justify-content-between align-items-center flex-wrap mb-3">
+    <div>
+      <h1 class="h3 mb-1"><i class="bi bi-signpost-split-fill text-primary me-2"></i>Путь пользователя</h1>
+      <p class="text-muted mb-0">События, удержание и источники привлечения пользователей.</p>
+    </div>
+    <span class="badge text-bg-light border"><i class="bi bi-clock me-1"></i>Europe/Moscow</span>
+  </header>
 
-  <ul class="nav nav-tabs mb-4" role="tablist">
-    <li class="nav-item"><button class="nav-link active" id="timeline-tab" data-bs-toggle="tab" data-bs-target="#timeline-pane" type="button">Event Timeline</button></li>
-    <li class="nav-item"><button class="nav-link" id="retention-tab" data-bs-toggle="tab" data-bs-target="#retention-pane" type="button">Retention Explorer</button></li>
-    <li class="nav-item"><button class="nav-link" id="sources-tab" data-bs-toggle="tab" data-bs-target="#sources-pane" type="button">Источники</button></li>
+  <ul class="nav workspace-tabs mb-4" role="tablist" aria-label="Разделы пути пользователя">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="timeline-tab" data-bs-toggle="tab" data-bs-target="#timeline-pane" type="button" role="tab">
+        <i class="bi bi-list-stars me-1"></i>Путь пользователя
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="retention-tab" data-bs-toggle="tab" data-bs-target="#retention-pane" type="button" role="tab">
+        <i class="bi bi-people me-1"></i>Удержание
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="sources-tab" data-bs-toggle="tab" data-bs-target="#sources-pane" type="button" role="tab">
+        <i class="bi bi-diagram-3 me-1"></i>Источники
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content">
-    <section class="tab-pane fade show active" id="timeline-pane">
-      <form id="timeline-form" class="card shadow-sm mb-4"><div class="card-body"><div class="row g-3 align-items-end">
-        <div class="col-lg-4"><label class="form-label fw-semibold" for="timeline-user-id">Telegram user_id</label><input id="timeline-user-id" class="form-control" inputmode="numeric" value="<%= initialUserId %>" required></div>
-        <div class="col-lg-2"><label class="form-label" for="timeline-start">С даты</label><input id="timeline-start" type="date" class="form-control"></div>
-        <div class="col-lg-2"><label class="form-label" for="timeline-end">По дату</label><input id="timeline-end" type="date" class="form-control"></div>
-        <div class="col-lg-2"><label class="form-label" for="timeline-limit">Событий</label><select id="timeline-limit" class="form-select"><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></div>
-        <div class="col-lg-2 d-grid"><button type="submit" class="btn btn-primary">Показать путь</button></div>
-      </div></div></form>
-      <div id="timeline-alert" class="alert d-none"></div><div id="timeline-user-card" class="mb-3"></div>
-      <div id="timeline-results"></div><div id="timeline-pagination" class="text-center mt-3"></div>
+    <section class="tab-pane fade show active" id="timeline-pane" role="tabpanel" aria-labelledby="timeline-tab">
+      <form id="timeline-form" class="card workspace-card filter-panel mb-4">
+        <div class="card-body">
+          <div class="row g-3 align-items-end">
+            <div class="col-xl-4 col-md-6">
+              <label class="form-label small fw-semibold mb-1" for="timeline-user-id">Telegram ID пользователя</label>
+              <input id="timeline-user-id" class="form-control form-control-sm" inputmode="numeric" value="<%= initialUserId %>" placeholder="Например, 123456789" required>
+            </div>
+            <div class="col-xl-2 col-md-3 col-6">
+              <label class="form-label small text-muted mb-1" for="timeline-start">С даты</label>
+              <input id="timeline-start" type="date" class="form-control form-control-sm">
+            </div>
+            <div class="col-xl-2 col-md-3 col-6">
+              <label class="form-label small text-muted mb-1" for="timeline-end">По дату</label>
+              <input id="timeline-end" type="date" class="form-control form-control-sm">
+            </div>
+            <div class="col-xl-2 col-md-6">
+              <label class="form-label small text-muted mb-1" for="timeline-limit">Событий на странице</label>
+              <select id="timeline-limit" class="form-select form-select-sm">
+                <option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
+              </select>
+            </div>
+            <div class="col-xl-2 col-md-6 d-grid">
+              <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-search me-1"></i>Найти</button>
+            </div>
+          </div>
+        </div>
+      </form>
+      <div id="timeline-alert" class="alert d-none"></div>
+      <div id="timeline-user-card" class="mb-3"></div>
+      <div id="timeline-results">
+        <div class="empty-state">
+          <div>
+            <span class="empty-state-icon mb-3"><i class="bi bi-signpost-split"></i></span>
+            <h2 class="h5 mb-2">Найдите пользователя</h2>
+            <p class="text-muted mb-0">Введите Telegram ID, чтобы увидеть последовательность событий и точки выхода из воронки.</p>
+          </div>
+        </div>
+      </div>
+      <div id="timeline-pagination" class="pagination-panel d-flex justify-content-center align-items-center mt-3"></div>
     </section>
 
-    <section class="tab-pane fade" id="retention-pane">
-      <form id="retention-form" class="card shadow-sm mb-4"><div class="card-body"><div class="row g-3 align-items-end">
-        <div class="col-lg-4"><label class="form-label" for="retention-start">Регистрация с</label><input id="retention-start" type="date" class="form-control" value="<%= defaultStartDate %>" required></div>
-        <div class="col-lg-4"><label class="form-label" for="retention-end">Регистрация по</label><input id="retention-end" type="date" class="form-control" value="<%= defaultEndDate %>" required></div>
-        <div class="col-lg-4 d-grid"><button type="submit" class="btn btn-primary">Рассчитать агрегаты</button></div>
-      </div></div></form>
-      <div id="retention-alert" class="alert d-none"></div><div id="retention-summary" class="row g-3 mb-4"></div>
-      <div id="retention-controls" class="card shadow-sm mb-3 d-none"><div class="card-body"><div class="row g-3 align-items-end">
-        <div class="col-md-3"><label class="form-label" for="retention-day">Контрольный день</label><select id="retention-day" class="form-select"><option value="1">D1</option><option value="7" selected>D7</option><option value="30">D30</option><option value="90">D90</option></select></div>
-        <div class="col-md-5"><label class="form-label" for="retention-segment">Сегмент</label><select id="retention-segment" class="form-select"><option value="not_returned">Не вернулись к контрольному дню</option><option value="returned">Вернулись</option><option value="all">Все eligible</option></select></div>
-        <div class="col-md-4 d-grid"><button id="retention-load-users" type="button" class="btn btn-outline-primary">Загрузить список</button></div>
-      </div></div></div>
-      <div id="retention-users"></div><nav id="retention-pagination" class="d-flex justify-content-between mt-3"></nav>
+    <section class="tab-pane fade" id="retention-pane" role="tabpanel" aria-labelledby="retention-tab">
+      <form id="retention-form" class="card workspace-card filter-panel mb-4">
+        <div class="card-body">
+          <div class="row g-3 align-items-end">
+            <div class="col-md-4"><label class="form-label small text-muted mb-1" for="retention-start">Регистрация с</label><input id="retention-start" type="date" class="form-control form-control-sm" value="<%= defaultStartDate %>" required></div>
+            <div class="col-md-4"><label class="form-label small text-muted mb-1" for="retention-end">Регистрация по</label><input id="retention-end" type="date" class="form-control form-control-sm" value="<%= defaultEndDate %>" required></div>
+            <div class="col-md-4 d-grid"><button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-calculator me-1"></i>Рассчитать</button></div>
+          </div>
+        </div>
+      </form>
+      <div id="retention-alert" class="alert d-none"></div>
+      <div id="retention-summary" class="retention-grid mb-4"></div>
+      <div id="retention-controls" class="card workspace-card filter-panel mb-3 d-none">
+        <div class="card-body">
+          <div class="row g-3 align-items-end">
+            <div class="col-md-3"><label class="form-label small text-muted mb-1" for="retention-day">Контрольный день</label><select id="retention-day" class="form-select form-select-sm"><option value="1">D1</option><option value="7" selected>D7</option><option value="30">D30</option><option value="90">D90</option></select></div>
+            <div class="col-md-5"><label class="form-label small text-muted mb-1" for="retention-segment">Сегмент</label><select id="retention-segment" class="form-select form-select-sm"><option value="not_returned">Не вернулись к контрольному дню</option><option value="returned">Вернулись</option><option value="all">Все доступные для расчёта</option></select></div>
+            <div class="col-md-4 d-grid"><button id="retention-load-users" type="button" class="btn btn-sm btn-outline-primary"><i class="bi bi-person-lines-fill me-1"></i>Показать пользователей</button></div>
+          </div>
+        </div>
+      </div>
+      <div id="retention-users"></div>
+      <nav id="retention-pagination" class="pagination-panel d-flex justify-content-between align-items-center gap-2 mt-3"></nav>
     </section>
 
-    <section class="tab-pane fade" id="sources-pane">
-      <form id="sources-form" class="card shadow-sm mb-4"><div class="card-body"><div class="row g-3 align-items-end">
-        <div class="col-lg-4"><label class="form-label" for="sources-start">Когорта с</label><input id="sources-start" type="date" class="form-control" value="<%= defaultStartDate %>" required></div>
-        <div class="col-lg-4"><label class="form-label" for="sources-end">Когорта по</label><input id="sources-end" type="date" class="form-control" value="<%= defaultEndDate %>" required></div>
-        <div class="col-lg-4 d-grid"><button type="submit" class="btn btn-primary">Рассчитать</button></div>
-      </div><div class="form-text mt-2">Observed LTV — наблюдаемое значение за доступный период, не прогноз.</div></div></form>
-      <div id="sources-alert" class="alert d-none"></div><div id="sources-results"></div>
+    <section class="tab-pane fade" id="sources-pane" role="tabpanel" aria-labelledby="sources-tab">
+      <form id="sources-form" class="card workspace-card filter-panel mb-4">
+        <div class="card-body">
+          <div class="row g-3 align-items-end">
+            <div class="col-md-4"><label class="form-label small text-muted mb-1" for="sources-start">Когорта с</label><input id="sources-start" type="date" class="form-control form-control-sm" value="<%= defaultStartDate %>" required></div>
+            <div class="col-md-4"><label class="form-label small text-muted mb-1" for="sources-end">Когорта по</label><input id="sources-end" type="date" class="form-control form-control-sm" value="<%= defaultEndDate %>" required></div>
+            <div class="col-md-4 d-grid"><button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-bar-chart me-1"></i>Рассчитать</button></div>
+          </div>
+          <div class="form-text mt-2">Наблюдаемый LTV рассчитан за доступный период и не является прогнозом.</div>
+        </div>
+      </form>
+      <div id="sources-alert" class="alert d-none"></div>
+      <div id="sources-results"></div>
     </section>
   </div>
 </div>
 
 <script>
-  const SOURCE_LABELS = { organic:'Органика', unknown:'Неизвестно', referrals:'Рефералы', broadcasts:'Рассылки', advertising:'Реклама', vpn_bot:'VPN бот', yandex:'Яндекс', telegram_channel:'Telegram канал', other:'Другие' };
+  const SOURCE_LABELS = { organic:'Органика', unknown:'Неизвестно', referrals:'Рефералы', broadcasts:'Рассылки', advertising:'Реклама', vpn_bot:'VPN-бот', yandex:'Яндекс', telegram_channel:'Telegram-канал', other:'Другие' };
+  const TONE_LABELS = { primary:'Воронка', success:'Успех', warning:'Внимание', danger:'Ошибка', info:'Действие', secondary:'Система' };
   let timelineCursor = null;
   let timelineEvents = [];
   const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
   const number = (value, digits=0) => (Number.isFinite(Number(value)) ? Number(value) : 0).toLocaleString('ru-RU',{minimumFractionDigits:digits,maximumFractionDigits:digits});
-  const date = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}) : '—';
+  const date = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+  const shortDate = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}) : '—';
   function alertBox(id, message='') { const el=document.getElementById(id); el.className=message?'alert alert-danger':'alert d-none'; el.textContent=message; }
   async function json(url) { const response=await fetch(url,{headers:{Accept:'application/json'}}); const body=await response.json().catch(()=>({ok:false,error:'Некорректный ответ.'})); if(!response.ok||!body.ok) throw new Error(body.error||`HTTP ${response.status}`); return body.data; }
-  function details(data) { const entries=Object.entries(data||{}).filter(([,v])=>v!==null&&v!==''&&v!==undefined); return entries.length?`<details class="mt-2"><summary class="small text-primary">Детали</summary><dl class="details-grid small mt-2">${entries.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(typeof v==='object'?JSON.stringify(v):v)}</dd>`).join('')}</dl></details>`:''; }
+  function details(data) { const entries=Object.entries(data||{}).filter(([,v])=>v!==null&&v!==''&&v!==undefined); return entries.length?`<details class="mt-2"><summary class="small text-primary">Детали события</summary><dl class="details-grid small mt-2 mb-0">${entries.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(typeof v==='object'?JSON.stringify(v):v)}</dd>`).join('')}</dl></details>`:''; }
+  function userPlan(user) { const active=user.premium_until&&new Date(user.premium_until)>new Date(); if(!active)return 'Free'; if(user.premium_limit===null)return 'Unlimited'; if(Number(user.premium_limit)===30)return 'Plus'; if(Number(user.premium_limit)===100)return 'Pro'; return `Тариф ${number(user.premium_limit)}`; }
 
   function renderTimeline(data, append=false) {
-    timelineCursor=data.pagination.nextCursor; timelineEvents=append?timelineEvents.concat(data.events):data.events;
+    timelineCursor=data.pagination.nextCursor;
+    timelineEvents=append?timelineEvents.concat(data.events):data.events;
     const u=data.user;
-    document.getElementById('timeline-user-card').innerHTML=`<div class="card shadow-sm"><div class="card-body d-flex justify-content-between"><div><strong>${esc(u.first_name||u.username||u.id)}</strong><div class="small text-muted">ID ${esc(u.id)} · ${esc(SOURCE_LABELS[u.acquisitionCategory]||u.acquisitionCategory)}</div></div><div>Загружено: <strong>${number(timelineEvents.length)}</strong></div></div></div>`;
-    document.getElementById('timeline-results').innerHTML=timelineEvents.length?`<div class="timeline">${timelineEvents.map(e=>`<article class="timeline-item"><div class="d-flex justify-content-between"><div><span class="badge text-bg-${esc(e.tone)}"><i class="bi bi-${esc(e.icon)}"></i></span> <strong>${esc(e.label)}</strong> <span class="badge text-bg-light border">${esc(e.source)}</span></div><time class="small text-muted">${esc(date(e.occurredAt))}</time></div>${details(e.details)}</article>`).join('')}</div>`:'<div class="alert alert-info">Событий нет.</div>';
-    document.getElementById('timeline-pagination').innerHTML=data.pagination.hasMore?'<button id="timeline-load-more" type="button" class="btn btn-outline-primary">Показать ещё</button>':'<span class="small text-muted">Вся история выбранного периода загружена.</span>';
+    const name=u.first_name||u.username||`ID ${u.id}`;
+    document.getElementById('timeline-user-card').innerHTML=`
+      <div class="card workspace-card journey-user-card">
+        <div class="card-body">
+          <div class="d-flex align-items-center gap-3 mb-3">
+            <div class="journey-avatar">${esc(String(name).charAt(0).toUpperCase())}</div>
+            <div class="min-w-0"><h2 class="h5 mb-0 text-break">${esc(name)}</h2><div class="text-muted small">${u.username?`@${esc(u.username)} · `:''}ID ${esc(u.id)}</div></div>
+            <a class="btn btn-sm btn-outline-secondary ms-auto" href="/user/${encodeURIComponent(u.id)}"><i class="bi bi-person me-1"></i>Профиль</a>
+          </div>
+          <div class="journey-user-grid">
+            <div class="journey-user-meta"><div class="small text-muted">Тариф</div><div class="value"><span class="badge text-bg-primary">${esc(userPlan(u))}</span></div></div>
+            <div class="journey-user-meta"><div class="small text-muted">Регистрация</div><div class="value">${esc(date(u.created_at))}</div></div>
+            <div class="journey-user-meta"><div class="small text-muted">Последняя активность</div><div class="value">${esc(date(u.last_active))}</div></div>
+            <div class="journey-user-meta"><div class="small text-muted">Скачиваний</div><div class="value">${number(u.total_downloads)}</div></div>
+            <div class="journey-user-meta"><div class="small text-muted">Источник</div><div class="value">${esc(SOURCE_LABELS[u.acquisitionCategory]||u.acquisitionCategory||'—')}</div></div>
+          </div>
+        </div>
+      </div>`;
+    document.getElementById('timeline-results').innerHTML=timelineEvents.length?`<div class="event-timeline">${timelineEvents.map(e=>`<article class="card workspace-card timeline-event event-${esc(e.tone)}"><div class="card-body"><div class="timeline-event-header d-flex justify-content-between gap-3"><div class="d-flex align-items-start gap-2"><span class="timeline-icon"><i class="bi bi-${esc(e.icon)}"></i></span><div><div><strong>${esc(e.label)}</strong> <span class="badge text-bg-light border ms-1">${esc(TONE_LABELS[e.tone]||e.category||'Событие')}</span></div><div class="small text-muted mt-1">${esc(e.source)}</div></div></div><time class="small text-muted text-nowrap">${esc(date(e.occurredAt))}</time></div>${details(e.details)}</div></article>`).join('')}</div>`:'<div class="empty-state"><div><span class="empty-state-icon mb-3"><i class="bi bi-calendar2-x"></i></span><h2 class="h5">Событий нет</h2><p class="text-muted mb-0">В выбранном диапазоне событий пользователя не найдено.</p></div></div>';
+    document.getElementById('timeline-pagination').innerHTML=data.pagination.hasMore?`<button id="timeline-load-more" type="button" class="btn btn-sm btn-outline-primary"><i class="bi bi-chevron-down me-1"></i>Показать ещё</button>`:`<span class="small text-muted"><i class="bi bi-check-circle me-1"></i>Загружено событий: ${number(timelineEvents.length)}</span>`;
   }
   async function loadTimeline(append=false) {
     const userId=document.getElementById('timeline-user-id').value.trim(); alertBox('timeline-alert');
-    try { if(!/^\d{1,20}$/.test(userId)) throw new Error('Введите корректный user_id.');
-      if(!append){ timelineCursor=null; timelineEvents=[]; document.getElementById('timeline-results').innerHTML='<div class="text-center py-4"><div class="spinner-border"></div></div>'; }
+    try {
+      if(!/^\d{1,20}$/.test(userId)) throw new Error('Введите корректный user_id.');
+      if(!append){ timelineCursor=null; timelineEvents=[]; document.getElementById('timeline-user-card').innerHTML=''; document.getElementById('timeline-results').innerHTML='<div class="text-center py-5"><div class="spinner-border text-primary" role="status"></div><div class="small text-muted mt-2">Собираем события…</div></div>'; }
       const p=new URLSearchParams({limit:document.getElementById('timeline-limit').value});
       const start=document.getElementById('timeline-start').value,end=document.getElementById('timeline-end').value;
       if(start)p.set('startDate',start); if(end)p.set('endDate',end);
@@ -93,11 +342,20 @@
   }
 
   const retentionParams=()=>({startDate:document.getElementById('retention-start').value,endDate:document.getElementById('retention-end').value});
-  function metric(day,m){return `<div class="col-md-3"><div class="metric-card"><div class="d-flex justify-content-between"><strong>D${day}</strong><span class="badge text-bg-light border">eligible ${number(m.eligible)}</span></div><div class="metric-value mt-2">${m.rate===null?'—':number(m.rate,1)+'%'}</div>${m.rate===null?'<small class="text-muted">Когорта ещё молода</small>':''}<div class="mt-2"><button type="button" class="btn btn-link btn-sm p-0 me-2 retention-action" data-day="${day}" data-segment="returned">${number(m.returned)} вернулись</button><button type="button" class="btn btn-link btn-sm p-0 text-danger retention-action" data-day="${day}" data-segment="not_returned">${number(m.notReturned)} не вернулись к контрольному дню</button></div></div></div>`;}
-  async function loadRetentionSummary(){alertBox('retention-alert');try{const p=new URLSearchParams(retentionParams());const data=await json(`/admin/api/retention-explorer?${p}`);document.getElementById('retention-summary').innerHTML=[1,7,30,90].map(d=>metric(d,data.summary[`d${d}`])).join('');document.getElementById('retention-controls').classList.remove('d-none');document.getElementById('retention-users').innerHTML='<div class="alert alert-light border">Список загружается отдельно по клику.</div>';document.getElementById('retention-pagination').innerHTML='';}catch(e){alertBox('retention-alert',e.message);}}
-  async function loadRetentionUsers(page=1){alertBox('retention-alert');try{const p=new URLSearchParams({...retentionParams(),day:document.getElementById('retention-day').value,segment:document.getElementById('retention-segment').value,page:String(page),limit:'50'});const data=await json(`/admin/api/retention-explorer/users?${p}`);const rows=data.users.map(u=>`<tr><td><a href="/user/${encodeURIComponent(u.id)}">${esc(u.id)}</a><div class="small text-muted">@${esc(u.username||'—')}</div></td><td>${esc(date(u.createdAt))}</td><td>${esc(date(u.lastActive))}</td><td>${number(u.downloads)}</td><td>${u.reachedLimit?'Да':'Нет'}</td><td>${u.openedTariffs?'Да':'Нет'}</td><td>${u.receivedBroadcast?'Да':'Нет'}</td><td>${u.paid?'Да':'Нет'}</td><td><a class="btn btn-sm btn-outline-primary" href="/admin/user-journey?user_id=${encodeURIComponent(u.id)}">Timeline</a></td></tr>`).join('');document.getElementById('retention-users').innerHTML=`<div class="card shadow-sm"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>ID</th><th>Регистрация</th><th>Активность</th><th>Скачивания</th><th>Лимит</th><th>Тарифы</th><th>Рассылка</th><th>Оплата</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="9">Нет пользователей.</td></tr>'}</tbody></table></div></div>`;const pg=data.pagination;document.getElementById('retention-pagination').innerHTML=`<button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page-1}" ${pg.page<=1?'disabled':''}>← Назад</button><span>Страница ${pg.page} из ${pg.totalPages}; всего ${number(pg.total)}</span><button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page+1}" ${pg.page>=pg.totalPages?'disabled':''}>Далее →</button>`;}catch(e){alertBox('retention-alert',e.message);}}
+  function metric(day,m){return `<article class="card workspace-card retention-card"><div class="card-body"><div class="d-flex align-items-start justify-content-between mb-3"><div><div class="text-muted small">Контрольный день</div><h2 class="h5 mb-0">D${day}</h2></div><span class="badge text-bg-light border" title="Пользователи, для которых контрольный день уже наступил">Доступно: ${number(m.eligible)}</span></div><div class="retention-rate ${m.rate===null?'text-muted':'text-primary'}">${m.rate===null?'—':number(m.rate,1)+'%'}</div><div class="small text-muted mt-1 mb-3">${m.rate===null?'Когорта ещё не достигла контрольного дня':'вернулись в контрольный день'}</div><div class="retention-row"><span class="text-success"><i class="bi bi-arrow-return-left me-1"></i>Вернулись</span><button type="button" class="retention-action text-success" data-day="${day}" data-segment="returned" aria-label="Показать вернувшихся D${day}">${number(m.returned)}</button></div><div class="retention-row"><span class="text-danger"><i class="bi bi-person-dash me-1"></i>Не вернулись</span><button type="button" class="retention-action text-danger" data-day="${day}" data-segment="not_returned" aria-label="Показать не вернувшихся D${day}">${number(m.notReturned)}</button></div></div></article>`;}
+  async function loadRetentionSummary(){alertBox('retention-alert');try{const p=new URLSearchParams(retentionParams());const data=await json(`/admin/api/retention-explorer?${p}`);document.getElementById('retention-summary').innerHTML=[1,7,30,90].map(d=>metric(d,data.summary[`d${d}`])).join('');document.getElementById('retention-controls').classList.remove('d-none');document.getElementById('retention-users').innerHTML='<div class="empty-state"><div><span class="empty-state-icon mb-3"><i class="bi bi-person-lines-fill"></i></span><h2 class="h5">Выберите сегмент</h2><p class="text-muted mb-0">Нажмите число в карточке или используйте панель фильтров.</p></div></div>';document.getElementById('retention-pagination').innerHTML='';}catch(e){alertBox('retention-alert',e.message);}}
+  async function loadRetentionUsers(page=1){alertBox('retention-alert');try{const p=new URLSearchParams({...retentionParams(),day:document.getElementById('retention-day').value,segment:document.getElementById('retention-segment').value,page:String(page),limit:'50'});const data=await json(`/admin/api/retention-explorer/users?${p}`);const rows=data.users.map(u=>`<tr><td><a href="/user/${encodeURIComponent(u.id)}" class="fw-semibold">${esc(u.id)}</a><div class="small text-muted">${u.username?'@'+esc(u.username):'Без username'}</div></td><td>${esc(date(u.createdAt))}</td><td>${esc(date(u.lastActive))}</td><td>${number(u.downloads)}</td><td>${u.reachedLimit?'<span class="badge text-bg-warning">Да</span>':'Нет'}</td><td>${u.openedTariffs?'<span class="badge text-bg-info">Да</span>':'Нет'}</td><td>${u.receivedBroadcast?'Да':'Нет'}</td><td>${u.paid?'<span class="badge text-bg-success">Да</span>':'Нет'}</td><td><a class="btn btn-sm btn-outline-primary" href="/admin/user-journey?user_id=${encodeURIComponent(u.id)}">Путь</a></td></tr>`).join('');document.getElementById('retention-users').innerHTML=`<div class="card workspace-card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>ID</th><th>Регистрация</th><th>Активность</th><th>Скачивания</th><th>Лимит</th><th>Тарифы</th><th>Рассылка</th><th>Оплата</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="9" class="text-center text-muted py-4">Пользователей нет.</td></tr>'}</tbody></table></div></div>`;const pg=data.pagination;document.getElementById('retention-pagination').innerHTML=`<button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page-1}" ${pg.page<=1?'disabled':''}>← Назад</button><span class="small text-muted text-center">Страница ${pg.page} из ${pg.totalPages} · всего ${number(pg.total)}</span><button type="button" class="btn btn-sm btn-outline-secondary retention-page" data-page="${pg.page+1}" ${pg.page>=pg.totalPages?'disabled':''}>Далее →</button>`;}catch(e){alertBox('retention-alert',e.message);}}
 
-  async function loadSources(){alertBox('sources-alert');try{const p=new URLSearchParams({startDate:document.getElementById('sources-start').value,endDate:document.getElementById('sources-end').value});const data=await json(`/admin/api/acquisition-sources?${p}`);const rows=data.sources.map(s=>`<tr><td>${esc(SOURCE_LABELS[s.source]||s.source)}</td><td>${number(s.registrations)}</td><td>${number(s.payingUsers)}</td><td>${number(s.conversion,2)}%</td><td>${number(s.revenueRubEquivalent,2)} ₽</td><td>${number(s.ltv,2)} ₽</td><td>${number(s.arppu,2)} ₽</td><td>${s.retentionD7===null?'—':number(s.retentionD7,1)+'%'}</td></tr>`).join('');const raw=data.rawSources.map(s=>`<tr><td>${esc(s.rawSource)}</td><td>${esc(SOURCE_LABELS[s.normalizedSource]||s.normalizedSource)}</td><td>${number(s.registrations)}</td></tr>`).join('');document.getElementById('sources-results').innerHTML=`<div class="card shadow-sm mb-4"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Normalized source</th><th>Регистрации</th><th>Уникальные платящие</th><th>Конверсия</th><th>Completed revenue</th><th>Observed LTV</th><th>ARPPU</th><th>D7</th></tr></thead><tbody>${rows}</tbody></table></div></div><div class="card shadow-sm"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Raw source</th><th>Normalized source</th><th>Регистрации</th></tr></thead><tbody>${raw}</tbody></table></div></div>`;}catch(e){alertBox('sources-alert',e.message);}}
+  function renderSources(data){
+    const totals=data.sources.reduce((a,s)=>({registrations:a.registrations+s.registrations,payers:a.payers+s.payingUsers,revenue:a.revenue+s.revenueRubEquivalent,unknown:a.unknown+(s.source==='unknown'?s.registrations:0)}),{registrations:0,payers:0,revenue:0,unknown:0});
+    const known=Math.max(totals.registrations-totals.unknown,0); const knownShare=totals.registrations?known/totals.registrations*100:0; const unknownShare=totals.registrations?totals.unknown/totals.registrations*100:0; const maxRegistrations=Math.max(...data.sources.map(s=>s.registrations),1);
+    const rawBySource=data.rawSources.reduce((acc,row)=>{(acc[row.normalizedSource]??=[]).push(row);return acc;},{});
+    const kpis=[['bi-people','Регистрации',number(totals.registrations),'primary'],['bi-patch-check','Известный источник',number(knownShare,1)+'%','success'],['bi-question-circle','Неизвестный источник',number(unknownShare,1)+'%','warning'],['bi-person-check','Платящие',number(totals.payers),'info'],['bi-cash-coin','Подтверждённая выручка',number(totals.revenue,2)+' ₽','success']];
+    const bars=data.sources.map(s=>`<div><div class="d-flex justify-content-between gap-3 small mb-1"><span class="fw-semibold">${esc(SOURCE_LABELS[s.source]||s.source)}</span><span>${number(s.registrations)} регистраций</span></div><div class="source-bar-track" role="img" aria-label="${esc(SOURCE_LABELS[s.source]||s.source)}: ${number(s.registrations)}"><div class="source-bar-fill" style="width:${Math.max(1,s.registrations/maxRegistrations*100)}%"></div></div></div>`).join('');
+    const rows=data.sources.map((s,index)=>{const raw=rawBySource[s.source]||[];return `<tr><td><button type="button" class="source-toggle" data-target="source-raw-${index}" aria-expanded="false"><i class="bi bi-chevron-right me-1"></i></button><strong>${esc(SOURCE_LABELS[s.source]||s.source)}</strong></td><td>${number(s.registrations)}</td><td>${number(s.payingUsers)}</td><td>${number(s.conversion,2)}%</td><td>${number(s.revenueRubEquivalent,2)} ₽</td><td>${number(s.ltv,2)} ₽</td><td>${number(s.arppu,2)} ₽</td><td>${s.retentionD7===null?'—':number(s.retentionD7,1)+'%'}</td></tr><tr id="source-raw-${index}" class="source-raw-row d-none"><td colspan="8"><div class="small fw-semibold mb-2">Исходные источники</div><div class="raw-source-list">${raw.length?raw.map(r=>`<span class="badge text-bg-light border">${esc(r.rawSource)} · ${number(r.registrations)}</span>`).join(''):'<span class="text-muted small">Исходных значений нет</span>'}</div></td></tr>`;}).join('');
+    document.getElementById('sources-results').innerHTML=`<div class="kpi-grid mb-4">${kpis.map(([icon,label,value,tone])=>`<article class="card workspace-card kpi-card"><div class="card-body"><i class="bi ${icon} text-${tone} fs-4"></i><div class="small text-muted mt-2">${label}</div><div class="kpi-value mt-1">${value}</div></div></article>`).join('')}</div><div class="row g-4 mb-4"><div class="col-xl-4"><div class="card workspace-card h-100"><div class="card-body"><h2 class="h6 mb-3"><i class="bi bi-bar-chart-fill text-primary me-2"></i>Регистрации по источникам</h2><div class="source-bars">${bars||'<div class="text-muted">Нет данных</div>'}</div></div></div></div><div class="col-xl-8"><div class="card workspace-card h-100"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Нормализованный источник</th><th>Регистрации</th><th>Платящие</th><th>Конверсия</th><th>Подтверждённая выручка</th><th>Наблюдаемый LTV</th><th>ARPPU</th><th>D7</th></tr></thead><tbody>${rows||'<tr><td colspan="8" class="text-center text-muted py-4">Нет данных.</td></tr>'}</tbody></table></div></div></div></div>`;
+  }
+  async function loadSources(){alertBox('sources-alert');try{const p=new URLSearchParams({startDate:document.getElementById('sources-start').value,endDate:document.getElementById('sources-end').value});renderSources(await json(`/admin/api/acquisition-sources?${p}`));}catch(e){alertBox('sources-alert',e.message);}}
 
   document.getElementById('timeline-form').addEventListener('submit',e=>{e.preventDefault();loadTimeline();});
   document.getElementById('timeline-pagination').addEventListener('click',e=>{if(e.target.closest('#timeline-load-more'))loadTimeline(true);});
@@ -108,5 +366,6 @@
   document.getElementById('retention-tab').addEventListener('shown.bs.tab',()=>{if(!document.getElementById('retention-summary').children.length)loadRetentionSummary();});
   document.getElementById('sources-tab').addEventListener('shown.bs.tab',()=>{if(!document.getElementById('sources-results').children.length)loadSources();});
   document.getElementById('sources-form').addEventListener('submit',e=>{e.preventDefault();loadSources();});
+  document.getElementById('sources-results').addEventListener('click',e=>{const b=e.target.closest('.source-toggle');if(!b)return;const row=document.getElementById(b.dataset.target);const opening=row.classList.contains('d-none');row.classList.toggle('d-none',!opening);b.setAttribute('aria-expanded',String(opening));b.querySelector('i').className=`bi bi-chevron-${opening?'down':'right'} me-1`;});
   if(document.getElementById('timeline-user-id').value.trim())loadTimeline();
 </script>

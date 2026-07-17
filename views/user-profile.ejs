@@ -1,561 +1,334 @@
-<%# views/user-profile.ejs (Final Version with Date Picker) %>
-
-<%# === Хелперы и функции === %>
-<% 
-  const escapeHtml = (str) => {
-    if (str === undefined || str === null) return '';
-    return String(str)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+<%
+  const escapeHtml = value => String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  const formatDate = value => {
+    if (!value) return '—';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return '—';
+    return parsed.toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit'
+    });
   };
-
-  const formatDate = (s) => {
-    if (!s) return '—';
-    try {
-      const d = new Date(s);
-      if (isNaN(d.getTime())) return '—';
-      return d.toLocaleString('ru-RU', {
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit'
-      });
-    } catch {
-      return '—';
-    }
-  };
-  
-  // Безопасное получение данных (защита от undefined)
-  const u = typeof userProfile !== 'undefined' ? userProfile : {};
+  const u = typeof userProfile !== 'undefined' && userProfile ? userProfile : {};
   const safeName = escapeHtml(u.first_name);
   const safeUsername = escapeHtml(u.username);
-  const displayName = safeName || safeUsername || `ID: ${u.id || '???'}`;
-  
-  // Безопасный доступ к queryParams для уведомлений
-  const qParams = typeof queryParams !== 'undefined' ? queryParams : {};
+  const displayName = safeName || safeUsername || `ID: ${escapeHtml(u.id || '???')}`;
+  const qParams = typeof queryParams !== 'undefined' && queryParams ? queryParams : {};
+  const safeActions = typeof actions !== 'undefined' && Array.isArray(actions) ? actions : [];
+  const safeDownloads = typeof downloads !== 'undefined' && Array.isArray(downloads) ? downloads : [];
+  const safeLanguageHistory = typeof languageHistory !== 'undefined' && Array.isArray(languageHistory) ? languageHistory : [];
+  const safeReferredUsers = typeof referredUsers !== 'undefined' && Array.isArray(referredUsers) ? referredUsers : [];
+  const paymentActions = safeActions.filter(item => /payment|stars|invoice/i.test(String(item.action_type || '')));
+  const subscriptionActions = safeActions.filter(item => /tariff|subscription|premium|gift|grant/i.test(String(item.action_type || '')));
+  const freeLimit = parseInt(getSetting('daily_limit_free') || '3', 10);
+  const plusLimit = parseInt(getSetting('daily_limit_plus') || '30', 10);
+  const proLimit = parseInt(getSetting('daily_limit_pro') || '100', 10);
+  const premiumUntil = u.premium_until ? new Date(u.premium_until) : null;
+  const premiumActive = Boolean(premiumUntil && !Number.isNaN(premiumUntil.getTime()) && premiumUntil > new Date());
+  const unlimited = premiumActive && u.premium_limit === null;
+  let planName = 'Free';
+  let planClass = 'text-bg-secondary';
+  if (unlimited) { planName = 'Unlimited'; planClass = 'text-bg-primary'; }
+  else if (premiumActive && Number(u.premium_limit) === plusLimit) { planName = 'Plus'; planClass = 'text-bg-info'; }
+  else if (premiumActive && Number(u.premium_limit) === proLimit) { planName = 'Pro'; planClass = 'text-bg-warning'; }
+  else if (premiumActive && Number(u.premium_limit) > freeLimit) { planName = `Тариф ${u.premium_limit}`; planClass = 'text-bg-primary'; }
+  const expiredPremium = Boolean(!premiumActive && premiumUntil && (u.premium_limit === null || Number(u.premium_limit) > freeLimit));
+  const currentLimit = unlimited ? null : (premiumActive ? Number(u.premium_limit || freeLimit) : freeLimit);
+  const downloadsToday = Number(u.downloads_today || 0);
+  const limitPercent = unlimited ? 0 : Math.min(100, Math.round(downloadsToday / Math.max(currentLimit, 1) * 100));
+  const progressClass = limitPercent >= 100 ? 'bg-danger' : limitPercent > 75 ? 'bg-warning' : 'bg-success';
+  const actionMap = {
+    registration: { name: 'Регистрация', class: 'text-bg-light border' },
+    bonus_received: { name: 'Бонус', class: 'text-bg-success' },
+    tariff_changed_by_admin: { name: 'Смена тарифа', class: 'text-bg-warning' },
+    banned_by_admin: { name: 'Блокировка', class: 'text-bg-danger' },
+    unbanned_by_admin: { name: 'Разблокировка', class: 'text-bg-success' },
+    referral_bonus_received: { name: 'Реферальный бонус', class: 'text-bg-info' },
+    karaoke_tester_activated: { name: 'Тест Karaoke', class: 'text-bg-primary' }
+  };
 %>
 
 <%- contentFor('styles') %>
 <style>
-  .dl-horizontal dt {
-    text-align: left;
-    white-space: normal;
-    font-weight: 600;
-    color: #555;
+  .profile-workspace { max-width: 1800px; margin: 0 auto; }
+  .profile-card, .profile-header-card {
+    border: 1px solid var(--bs-border-color);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
   }
-  .action-buttons form {
-    display: inline-block;
+  .profile-card:hover, .profile-header-card:hover { transform: none; box-shadow: var(--shadow-sm); }
+  .profile-card > .card-header {
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    padding: .8rem 1rem;
+    background: var(--bs-tertiary-bg) !important;
+    color: var(--bs-body-color) !important;
+    border-bottom: 1px solid var(--bs-border-color);
+    font-size: 1rem;
+    letter-spacing: 0;
   }
-  .table-responsive {
-    max-height: 500px;
-    overflow-y: auto;
+  .profile-card > .card-body { padding: 1.15rem; }
+  .profile-header-card .card-body { padding: 1.25rem; }
+  .profile-avatar {
+    width: 74px;
+    height: 74px;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    border-radius: 20px;
+    color: #fff;
+    font-size: 1.8rem;
+    font-weight: 750;
+    background: linear-gradient(135deg, var(--bs-primary-color), #6f42c1);
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--bs-primary-color) 25%, transparent);
+  }
+  .profile-heading { min-width: 0; }
+  .profile-heading h1, .profile-heading .username { overflow-wrap: anywhere; }
+  .profile-header-meta { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .65rem; }
+  .profile-header-meta .badge { font-weight: 600; }
+  .profile-header-actions { display: flex; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
+  .profile-columns { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 1.25rem; align-items: start; }
+  .profile-stack { display: grid; gap: 1.25rem; min-width: 0; }
+  .info-list { display: grid; grid-template-columns: minmax(130px, 42%) minmax(0, 1fr); gap: .7rem 1rem; margin: 0; }
+  .info-list dt { color: var(--bs-secondary-color); font-size: .86rem; font-weight: 600; }
+  .info-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-weight: 550; }
+  .limit-panel { padding: .85rem; border: 1px solid var(--bs-border-color); border-radius: 10px; background: var(--bs-tertiary-bg); }
+  .limit-panel .progress { height: 12px; background: color-mix(in srgb, var(--bs-border-color) 65%, transparent); }
+  .activity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+  .activity-stat { padding: .85rem; border-radius: 10px; background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); }
+  .activity-stat .value { font-size: 1.35rem; line-height: 1.1; font-weight: 750; overflow-wrap: anywhere; }
+  .language-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .language-actions .btn { min-width: 120px; }
+  .profile-form-grid .form-label { min-height: 1.1rem; }
+  .profile-form-grid .form-control, .profile-form-grid .form-select { min-width: 0; }
+  .profile-action-grid { display: flex; flex-wrap: wrap; gap: .55rem; }
+  .profile-action-grid form { display: inline-flex; }
+  .profile-table-wrap { max-height: 390px; overflow: auto; }
+  .profile-table-wrap .table { margin-top: 0; min-width: 680px; }
+  .profile-table-wrap .table th, .profile-table-wrap .table td { padding: .7rem .8rem; }
+  .compact-table { font-size: .86rem; }
+  .empty-card-state { padding: 1.6rem 1rem; text-align: center; color: var(--bs-secondary-color); }
+  .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+  .service-panel { padding: 1rem; border: 1px solid var(--bs-border-color); border-radius: 10px; background: var(--bs-tertiary-bg); }
+  .text-break-safe { overflow-wrap: anywhere; word-break: break-word; }
+
+  @media (max-width: 1199.98px) {
+    .profile-columns { grid-template-columns: minmax(0, 4.5fr) minmax(0, 7.5fr); }
+    .service-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 991.98px) {
+    .profile-columns { grid-template-columns: 1fr; }
+    .profile-header-main { align-items: flex-start !important; }
+    .profile-header-actions { width: 100%; justify-content: flex-start; margin-top: 1rem; }
+  }
+  @media (max-width: 575.98px) {
+    .profile-header-card .card-body, .profile-card > .card-body { padding: 1rem; }
+    .profile-avatar { width: 58px; height: 58px; border-radius: 16px; font-size: 1.4rem; }
+    .profile-header-main { flex-wrap: wrap; }
+    .profile-heading { width: calc(100% - 76px); }
+    .profile-header-actions .btn { flex: 1 1 100%; }
+    .info-list { grid-template-columns: 1fr; gap: .2rem; }
+    .info-list dd { margin-bottom: .55rem; }
+    .activity-grid, .service-grid { grid-template-columns: 1fr; }
+    .language-actions .btn { min-width: 0; flex: 1 1 auto; }
+    .profile-action-grid form, .profile-action-grid .btn { width: 100%; }
   }
 </style>
 
 <%- contentFor('body') %>
-
 <% if (u.id) { %>
-<div class="container py-3" style="max-width: 1200px;">
-
-<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
-  <div class="d-flex align-items-center gap-3">
-    <div class="user-avatar bg-light text-secondary d-flex align-items-center justify-content-center rounded-circle border" style="width: 50px; height: 50px; font-size: 1.5rem; font-weight: bold;">
-      <%= displayName.charAt(0).toUpperCase() %>
+<div class="profile-workspace">
+  <section class="card profile-header-card mb-4">
+    <div class="card-body">
+      <div class="profile-header-main d-flex align-items-center gap-3">
+        <div class="profile-avatar"><%= String(displayName).charAt(0).toUpperCase() %></div>
+        <div class="profile-heading flex-grow-1">
+          <h1 class="h3 mb-1"><%- displayName %></h1>
+          <div class="username text-muted"><%- safeUsername ? `@${safeUsername}` : 'Username не указан' %></div>
+          <div class="profile-header-meta">
+            <span class="badge text-bg-light border">ID <%= u.id %></span>
+            <span class="badge <%= u.active ? 'text-bg-success' : 'text-bg-danger' %>"><%= u.active ? 'Активен' : 'Заблокирован' %></span>
+            <span class="badge <%= planClass %>"><%= planName %></span>
+            <% if (expiredPremium) { %><span class="badge text-bg-danger">Premium истёк</span><% } %>
+            <span class="badge text-bg-light border"><i class="bi bi-clock-history me-1"></i><%= formatDate(u.last_active) %></span>
+          </div>
+        </div>
+        <div class="profile-header-actions">
+          <a href="/admin/user-journey?user_id=<%= encodeURIComponent(u.id) %>" class="btn btn-sm btn-outline-primary"><i class="bi bi-signpost-split me-1"></i>Путь пользователя</a>
+          <a href="/users" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Назад к списку</a>
+        </div>
+      </div>
     </div>
-    <h1 class="h2 mb-0"><%- displayName %></h1>
-  </div>
-  <div class="btn-toolbar mb-2 mb-md-0">
-    <a href="/admin/user-journey?user_id=<%= encodeURIComponent(u.id) %>" class="btn btn-sm btn-outline-primary me-2">
-      <i class="bi bi-signpost-split me-1"></i> Путь пользователя
-    </a>
-    <a href="/users" class="btn btn-sm btn-outline-secondary">
-      <i class="bi bi-arrow-left me-1"></i> Назад к списку
-    </a>
+  </section>
+
+  <% if (qParams.fixedCount) { %>
+    <div class="alert alert-success alert-dismissible fade show" role="alert">
+      <i class="bi bi-magic me-2"></i><strong>Успешно:</strong> сброшен кэш для <b><%= qParams.fixedCount %></b> треков до <%= qParams.fixedDate %>.
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Закрыть"></button>
+    </div>
+  <% } %>
+
+  <div class="profile-columns">
+    <div class="profile-stack">
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-person-vcard me-2 text-primary"></i>Информация о пользователе</span></div>
+        <div class="card-body">
+          <dl class="info-list">
+            <dt>Telegram ID</dt><dd><code class="text-break-safe"><%= u.id %></code></dd>
+            <dt>Имя</dt><dd><%- safeName || '<span class="text-muted">Не указано</span>' %></dd>
+            <dt>Username</dt><dd><%- safeUsername ? `<a href="https://t.me/${encodeURIComponent(String(u.username))}" target="_blank" rel="noopener">@${safeUsername}</a>` : '<span class="text-muted">Не указан</span>' %></dd>
+            <dt>Статус</dt><dd><span class="badge <%= u.active ? 'text-bg-success' : 'text-bg-danger' %>"><%= u.active ? 'Активен' : 'Заблокирован' %></span></dd>
+            <dt>Источник</dt><dd>
+              <% if (typeof referrer !== 'undefined' && referrer) { %>Приглашён: <a href="/user/<%= referrer.id %>"><%- escapeHtml(referrer.first_name || referrer.username || referrer.id) %></a>
+              <% } else if (u.referral_source) { %><span class="badge text-bg-secondary"><%- escapeHtml(u.referral_source) %></span>
+              <% } else { %><span class="text-muted">Органический / неизвестный</span><% } %>
+            </dd>
+            <dt>Тариф</dt><dd><span class="badge <%= planClass %>"><%= planName %></span></dd>
+            <dt>Подписка до</dt><dd><%= formatDate(u.premium_until) %></dd>
+            <dt>Регистрация</dt><dd><%= formatDate(u.created_at) %></dd>
+            <dt>Последняя активность</dt><dd><%= formatDate(u.last_active) %></dd>
+          </dl>
+          <div class="limit-panel mt-3">
+            <div class="d-flex justify-content-between gap-3 mb-2"><span class="small fw-semibold">Лимит сегодня</span><span class="small fw-bold"><%= downloadsToday %> / <%= unlimited ? '∞' : currentLimit %></span></div>
+            <div class="progress" role="progressbar" aria-label="Дневной лимит" aria-valuenow="<%= unlimited ? 0 : limitPercent %>" aria-valuemin="0" aria-valuemax="100">
+              <div class="progress-bar <%= progressClass %>" style="width:<%= unlimited ? 100 : limitPercent %>%"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-translate me-2 text-primary"></i>Языковые настройки</span><span class="badge text-bg-info"><%- escapeHtml(u.language_source || 'legacy_default') %></span></div>
+        <div class="card-body">
+          <dl class="info-list mb-3">
+            <dt>Текущий язык</dt><dd><%= u.language_code === 'ru' ? '🇷🇺 Русский (ru)' : u.language_code === 'en' ? '🇬🇧 English (en)' : `❓ Неизвестно (${escapeHtml(u.language_code || '—')})` %></dd>
+            <dt>Код Telegram</dt><dd><code><%- escapeHtml(u.telegram_language_code || '—') %></code></dd>
+            <dt>Последнее изменение</dt><dd><%= formatDate(u.language_updated_at) %></dd>
+          </dl>
+          <form class="language-actions" method="POST" action="/user/<%= u.id %>/set-language" onsubmit="return confirm('Изменить язык пользователя?');">
+            <button type="submit" name="lang" value="ru" class="btn btn-sm <%= u.language_code === 'ru' ? 'btn-primary' : 'btn-outline-primary' %>">🇷🇺 RU</button>
+            <button type="submit" name="lang" value="en" class="btn btn-sm <%= u.language_code === 'en' ? 'btn-primary' : 'btn-outline-primary' %>">🇬🇧 EN</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" data-bs-toggle="collapse" data-bs-target="#language-history" aria-expanded="false"><i class="bi bi-clock-history me-1"></i>История (<%= safeLanguageHistory.length %>)</button>
+          </form>
+          <div class="collapse mt-3" id="language-history">
+            <% if (safeLanguageHistory.length) { %>
+              <div class="profile-table-wrap"><table class="table table-sm table-hover compact-table mb-0"><thead><tr><th>Дата</th><th>Язык</th><th>Источник</th><th>Изменил</th></tr></thead><tbody>
+                <% safeLanguageHistory.forEach(h => { %><tr><td class="text-nowrap"><%= formatDate(h.created_at) %></td><td><code><%- escapeHtml(h.previous_language || '—') %></code> → <code><%- escapeHtml(h.new_language || '—') %></code></td><td><%- escapeHtml(h.new_source || '—') %></td><td><%- h.changed_by_type === 'admin' ? `Админ (${escapeHtml(h.changed_by_user_id)})` : 'Автоматически' %></td></tr><% }) %>
+              </tbody></table></div>
+            <% } else { %><div class="empty-card-state"><i class="bi bi-clock-history d-block fs-4 mb-2"></i>История языка отсутствует</div><% } %>
+          </div>
+        </div>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-activity me-2 text-primary"></i>Краткая статистика активности</span></div>
+        <div class="card-body">
+          <div class="activity-grid">
+            <div class="activity-stat"><div class="small text-muted">Всего скачиваний</div><div class="value"><%= Number(u.total_downloads || 0).toLocaleString('ru-RU') %></div></div>
+            <div class="activity-stat"><div class="small text-muted">Сегодня</div><div class="value"><%= downloadsToday.toLocaleString('ru-RU') %></div></div>
+            <div class="activity-stat"><div class="small text-muted">Последних треков</div><div class="value"><%= safeDownloads.length %></div></div>
+            <div class="activity-stat"><div class="small text-muted">Приглашено</div><div class="value"><%= safeReferredUsers.length %></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-person-plus me-2 text-primary"></i>Приглашённые пользователи</span><span class="badge text-bg-light border"><%= safeReferredUsers.length %></span></div>
+        <% if (safeReferredUsers.length) { %><div class="list-group list-group-flush" style="max-height:260px;overflow:auto"><% safeReferredUsers.forEach(refUser => { %><a href="/user/<%= refUser.id %>" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-3"><span class="text-break-safe"><strong><%- escapeHtml(refUser.first_name || refUser.username || 'Без имени') %></strong><small class="text-muted d-block">ID <%= refUser.id %></small></span><small class="text-muted text-nowrap"><%= formatDate(refUser.created_at) %></small></a><% }) %></div>
+        <% } else { %><div class="empty-card-state"><i class="bi bi-people d-block fs-4 mb-2"></i>Приглашённых пользователей нет</div><% } %>
+      </section>
+    </div>
+
+    <div class="profile-stack">
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-gem me-2 text-primary"></i>Управление тарифом</span><span class="badge <%= planClass %>"><%= planName %></span></div>
+        <div class="card-body">
+          <p class="small text-muted mb-3">Нефинансовая корректировка доступа. Платёж не создаётся.</p>
+          <form class="row g-3 profile-form-grid" method="post" action="/set-tariff" onsubmit="return confirm('Изменить тариф для этого пользователя?');">
+            <input type="hidden" name="userId" value="<%= u.id %>">
+            <div class="col-xl-3 col-md-6"><label class="form-label small text-muted mb-1">Тариф</label><select name="limit" class="form-select form-select-sm" required><option value="<%= freeLimit %>" <%= !premiumActive ? 'selected' : '' %>>Free (<%= freeLimit %>)</option><option value="<%= plusLimit %>" <%= premiumActive && Number(u.premium_limit) === plusLimit ? 'selected' : '' %>>Plus (<%= plusLimit %>)</option><option value="<%= proLimit %>" <%= premiumActive && Number(u.premium_limit) === proLimit ? 'selected' : '' %>>Pro (<%= proLimit %>)</option><option value="unlim" <%= unlimited ? 'selected' : '' %>>Unlimited</option></select></div>
+            <div class="col-xl-2 col-md-6"><label class="form-label small text-muted mb-1">Дней</label><input type="number" name="days" class="form-control form-control-sm" value="30" min="1" max="999" required></div>
+            <div class="col-xl-3 col-md-6"><label class="form-label small text-muted mb-1">Тип операции</label><select name="opType" class="form-select form-select-sm" required><option value="adjustment" selected>Корректировка</option><option value="gift">Подарок</option><option value="test_grant">Тестовый доступ</option></select></div>
+            <div class="col-xl-4 col-md-6"><label class="form-label small text-muted mb-1">Комментарий</label><input type="text" name="comment" class="form-control form-control-sm" placeholder="Причина (необязательно)"></div>
+            <div class="col-lg-8 d-flex flex-wrap align-items-center gap-3"><div class="form-check"><input class="form-check-input" type="radio" name="applyMode" id="applyModeSet" value="set" checked><label class="form-check-label small" for="applyModeSet">Установить с новой датой</label></div><div class="form-check"><input class="form-check-input" type="radio" name="applyMode" id="applyModeExtend" value="extend"><label class="form-check-label small" for="applyModeExtend">Продлить текущую подписку</label></div></div>
+            <div class="col-lg-4 d-grid d-lg-flex justify-content-lg-end"><button type="submit" class="btn btn-sm btn-primary px-4">Сохранить</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-cash-coin me-2 text-success"></i>Регистрация ручного платежа</span><span class="badge text-bg-light border">Только RUB</span></div>
+        <div class="card-body">
+          <form class="row g-3 profile-form-grid" method="post" action="/register-manual-payment" onsubmit="return confirm('Подтвердить регистрацию платежа и зачисление тарифа?');">
+            <input type="hidden" name="userId" value="<%= u.id %>">
+            <div class="col-lg-4 col-md-6"><label class="form-label small text-muted mb-1">Тариф</label><select name="plan" class="form-select form-select-sm" required><option value="plus" selected>Plus</option><option value="pro">Pro</option><option value="unlim">Unlimited</option></select></div>
+            <div class="col-lg-4 col-md-6"><label class="form-label small text-muted mb-1">Сумма в копейках</label><input type="number" name="amountMinor" class="form-control form-control-sm" placeholder="11900 = 119 ₽" min="1" required></div>
+            <div class="col-lg-4 col-md-6"><label class="form-label small text-muted mb-1">Валюта</label><select name="currency" class="form-select form-select-sm" required><option value="RUB" selected>RUB</option></select></div>
+            <div class="col-lg-4 col-md-6"><label class="form-label small text-muted mb-1">Способ оплаты</label><select name="paymentMethod" class="form-select form-select-sm" required><option value="tbank" selected>Т-Банк</option><option value="sbp">СБП</option><option value="boosty">Boosty</option><option value="other_manual">Другой перевод</option></select></div>
+            <div class="col-lg-4 col-md-6"><label class="form-label small text-muted mb-1">Период, дней</label><input type="number" name="periodDays" class="form-control form-control-sm" value="30" min="1" max="999" required></div>
+            <div class="col-lg-4 col-md-6"><label class="form-label small text-muted mb-1">Комментарий</label><input type="text" name="comment" class="form-control form-control-sm" placeholder="Транзакция или детали"></div>
+            <div class="col-12 d-grid d-md-flex justify-content-md-end"><button type="submit" class="btn btn-sm btn-success px-4"><i class="bi bi-check-circle me-1"></i>Провести платёж</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-sliders me-2 text-primary"></i>Нефинансовые операции</span></div>
+        <div class="card-body profile-action-grid">
+          <form action="/user/set-status" method="POST"><input type="hidden" name="userId" value="<%= u.id %>"><input type="hidden" name="newStatus" value="<%= u.active ? 'false' : 'true' %>"><button type="submit" class="btn btn-sm <%= u.active ? 'btn-outline-danger' : 'btn-success' %>" onclick="return confirm('<%= u.active ? 'Заблокировать пользователя?' : 'Разблокировать пользователя?' %>');"><i class="bi <%= u.active ? 'bi-ban' : 'bi-check-circle' %> me-1"></i><%= u.active ? 'Заблокировать' : 'Разблокировать' %></button></form>
+          <form action="/reset-daily-limit" method="POST"><input type="hidden" name="userId" value="<%= u.id %>"><button type="submit" class="btn btn-sm btn-outline-warning" onclick="return confirm('Сбросить дневной лимит?');"><i class="bi bi-arrow-counterclockwise me-1"></i>Сбросить лимит</button></form>
+          <form action="/reset-bonus" method="POST"><input type="hidden" name="userId" value="<%= u.id %>"><button type="submit" class="btn btn-sm btn-outline-info" onclick="return confirm('Сбросить использование бонуса?');"><i class="bi bi-gift me-1"></i>Сбросить бонус</button></form>
+          <form action="/admin/queue/clear-user" method="POST"><input type="hidden" name="userId" value="<%= u.id %>"><button type="submit" class="btn btn-sm btn-outline-secondary" onclick="return confirm('Очистить очередь загрузок пользователя?');"><i class="bi bi-eraser me-1"></i>Очистить очередь</button></form>
+        </div>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-receipt me-2 text-success"></i>История платежей</span><span class="badge text-bg-light border"><%= paymentActions.length %></span></div>
+        <% if (paymentActions.length) { %><div class="profile-table-wrap"><table class="table table-hover compact-table mb-0"><thead><tr><th>Событие</th><th>Детали</th><th>Дата</th></tr></thead><tbody><% paymentActions.forEach(action => { %><tr><td><%- escapeHtml(action.action_type) %></td><td class="text-break-safe"><%- action.details ? escapeHtml(JSON.stringify(action.details)) : '—' %></td><td class="text-nowrap"><%= formatDate(action.created_at) %></td></tr><% }) %></tbody></table></div>
+        <% } else { %><div class="empty-card-state"><i class="bi bi-receipt d-block fs-4 mb-2"></i>В журнале действий нет платежных событий</div><% } %>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-calendar2-check me-2 text-primary"></i>История подписок</span><span class="badge text-bg-light border"><%= subscriptionActions.length %></span></div>
+        <% if (subscriptionActions.length) { %><div class="profile-table-wrap"><table class="table table-hover compact-table mb-0"><thead><tr><th>Операция</th><th>Детали</th><th>Дата</th></tr></thead><tbody><% subscriptionActions.forEach(action => { const presented=actionMap[action.action_type]||{name:escapeHtml(action.action_type),class:'text-bg-light border'}; %><tr><td><span class="badge <%= presented.class %>"><%- presented.name %></span></td><td class="text-break-safe"><%- action.details ? escapeHtml(JSON.stringify(action.details)) : '—' %></td><td class="text-nowrap"><%= formatDate(action.created_at) %></td></tr><% }) %></tbody></table></div>
+        <% } else { %><div class="empty-card-state"><i class="bi bi-calendar2-x d-block fs-4 mb-2"></i>История подписок отсутствует</div><% } %>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-music-note-list me-2 text-primary"></i>История скачиваний</span><span class="badge text-bg-light border"><%= safeDownloads.length %></span></div>
+        <% if (safeDownloads.length) { %><div class="profile-table-wrap"><table class="table table-hover compact-table mb-0"><thead><tr><th>Трек</th><th>Дата</th></tr></thead><tbody><% safeDownloads.forEach(item => { %><tr><td class="text-break-safe"><%- escapeHtml(item.track_title || 'Без названия') %><% if (item.url) { %> <a href="<%- escapeHtml(item.url) %>" target="_blank" rel="noopener" title="Открыть"><i class="bi bi-box-arrow-up-right"></i></a><% } %></td><td class="text-nowrap"><%= formatDate(item.created_at || item.downloaded_at) %></td></tr><% }) %></tbody></table></div>
+        <% } else { %><div class="empty-card-state"><i class="bi bi-music-note d-block fs-4 mb-2"></i>Скачиваний нет</div><% } %>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-list-check me-2 text-primary"></i>Действия администратора и системы</span><span class="badge text-bg-light border"><%= safeActions.length %></span></div>
+        <% if (safeActions.length) { %><div class="profile-table-wrap"><table class="table table-hover compact-table mb-0"><thead><tr><th>Тип</th><th>Детали</th><th>Время</th></tr></thead><tbody><% safeActions.forEach(action => { const presented=actionMap[action.action_type]||{name:escapeHtml(action.action_type),class:'text-bg-light border'}; %><tr><td><span class="badge <%= presented.class %>"><%- presented.name %></span></td><td class="text-break-safe"><%- action.details ? escapeHtml(JSON.stringify(action.details)) : '—' %></td><td class="text-nowrap"><%= formatDate(action.created_at) %></td></tr><% }) %></tbody></table></div>
+        <% } else { %><div class="empty-card-state"><i class="bi bi-journal-x d-block fs-4 mb-2"></i>Действий нет</div><% } %>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-header"><span><i class="bi bi-tools me-2 text-warning"></i>Служебная информация</span></div>
+        <div class="card-body service-grid">
+          <div class="service-panel">
+            <h3 class="h6"><i class="bi bi-wrench-adjustable me-1"></i>Управление кэшем</h3>
+            <p class="small text-muted">Сбросить старые записи пользователя до выбранной даты.</p>
+            <form action="/admin/user/<%= u.id %>/fix-cache" method="POST"><label for="fixDate" class="form-label small">Сбросить треки до</label><input type="date" class="form-control form-control-sm mb-2" id="fixDate" name="fixDate" value="<%= new Date().toISOString().split('T')[0] %>" required><button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick="return confirm('Сбросить выбранные записи кэша?');"><i class="bi bi-magic me-1"></i>Исправить кэш</button></form>
+          </div>
+          <div class="service-panel d-flex flex-column">
+            <h3 class="h6"><i class="bi bi-file-earmark-text me-1"></i>Экспорт ссылок</h3>
+            <p class="small text-muted flex-grow-1">Скачать уникальные ссылки из истории пользователя.</p>
+            <a href="/admin/user/<%= u.id %>/links" class="btn btn-sm btn-outline-secondary"><i class="bi bi-download me-1"></i>Скачать .txt</a>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </div>
-
-<%# Уведомление об успешном исправлении кэша %>
-<% if (qParams.fixedCount) { %>
-  <div class="alert alert-success alert-dismissible fade show" role="alert">
-    <i class="bi bi-magic me-2"></i>
-    <strong>Успешно!</strong> Сброшен кэш для <b><%= qParams.fixedCount %></b> треков (до <%= qParams.fixedDate %>).
-    <br><small>Теперь при повторном скачивании названия файлов будут корректными.</small>
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-  </div>
-<% } %>
-
-<div class="row g-4">
-  <%# === Левая колонка: информация и управление === %>
-  <div class="col-lg-5">
-    
-    <%# Карточка Инфо %>
-    <div class="card shadow-sm mb-4">
-      <div class="card-header fw-semibold bg-light"><i class="bi bi-person-lines-fill me-2"></i>Информация о пользователе</div>
-      <div class="card-body">
-        <dl class="row mb-0 dl-horizontal">
-          <dt class="col-sm-5">ID</dt><dd class="col-sm-7"><%= u.id %></dd>
-          <dt class="col-sm-5">Имя</dt><dd class="col-sm-7"><%- safeName || '<em class="text-muted">Не указано</em>' %></dd>
-          <dt class="col-sm-5">Username</dt><dd class="col-sm-7"><%- safeUsername ? `<a href="https://t.me/${safeUsername}" target="_blank">@${safeUsername}</a>` : '—' %></dd>
-          
-          <dt class="col-sm-5">Статус</dt>
-          <dd class="col-sm-7">
-            <span class="badge <%= u.active ? 'bg-success' : 'bg-danger' %>">
-              <%= u.active ? '✓ Активен' : '✗ Заблокирован' %>
-            </span>
-          </dd>
-
-          <dt class="col-sm-5">Источник</dt>
-          <dd class="col-sm-7">
-            <% if (typeof referrer !== 'undefined' && referrer) { %>
-              Приглашен: <a href="/user/<%= referrer.id %>"><%- escapeHtml(referrer.first_name || referrer.username) || `ID: ${referrer.id}` %></a>
-            <% } else if (u.referral_source) { %>
-              <span class="badge bg-secondary"><%= u.referral_source %></span>
-            <% } else { %>
-              <span class="text-muted">Органический</span>
-            <% } %>
-          </dd>
-          
-          <dt class="col-sm-5">Тариф</dt>
-          <dd class="col-sm-7">
-            <% 
-              const limit = u.premium_limit || 0;
-              let planClass = 'bg-secondary';
-              let planName = 'Other';
-              if (limit <= 5) { planName = 'Free'; planClass = 'bg-secondary'; }
-              else if (limit == 30) { planName = 'Plus'; planClass = 'bg-info text-dark'; }
-              else if (limit == 100) { planName = 'Pro'; planClass = 'bg-warning text-dark'; }
-              else if (limit >= 10000) { planName = 'Unlim'; planClass = 'bg-primary'; }
-            %>
-            <span class="badge <%= planClass %>"><%= planName %> (<%= limit %>)</span>
-          </dd>
-          
-          <dt class="col-sm-5">Подписка до</dt><dd class="col-sm-7"><%= formatDate(u.premium_until) %></dd>
-          <dt class="col-sm-5">Последняя активность</dt><dd class="col-sm-7"><%= formatDate(u.last_active) %></dd>
-          <dt class="col-sm-5">Загрузок (всего)</dt>
-          <dd class="col-sm-7"><%= u.total_downloads || 0 %></dd>
-          
-          <dt class="col-sm-5">Лимит сегодня</dt>
-          <dd class="col-sm-7">
-            <div class="d-flex align-items-center gap-2 mt-1">
-              <div class="progress flex-grow-1" style="height: 10px; margin-bottom: 0;">
-                <% 
-                  const isPremiumActive = u.premium_until && new Date(u.premium_until) > new Date();
-                  const isUnlimited = isPremiumActive && u.premium_limit === null;
-                  const currentLimit = isUnlimited ? 'Unlimited' : (u.premium_limit || 3);
-                  const downloadsToday = u.downloads_today || 0;
-                  const percent = isUnlimited ? 0 : Math.min(100, Math.round((downloadsToday / currentLimit) * 100));
-                  let progressBg = 'bg-success';
-                  if (!isUnlimited && percent >= 100) progressBg = 'bg-danger';
-                  else if (!isUnlimited && percent > 75) progressBg = 'bg-warning';
-                %>
-                <div class="progress-bar <%= progressBg %>" role="progressbar" style="width: <%= isUnlimited ? 0 : percent %>%"></div>
-              </div>
-              <span class="small fw-bold text-nowrap"><%= downloadsToday %> / <%= isUnlimited ? '∞' : currentLimit %></span>
-            </div>
-          </dd>
-        </dl>
-    </div>
-
-    <%# Карточка Управления Языком %>
-    <div class="card shadow-sm mb-4">
-      <div class="card-header fw-semibold bg-light"><i class="bi bi-translate me-2"></i>Языковые настройки</div>
-      <div class="card-body">
-        <dl class="row mb-3 dl-horizontal">
-          <dt class="col-sm-5">Текущий язык</dt>
-          <dd class="col-sm-7">
-            <% if (u.language_code === 'ru') { %>
-              🇷🇺 Русский (ru)
-            <% } else if (u.language_code === 'en') { %>
-              🇬🇧 English (en)
-            <% } else { %>
-              ❓ Неизвестно (<%= u.language_code || '—' %>)
-            <% } %>
-          </dd>
-          
-          <dt class="col-sm-5">Источник</dt>
-          <dd class="col-sm-7">
-            <span class="badge bg-info text-dark"><%= u.language_source || 'legacy_default' %></span>
-          </dd>
-
-          <dt class="col-sm-5">Код Telegram</dt>
-          <dd class="col-sm-7">
-            <code><%= u.telegram_language_code || '—' %></code>
-          </dd>
-          
-          <dt class="col-sm-5">Дата изменения</dt>
-          <dd class="col-sm-7">
-            <%= formatDate(u.language_updated_at) %>
-          </dd>
-        </dl>
-
-        <form class="d-flex gap-2 mb-3" method="POST" action="/user/<%= u.id %>/set-language" onsubmit="return confirm('Изменить язык пользователя?');">
-          <button type="submit" name="lang" value="ru" class="btn btn-sm btn-outline-primary flex-grow-1 <%= u.language_code === 'ru' ? 'active' : '' %>">
-            🇷🇺 Установить RU
-          </button>
-          <button type="submit" name="lang" value="en" class="btn btn-sm btn-outline-primary flex-grow-1 <%= u.language_code === 'en' ? 'active' : '' %>">
-            🇬🇧 Установить EN
-          </button>
-        </form>
-
-        <% if (typeof languageHistory !== 'undefined' && languageHistory && languageHistory.length > 0) { %>
-          <div class="mt-3">
-            <h6 class="small fw-bold text-muted text-uppercase mb-2"><i class="bi bi-clock-history me-1"></i>История изменений</h6>
-            <div class="table-responsive" style="max-height: 200px; overflow-y: auto; font-size: 0.85rem;">
-              <table class="table table-sm table-striped table-bordered mb-0">
-                <thead>
-                  <tr>
-                    <th>Дата</th>
-                    <th>Язык</th>
-                    <th>Источник</th>
-                    <th>Изменил</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <% languageHistory.forEach(h => { %>
-                    <tr>
-                      <td class="text-nowrap"><%= formatDate(h.created_at) %></td>
-                      <td class="text-nowrap"><code><%= h.previous_language %></code> ➔ <code><%= h.new_language %></code></td>
-                      <td class="text-nowrap"><code><%= h.previous_source || '—' %></code> ➔ <code><%= h.new_source %></code></td>
-                      <td><%= h.changed_by_type === 'admin' ? 'Админ (' + h.changed_by_user_id + ')' : 'Авто' %></td>
-                    </tr>
-                  <% }) %>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        <% } %>
-      </div>
-    </div>
-
-
-    <%# Карточка Смены Тарифа %>
-    <%# Карточка Смены Тарифа %>
-    <div class="card shadow-sm mb-4">
-      <div class="card-header fw-semibold bg-light"><i class="bi bi-gem me-2"></i>Управление тарифом (Нефинансовое)</div>
-      <div class="card-body">
-        <form class="row g-3" method="post" action="/set-tariff" onsubmit="return confirm('Изменить тариф для этого пользователя?');">
-          <input type="hidden" name="userId" value="<%= u.id %>">
-          
-          <div class="col-md-3">
-            <label class="form-label small text-muted mb-0">Тариф</label>
-            <select name="limit" class="form-select form-select-sm" required>
-              <% 
-                const limitFree = parseInt(getSetting('daily_limit_free') || '3', 10);
-                const limitPlus = parseInt(getSetting('daily_limit_plus') || '30', 10);
-                const limitPro = parseInt(getSetting('daily_limit_pro') || '100', 10);
-              %>
-              <option value="<%= limitFree %>" <%= u.premium_limit <= limitFree ? 'selected' : '' %>>Free (<%= limitFree %>)</option>
-              <option value="<%= limitPlus %>" <%= u.premium_limit == limitPlus ? 'selected' : '' %>>Plus (<%= limitPlus %>)</option>
-              <option value="<%= limitPro %>" <%= u.premium_limit == limitPro ? 'selected' : '' %>>Pro (<%= limitPro %>)</option>
-              <option value="unlim" <%= u.premium_limit === null ? 'selected' : '' %>>Unlim</option>
-            </select>
-          </div>
-          
-          <div class="col-md-2">
-            <label class="form-label small text-muted mb-0">Дней</label>
-            <input type="number" name="days" class="form-control form-control-sm" value="30" min="1" max="999" required>
-          </div>
-
-          <div class="col-md-3">
-            <label class="form-label small text-muted mb-0">Тип операции</label>
-            <select name="opType" class="form-select form-select-sm" required>
-              <option value="adjustment" selected>Корректировка</option>
-              <option value="gift">Подарок</option>
-              <option value="test_grant">Тестовый доступ</option>
-            </select>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label small text-muted mb-0">Комментарий</label>
-            <input type="text" name="comment" class="form-control form-control-sm" placeholder="Причина (опционально)">
-          </div>
-          
-          <div class="col-md-6 d-flex align-items-center">
-            <div class="form-check form-check-inline">
-              <input class="form-check-input" type="radio" name="applyMode" id="applyModeSet" value="set" checked>
-              <label class="form-check-label small" for="applyModeSet">Установить (сброс даты)</label>
-            </div>
-            <div class="form-check form-check-inline">
-              <input class="form-check-input" type="radio" name="applyMode" id="applyModeExtend" value="extend">
-              <label class="form-check-label small" for="applyModeExtend">Продлить (добавить дни)</label>
-            </div>
-          </div>
-
-          <div class="col-md-6 text-end">
-            <button type="submit" class="btn btn-sm btn-primary px-4">Сохранить изменения</button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <%# Карточка Регистрации Ручного Платежа %>
-    <div class="card shadow-sm mb-4">
-      <div class="card-header fw-semibold bg-light text-success"><i class="bi bi-cash me-2"></i>Регистрация ручного платежа</div>
-      <div class="card-body">
-        <form class="row g-3" method="post" action="/register-manual-payment" onsubmit="return confirm('Подтвердить регистрацию платежа и зачисление тарифа?');">
-          <input type="hidden" name="userId" value="<%= u.id %>">
-          
-          <div class="col-md-4">
-            <label class="form-label small text-muted mb-0">Тариф</label>
-            <select name="plan" class="form-select form-select-sm" required>
-              <option value="plus" selected>Plus</option>
-              <option value="pro">Pro</option>
-              <option value="unlim">Unlimited</option>
-            </select>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label small text-muted mb-0">Фактическая сумма (в копейках / Stars)</label>
-            <input type="number" name="amountMinor" class="form-control form-control-sm" placeholder="Пример: 11900 (для 119 руб)" required>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label small text-muted mb-0">Валюта</label>
-            <select name="currency" class="form-select form-select-sm" required>
-              <option value="RUB" selected>RUB (рубли)</option>
-            </select>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label small text-muted mb-0">Способ оплаты</label>
-            <select name="paymentMethod" class="form-select form-select-sm" required>
-              <option value="tbank" selected>Т-Банк (ручной)</option>
-              <option value="sbp">СБП (ручной)</option>
-              <option value="boosty">Boosty (ручной)</option>
-              <option value="other_manual">Другой перевод (ручной)</option>
-            </select>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label small text-muted mb-0">Период (дней)</label>
-            <input type="number" name="periodDays" class="form-control form-control-sm" value="30" min="1" max="999" required>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label small text-muted mb-0">Комментарий</label>
-            <input type="text" name="comment" class="form-control form-control-sm" placeholder="Транзакция, детали и др.">
-          </div>
-
-          <div class="col-12 text-end">
-            <button type="submit" class="btn btn-sm btn-success px-4"><i class="bi bi-check-circle me-1"></i>Провести платеж</button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <%# Карточка Действий %>
-    <div class="card shadow-sm mb-4">
-      <div class="card-header fw-semibold bg-light"><i class="bi bi-tools me-2"></i>Быстрые действия</div>
-      <div class="card-body d-flex flex-wrap gap-2 action-buttons">
-
-        <form action="/user/set-status" method="POST">
-          <input type="hidden" name="userId" value="<%= u.id %>">
-          <% if (u.active) { %>
-            <input type="hidden" name="newStatus" value="false">
-            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Заблокировать <%= displayName %>?');">
-              <i class="bi bi-ban me-1"></i>Бан
-            </button>
-          <% } else { %>
-            <input type="hidden" name="newStatus" value="true">
-            <button type="submit" class="btn btn-sm btn-success">
-              <i class="bi bi-check-circle me-1"></i>Разбан
-            </button>
-          <% } %>
-        </form>
-
-        <form action="/reset-daily-limit" method="POST">
-          <input type="hidden" name="userId" value="<%= u.id %>">
-          <button type="submit" class="btn btn-sm btn-outline-warning text-dark" onclick="return confirm('Сбросить дневной лимит?');">
-            <i class="bi bi-arrow-counterclockwise me-1"></i>Сброс лимита
-          </button>
-        </form>
-
-        <form action="/reset-bonus" method="POST">
-          <input type="hidden" name="userId" value="<%= u.id %>">
-          <button type="submit" class="btn btn-sm btn-outline-info text-dark" onclick="return confirm('Сбросить использование бонуса?');">
-            <i class="bi bi-gift me-1"></i>Сброс бонуса
-          </button>
-        </form>
-
-        <form action="/admin/queue/clear-user" method="POST">
-          <input type="hidden" name="userId" value="<%= u.id %>">
-          <button type="submit" class="btn btn-sm btn-outline-secondary" onclick="return confirm('Очистить очередь загрузок этого юзера?');">
-            <i class="bi bi-eraser-fill me-1"></i>Очистить очередь
-          </button>
-        </form>
-      </div>
-    </div>
-
-    <%# === 🛑 БЛОК ИСПРАВЛЕНИЯ АУДИО (С ВЫБОРОМ ДАТЫ) === %>
-    <div class="card shadow-sm border-warning mb-4">
-      <div class="card-header bg-warning text-dark fw-bold">
-        <i class="bi bi-wrench-adjustable me-2"></i>Управление кэшем
-      </div>
-      <div class="card-body">
-        <p class="small text-muted mb-3">
-          Если у пользователя старые треки скачиваются с именем <code>audio.mp3</code>, выберите дату (до какого числа сбрасывать) и нажмите исправить.
-        </p>
-        
-        <form action="/admin/user/<%= u.id %>/fix-cache" method="POST">
-          <div class="mb-3">
-            <label for="fixDate" class="form-label small fw-bold text-muted">Сбросить треки, скачанные ДО:</label>
-            <input 
-              type="date" 
-              class="form-control form-control-sm" 
-              id="fixDate" 
-              name="fixDate" 
-              value="<%= new Date().toISOString().split('T')[0] %>" 
-              required
-            >
-          </div>
-          
-          <button type="submit" class="btn btn-sm btn-danger w-100 d-flex align-items-center justify-content-center" onclick="return confirm('Вы уверены? Это заставит бота заново скачивать старые треки этого пользователя при следующем запросе.');">
-            <i class="bi bi-magic me-2"></i> Исправить кэш
-          </button>
-        </form>
-
-        <hr class="my-2 text-muted opacity-25">
-        
-        <div class="text-center">
-            <a href="/admin/user/<%= u.id %>/links" class="small text-decoration-none text-secondary">
-              <i class="bi bi-file-earmark-text me-1"></i>Скачать список ссылок (.txt)
-            </a>
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-  <%# === Правая колонка: таблицы === %>
-  <div class="col-lg-7">
-    
-    <%# Приглашенные %>
-    <div class="card shadow-sm mb-4">
-      <div class="card-header fw-semibold bg-light">
-        <i class="bi bi-person-plus-fill me-2"></i>Приглашенные (<%= (typeof referredUsers !== 'undefined' ? referredUsers.length : 0) %>)
-      </div>
-      <% if (typeof referredUsers !== 'undefined' && referredUsers.length > 0) { %>
-        <div class="list-group list-group-flush overflow-auto" style="max-height: 200px;">
-          <% referredUsers.forEach(refUser => { %>
-            <a href="/user/<%= refUser.id %>" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center p-2">
-              <div>
-                <span class="fw-semibold small"><%- escapeHtml(refUser.first_name) || 'Без имени' %></span>
-                <span class="text-muted small ms-1">(ID: <%= refUser.id %>)</span>
-              </div>
-              <small class="text-muted" style="font-size: 0.75rem;"><%= formatDate(refUser.created_at) %></small>
-            </a>
-          <% }); %>
-        </div>
-      <% } else { %>
-        <div class="card-body text-center text-muted py-3">
-          <small>Нет приглашенных пользователей</small>
-        </div>
-      <% } %>
-    </div>
-
-    <%# Последние скачивания %>
-    <div class="card shadow-sm mb-4">
-      <div class="card-header fw-semibold bg-light d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-music-note-list me-2"></i>История скачиваний</span>
-      </div>
-      <div class="table-responsive">
-        <% if (typeof downloads === 'undefined' || downloads.length === 0) { %>
-          <div class="text-center text-muted py-4">Нет скачиваний</div>
-        <% } else { %>
-          <table class="table table-hover table-sm mb-0 align-middle" style="font-size: 0.9rem;">
-            <thead class="table-light">
-              <tr>
-                <th>Трек</th>
-                <th class="text-end">Дата</th>
-              </tr>
-            </thead>
-            <tbody>
-              <% downloads.forEach((d) => { %>
-                <tr>
-                  <td>
-                    <div class="d-flex align-items-center">
-                      <div class="text-truncate" style="max-width: 300px;" title="<%- escapeHtml(d.track_title) %>">
-                        <%- escapeHtml(d.track_title) %>
-                      </div>
-                      <% if (d.url) { %>
-                        <a href="<%= d.url %>" target="_blank" class="ms-2 text-secondary" title="Открыть ссылку">
-                          <i class="bi bi-box-arrow-up-right" style="font-size: 0.75rem;"></i>
-                        </a>
-                      <% } %>
-                    </div>
-                  </td>
-                  <td class="text-end text-nowrap text-muted" style="font-size: 0.8rem;">
-                    <%= formatDate(d.created_at || d.downloaded_at) %>
-                  </td>
-                </tr>
-              <% }) %>
-            </tbody>
-          </table>
-        <% } %>
-      </div>
-    </div>
-
-    <%# История действий (Logs) %>
-    <div class="card shadow-sm">
-      <div class="card-header fw-semibold bg-light"><i class="bi bi-list-check me-2"></i>Системный лог</div>
-      <div class="table-responsive">
-        <% if (typeof actions === 'undefined' || actions.length === 0) { %>
-          <div class="text-center text-muted py-4">Нет действий</div>
-        <% } else { %>
-          <table class="table table-hover table-sm mb-0 align-middle" style="font-size: 0.85rem;">
-            <thead class="table-light">
-              <tr>
-                <th>Тип</th>
-                <th>Детали</th>
-                <th class="text-end">Время</th>
-              </tr>
-            </thead>
-            <tbody>
-              <% actions.forEach(action => { %>
-                <tr>
-                  <td>
-                    <%
-                      const actionMap = {
-                        'registration': { name: 'Регистрация', class: 'bg-light text-dark border' },
-                        'bonus_received': { name: 'Бонус', class: 'bg-success text-white' },
-                        'tariff_changed_by_admin': { name: 'Смена тарифа', class: 'bg-warning text-dark' },
-                        'banned_by_admin': { name: 'Бан', class: 'bg-danger text-white' },
-                        'unbanned_by_admin': { name: 'Разбан', class: 'bg-success text-white' },
-                        'referral_bonus_received': { name: 'Реф. бонус', class: 'bg-info text-dark' },
-                        'karaoke_tester_activated': { name: 'Тест Караоке', class: 'bg-primary text-white' },
-                      };
-                      const act = actionMap[action.action_type] || { name: escapeHtml(action.action_type), class: 'bg-light text-secondary' };
-                    %>
-                    <span class="badge <%= act.class %> fw-normal"><%- act.name %></span>
-                  </td>
-                  <td>
-                    <% if (action.details && typeof action.details === 'object') { %>
-                      <% if (action.details.limit || action.details.new_limit) { %>
-                        Limit: <b><%= action.details.limit || action.details.new_limit %></b> (<%= action.details.days %>д)
-                      <% } else { %>
-                        <span class="text-muted small"><%= JSON.stringify(action.details).slice(0, 30) %>...</span>
-                      <% } %>
-                    <% } else { %>
-                      <span class="text-muted">—</span>
-                    <% } %>
-                  </td>
-                  <td class="text-end text-muted text-nowrap"><%= formatDate(action.created_at) %></td>
-                </tr>
-              <% }) %>
-            </tbody>
-          </table>
-        <% } %>
-      </div>
-    </div>
-
-  </div>
-</div>
-
-</div> <!-- /container -->
 <% } else { %>
-  <%# Если пользователь не найден или объект пуст %>
-  <div class="alert alert-danger mt-4">
-    <h4 class="alert-heading">Ошибка</h4>
-    <p>Не удалось загрузить данные пользователя. Возможно, он был удален.</p>
-    <hr>
-    <a href="/users" class="btn btn-outline-danger">Вернуться к списку</a>
-  </div>
+  <div class="profile-workspace"><div class="alert alert-danger"><h1 class="h4 alert-heading">Пользователь не найден</h1><p>Не удалось загрузить данные пользователя.</p><a href="/users" class="btn btn-sm btn-outline-danger">Вернуться к списку</a></div></div>
 <% } %>
