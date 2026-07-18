@@ -1476,6 +1476,12 @@ export async function trackDownloadProcessor(task) {
   } catch (err) {
     const errorDetails = err?.stderr || err?.message || 'Unknown error';
     console.error(`❌ Ошибка воркера (User ${userId}):`, errorDetails);
+    try {
+      const { analyticsService } = await import('./analyticsService.js');
+      await analyticsService.trackDownloadFailureSafe(userId, err, {
+        source: task.source || 'unknown', stage: 'worker', correlation_id: correlationId
+      });
+    } catch (_analyticsError) {}
     
     let userMsg = `❌ Не удалось скачать трек`;
     const trackTitle = task.metadata?.title || 'Unknown';
@@ -1690,6 +1696,12 @@ export async function enqueue(ctx, userId, url, earlyData = {}) {
 
     } catch (err) {
       console.error(`[Enqueue] Ошибка:`, err.message);
+      try {
+        const { analyticsService } = await import('./analyticsService.js');
+        await analyticsService.trackDownloadFailureSafe(userId, err, {
+          source: 'unknown', stage: 'queue', correlation_id: correlationId
+        }, ctx);
+      } catch (_analyticsError) {}
       if (statusMessage) {
         await bot.telegram.deleteMessage(userId, statusMessage.message_id).catch(() => {});
       }
@@ -1805,6 +1817,14 @@ export async function initializeDownloadManager() {
           }
           
           // Если не удалось обработать локально — уведомляем пользователя
+          try {
+            const { analyticsService } = await import('./analyticsService.js');
+            await analyticsService.trackDownloadFailureSafe(result.userId, errorMsg, {
+              source: result.source || result.task?.source || 'unknown',
+              stage: 'remote_worker',
+              correlation_id: result.correlationId || result.task?.correlationId
+            });
+          } catch (_analyticsError) {}
           await bot.telegram.sendMessage(
             result.userId,
             `❌ Не удалось скачать "${result.title}"\n\n${errorMsg || 'Попробуйте позже'}`

@@ -146,7 +146,8 @@ export async function runAnalyticsSmokeTest() {
     const users = await getPaymentLossUsers({
       startDate: yesterday, endDate: today, window: '24h', stage: 'menu', limit: 1
     });
-    if (!report.derivedMetrics || !Array.isArray(report.eventContract) || !report.downloadContext) {
+    if (!report.derivedMetrics || !Array.isArray(report.eventContract) || !report.downloadContext
+        || !report.productIntelligence || !Array.isArray(report.productIntelligence.paidRetention)) {
       throw new Error('Payment-loss analytics response is incomplete.');
     }
     return {
@@ -155,6 +156,8 @@ export async function runAnalyticsSmokeTest() {
       segments: report.segments.length,
       sources: report.contentSources.length,
       eventContractRows: report.eventContract.length,
+      pricingReasons: report.productIntelligence.pricingOpenReasons.length,
+      paidRetentionRows: report.productIntelligence.paidRetention.length,
       users: users.users.length
     };
   });

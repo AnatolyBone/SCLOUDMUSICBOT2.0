@@ -23,6 +23,7 @@ const DEFAULTS = {
   maintenance_mode: 'false',  // Включен ли режим обслуживания
   analytics_excluded_user_ids: process.env.ANALYTICS_EXCLUDED_USER_IDS || '',
   analytics_payment_funnel_complete_from: '2026-07-17',
+  analytics_product_intelligence_complete_from: '2026-07-17',
   use_vpn: 'true',            // Отображать ли кнопку VPN
   vpn_button_text: '🔐 VPN (YouTube 4K)',
   vpn_message_text: '🚀 <b>YouTube тормозит, а Spotify не работает?</b>\n\n' +

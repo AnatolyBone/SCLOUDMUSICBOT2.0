@@ -178,6 +178,12 @@ export async function handleYouTubeUrl(ctx, url) {
     
   } catch (error) {
     console.error('[YouTube] handleYouTubeUrl error:', error);
+    try {
+      const { analyticsService } = await import('./analyticsService.js');
+      await analyticsService.trackDownloadFailureSafe(ctx.from?.id, error, {
+        source: 'youtube', stage: 'metadata', correlation_id: correlationId
+      }, ctx);
+    } catch (_analyticsError) {}
     const msg = '❌ Ошибка при обработке YouTube ссылки.';
     if (statusMessage) {
       await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, msg).catch(() => {});

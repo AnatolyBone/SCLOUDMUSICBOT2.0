@@ -36,7 +36,17 @@ test('repeated opens count once while invoice and pre-checkout dropouts remain d
     [{ menu_after_success: 80, menu_after_error: 0, paid_after_success: 10, paid_after_error: 0,
        both_success_and_error: 0, error_events: 0, successful_downloads: 150 }],
     [{ event_name: 'star_payment_option_shown', events: 150, users: 100, has_plan: false, has_placement: true,
-       has_order_id: false, has_payment_method: false, has_source: false, has_deduplication_key: false }]
+       has_order_id: false, has_payment_method: false, has_source: false, has_deduplication_key: false }],
+    [{ reason: 'daily_limit', users: 50, events: 70 }],
+    [{ users: 100, first_download_users: 90, limit_users: 50, plan_users: 60, invoice_users: 50, payment_users: 10,
+       registration_to_download_seconds: 3600, download_to_limit_seconds: 86400, limit_to_menu_seconds: 180,
+       menu_to_plan_seconds: 20, plan_to_invoice_seconds: 10, invoice_to_payment_seconds: 60 }],
+    [{ segment: '6–20', users: 40, payers: 8, avg_downloads: 12 }],
+    [{ group_name: 'buyers', users: 10, avg_account_age_days: 12, avg_downloads: 20, reached_limit_users: 8, returned_users: 6, avg_activity_events: 30 }],
+    [{ day_number: 7, eligible: 10, returned: 4 }],
+    [{ source: 'organic', users: 100, payers: 10, revenue_rub: 2000 }],
+    [{ reason: 'invoice_without_pre_checkout', users: 10 }],
+    [{ reason: 'timeout', source: 'youtube', events: 4, users: 3, opened_menu_users: 2, payer_users: 1 }]
   ];
   let call = 0;
   const report = await getPaymentLossAnalytics(
@@ -62,11 +72,15 @@ test('repeated opens count once while invoice and pre-checkout dropouts remain d
   assert.equal(report.derivedMetrics.limitToPaymentConversion, 10);
   assert.equal(report.downloadContext.errorTelemetryAvailable, false);
   assert.equal(report.eventContract[0].fields.placement, true);
+  assert.equal(report.productIntelligence.pricingOpenReasons[0].reason, 'daily_limit');
+  assert.equal(report.productIntelligence.paidRetention[0].rate, 40);
+  assert.equal(report.productIntelligence.sourceEconomics[0].arpu, 20);
+  assert.equal(report.productIntelligence.downloadFailures[0].openedMenuUsers, 2);
   assert.equal(report.recommendations.length, 1);
 });
 
 test('period before complete telemetry returns n/a conversions instead of false zeroes', async () => {
-  const emptyResults = Array.from({ length: 11 }, () => ({ rows: [] }));
+  const emptyResults = Array.from({ length: 19 }, () => ({ rows: [] }));
   emptyResults[0] = { rows: [{ menu_users: 10, plan_users: 0, menu_events: 10, plan_events: 0 }] };
   let call = 0;
   const report = await getPaymentLossAnalytics(

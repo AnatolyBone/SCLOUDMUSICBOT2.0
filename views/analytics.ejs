@@ -1,15 +1,40 @@
 <%- contentFor('body') %>
 
 <style>
-  .payment-loss-kpi { border-radius: .85rem; }
+  #payment-loss-pane { min-width: 0; }
+  #payment-loss-pane .row > [class*="col-"] { min-width: 0; }
+  .payment-loss-kpi,
+  .payment-loss-card { min-width: 0; border-radius: .85rem; border: 0; box-shadow: 0 .125rem .4rem rgba(33,37,41,.08); }
+  .payment-loss-kpi .card-body { min-height: 168px; padding: 1.15rem; display: flex; flex-direction: column; }
+  .payment-loss-compact-kpi .card-body { min-height: 84px; display: flex; flex-direction: column; justify-content: center; }
   .payment-loss-stage { position: relative; overflow: hidden; }
-  .payment-loss-stage::after { content: ''; position: absolute; left: 0; bottom: 0; height: 4px; width: var(--stage-width, 0%); background: var(--bs-primary); }
-  .payment-loss-count { font-size: clamp(1.55rem, 2.4vw, 2.35rem); line-height: 1; }
+  .payment-loss-stage::after { content: ''; position: absolute; left: 0; bottom: 0; height: 4px; width: var(--stage-width, 0%); background: var(--stage-color, var(--bs-primary)); }
+  .payment-loss-count { font-size: clamp(1.75rem, 2.2vw, 2.25rem); line-height: 1; letter-spacing: -.035em; }
   .payment-loss-click { cursor: pointer; text-decoration: none; }
   .payment-loss-click:hover { text-decoration: underline; }
-  .payment-loss-table th { white-space: nowrap; }
+  .payment-loss-table { font-size: .875rem; }
+  .payment-loss-table th { white-space: nowrap; padding: .75rem; font-size: .72rem; letter-spacing: .035em; text-transform: uppercase; color: var(--bs-secondary-color); }
+  .payment-loss-table td { padding: .72rem .75rem; vertical-align: middle; }
+  .payment-loss-table tbody tr { transition: background-color .15s ease; }
+  .payment-loss-table tbody tr:hover { background: rgba(var(--bs-primary-rgb), .045); }
+  .payment-loss-section-title { min-height: 52px; display: flex; align-items: center; gap: .45rem; padding: .8rem 1rem; }
+  .payment-loss-metric { min-height: 96px; border: 1px solid var(--bs-border-color); border-radius: .7rem; padding: .8rem; background: var(--bs-tertiary-bg); }
+  .payment-loss-metric strong { font-size: 1.15rem; }
+  .payment-loss-na { font-size: .68rem; font-weight: 600; background: var(--bs-secondary-bg); color: var(--bs-secondary-color); border: 1px solid var(--bs-border-color); }
+  .payment-loss-contract-scroll { height: 310px; overflow: auto; scrollbar-width: thin; scrollbar-color: rgba(var(--bs-primary-rgb),.45) transparent; }
+  .payment-loss-contract-scroll::-webkit-scrollbar { width: 7px; height: 7px; }
+  .payment-loss-contract-scroll::-webkit-scrollbar-thumb { background: rgba(var(--bs-primary-rgb),.45); border-radius: 10px; }
+  .payment-loss-contract-scroll thead { z-index: 2; }
+  .payment-loss-growth-empty { min-height: 126px; display: grid; place-items: center; text-align: center; color: var(--bs-secondary-color); }
+  .payment-loss-reason-bar { height: .45rem; border-radius: 99px; overflow: hidden; background: var(--bs-secondary-bg); }
+  .payment-loss-reason-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--bs-primary); }
   .payment-loss-note { border-left: 4px solid var(--bs-info); }
   [data-bs-theme="dark"] .payment-loss-note { background: rgba(13,202,240,.08) !important; }
+  [data-bs-theme="dark"] .payment-loss-card .card-header { background: var(--bs-body-bg) !important; }
+  @media (max-width: 991.98px) {
+    .payment-loss-kpi .card-body { min-height: 148px; }
+    .payment-loss-contract-scroll { height: 270px; }
+  }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -543,9 +568,55 @@
       <div class="row g-3 mb-4" id="payment-loss-derived"></div>
 
       <div class="row g-3 mb-4">
+        <div class="col-xl-5"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-signpost-split text-primary"></i>Причина открытия тарифов</div>
+          <div class="card-body" id="payment-loss-pricing-reasons"></div>
+        </div></div>
+        <div class="col-xl-7"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-diagram-3 text-info"></i>Среднее время между этапами</div>
+          <div class="card-body"><div class="row g-2" id="payment-loss-journey-timings"></div></div>
+        </div></div>
+      </div>
+
+      <div class="row g-3 mb-4">
+        <div class="col-xl-7"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-bullseye text-success"></i>Экономика по источникам</div>
+          <div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0 payment-loss-table">
+            <thead class="table-light"><tr><th>Источник</th><th>Люди</th><th>Платящие</th><th>Конверсия</th><th>Выручка</th><th>ARPU</th><th>ARPPU</th><th>Наблюдаемый LTV</th></tr></thead>
+            <tbody id="payment-loss-source-economics"></tbody>
+          </table></div></div>
+        </div></div>
+        <div class="col-xl-5"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-speedometer2 text-warning"></i>Конверсия по активности</div>
+          <div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0 payment-loss-table">
+            <thead class="table-light"><tr><th>Скачивания</th><th>Люди</th><th>Платящие</th><th>Конверсия</th></tr></thead>
+            <tbody id="payment-loss-activity-conversion"></tbody>
+          </table></div></div>
+        </div></div>
+      </div>
+
+      <div class="row g-3 mb-4">
+        <div class="col-xl-6"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-people-fill text-primary"></i>Покупатели vs непокупатели</div>
+          <div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0 payment-loss-table">
+            <thead class="table-light"><tr><th>Группа</th><th>Люди</th><th>Возраст</th><th>Скачивания</th><th>Лимит</th><th>Вернулись</th><th>Активность</th></tr></thead>
+            <tbody id="payment-loss-buyer-comparison"></tbody>
+          </table></div></div>
+        </div></div>
+        <div class="col-xl-3"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-calendar-heart text-success"></i>Retention платящих</div>
+          <div class="card-body"><div class="row g-2" id="payment-loss-paid-retention"></div></div>
+        </div></div>
+        <div class="col-xl-3"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-x-octagon text-danger"></i>Наблюдаемые точки отказа</div>
+          <div class="card-body" id="payment-loss-rejection-reasons"></div>
+        </div></div>
+      </div>
+
+      <div class="row g-3 mb-4">
         <div class="col-xl-8">
-          <div class="card shadow-sm border-0 h-100">
-            <div class="card-header bg-white fw-bold"><i class="bi bi-stars me-2 text-warning"></i>Воронка по тарифам</div>
+          <div class="card payment-loss-card h-100">
+            <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-stars text-warning"></i>Воронка по тарифам</div>
             <div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0 payment-loss-table">
               <thead class="table-light"><tr><th>Тариф</th><th>Выбрали</th><th>Invoice</th><th>Pre-checkout</th><th>Оплатили</th><th>Конверсия</th><th>До оплаты</th><th>Скачиваний до меню</th><th>Лимит</th></tr></thead>
               <tbody id="payment-loss-plans"></tbody>
@@ -553,21 +624,21 @@
           </div>
         </div>
         <div class="col-xl-4">
-          <div class="card shadow-sm border-0 h-100">
-            <div class="card-header bg-white fw-bold"><i class="bi bi-wallet2 me-2 text-success"></i>Альтернативная оплата</div>
+          <div class="card payment-loss-card h-100">
+            <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-wallet2 text-success"></i>Альтернативная оплата</div>
             <div class="card-body" id="payment-loss-alternative"></div>
           </div>
         </div>
       </div>
 
       <div class="row g-3 mb-4">
-        <div class="col-xl-7"><div class="card shadow-sm border-0 h-100">
-          <div class="card-header bg-white fw-bold"><i class="bi bi-person-walking me-2 text-primary"></i>Что наблюдалось после незавершённой оплаты</div>
+        <div class="col-xl-7"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-person-walking text-primary"></i>Что наблюдалось после незавершённой оплаты</div>
           <div class="card-body"><div class="row g-2" id="payment-loss-behavior"></div></div>
         </div></div>
-        <div class="col-xl-5"><div class="card shadow-sm border-0 h-100">
-          <div class="card-header bg-white fw-bold"><i class="bi bi-people me-2 text-info"></i>Сегменты пользователей</div>
-          <div class="card-body p-0"><div class="table-responsive"><table class="table table-sm align-middle mb-0">
+        <div class="col-xl-5"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-people text-info"></i>Сегменты пользователей</div>
+          <div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0 payment-loss-table">
             <thead class="table-light"><tr><th>Сегмент</th><th>Пользователи</th><th>Платящие</th><th>Конверсия</th></tr></thead>
             <tbody id="payment-loss-segments"></tbody>
           </table></div></div>
@@ -575,16 +646,16 @@
       </div>
 
       <div class="row g-3 mb-4">
-        <div class="col-xl-7"><div class="card shadow-sm border-0 h-100">
-          <div class="card-header bg-white fw-bold"><i class="bi bi-music-note-list me-2 text-primary"></i>Источник последнего скачивания перед тарифами</div>
-          <div class="card-body p-0"><div class="table-responsive"><table class="table table-sm align-middle mb-0">
+        <div class="col-xl-7"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-music-note-list text-primary"></i>Источник последнего скачивания перед тарифами</div>
+          <div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0 payment-loss-table">
             <thead class="table-light"><tr><th>Источник</th><th>Путь</th><th>Пользователи</th><th>Скачивания</th><th>Ошибки</th><th>Лимит</th><th>Тариф</th><th>Invoice</th><th>Pre-checkout</th><th>Платящие</th><th>Конверсия</th><th>D1 / D7</th></tr></thead>
             <tbody id="payment-loss-content-sources"></tbody>
           </table></div></div>
         </div></div>
-        <div class="col-xl-5"><div class="card shadow-sm border-0 h-100">
-          <div class="card-header bg-white fw-bold"><i class="bi bi-exclamation-triangle me-2 text-danger"></i>Подтверждённые ошибки оплаты</div>
-          <div class="card-body p-0"><div class="table-responsive"><table class="table table-sm align-middle mb-0">
+        <div class="col-xl-5"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-exclamation-triangle text-danger"></i>Подтверждённые ошибки оплаты</div>
+          <div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0 payment-loss-table">
             <thead class="table-light"><tr><th>Категория</th><th>Пользователи</th><th>События</th></tr></thead>
             <tbody id="payment-loss-errors"></tbody>
           </table></div></div>
@@ -592,21 +663,21 @@
       </div>
 
       <div class="row g-3 mb-4">
-        <div class="col-xl-7"><div class="card shadow-sm border-0 h-100">
-          <div class="card-header bg-white fw-bold"><i class="bi bi-download me-2 text-primary"></i>Контекст скачиваний до открытия тарифов</div>
+        <div class="col-xl-7"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-download text-primary"></i>Контекст скачиваний до открытия тарифов</div>
           <div class="card-body" id="payment-loss-download-context"></div>
         </div></div>
-        <div class="col-xl-5"><div class="card shadow-sm border-0 h-100">
-          <div class="card-header bg-white fw-bold d-flex justify-content-between align-items-center"><span><i class="bi bi-clipboard-data me-2 text-info"></i>Event contract</span><span class="badge text-bg-light border" id="payment-loss-contract-summary"></span></div>
-          <div class="card-body p-0"><div class="table-responsive" style="max-height:320px"><table class="table table-sm align-middle mb-0">
+        <div class="col-xl-5"><div class="card payment-loss-card h-100">
+          <div class="card-header bg-white fw-bold payment-loss-section-title justify-content-between"><span><i class="bi bi-clipboard-data me-2 text-info"></i>Event contract</span><span class="badge rounded-pill text-bg-light border" id="payment-loss-contract-summary"></span></div>
+          <div class="card-body p-0"><div class="payment-loss-contract-scroll"><table class="table table-hover align-middle mb-0 payment-loss-table">
             <thead class="table-light position-sticky top-0"><tr><th>Событие</th><th>Событий</th><th>Пользователей</th><th>Поля</th></tr></thead>
             <tbody id="payment-loss-event-contract"></tbody>
           </table></div></div>
         </div></div>
       </div>
 
-      <div class="card shadow-sm border-0 mb-4">
-        <div class="card-header bg-white fw-bold"><i class="bi bi-cpu me-2 text-warning"></i>Growth Assistant</div>
+      <div class="card payment-loss-card mb-4">
+        <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-cpu text-warning"></i>Growth Assistant</div>
         <div class="card-body" id="payment-loss-recommendations"></div>
       </div>
       <div class="small text-muted mb-4" id="payment-loss-interpretation"></div>
@@ -1184,6 +1255,16 @@
   const paymentLossState = { loaded: false, stage: 'menu', page: 1, totalPages: 1 };
   const paymentLossEscape = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
   const paymentLossPct = value => value == null ? 'н/д' : `${Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`;
+  const paymentLossNa = () => '<span class="badge rounded-pill payment-loss-na">Н/Д</span>';
+  const paymentLossPctHtml = (value, tone = 'primary') => value == null
+    ? paymentLossNa()
+    : `<span class="badge rounded-pill text-bg-${tone}">${paymentLossPct(value)}</span>`;
+  const paymentLossNumber = (value, digits = 1) => value == null
+    ? paymentLossNa()
+    : Number(value).toLocaleString('ru-RU', { maximumFractionDigits: digits });
+  const paymentLossMoney = value => value == null
+    ? paymentLossNa()
+    : `${Number(value).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
   const paymentLossDate = value => value ? new Date(value).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', dateStyle: 'short', timeStyle: 'short' }) : '—';
   const paymentLossDuration = seconds => {
     if (seconds == null) return 'н/д';
@@ -1218,18 +1299,20 @@
     document.getElementById('payment-loss-exclusions').textContent = `Исключено служебных ID: ${data.exclusions.count}`;
     const complete = data.dataCompleteness;
     const completeDate = complete.completeFrom ? new Date(`${complete.completeFrom}T00:00:00+03:00`).toLocaleDateString('ru-RU') : 'н/д';
-    document.getElementById('payment-loss-completeness').innerHTML = `<strong>Данные полноценно собираются с ${paymentLossEscape(completeDate)}:</strong> ${paymentLossEscape(complete.note)}`;
+    const productNote = data.productIntelligence?.telemetry?.note || '';
+    document.getElementById('payment-loss-completeness').innerHTML = `<strong>Данные полноценно собираются с ${paymentLossEscape(completeDate)}:</strong> ${paymentLossEscape(complete.note)}${productNote ? `<div class="mt-1">${paymentLossEscape(productNote)}</div>` : ''}`;
     const first = data.funnel[0]?.users || 0;
     const dropKeys = { plan:'drop_menu', invoice:'drop_plan', pre_checkout:'drop_invoice', payment:'drop_pre_checkout' };
+    const stageColors = ['var(--bs-primary)','var(--bs-info)','var(--bs-warning)','var(--bs-orange, #fd7e14)','var(--bs-success)'];
     document.getElementById('payment-loss-funnel').innerHTML = data.funnel.map((stage, index) => `
       <div class="col-12 col-md-6 col-xl">
-        <div class="card shadow-sm border-0 h-100 payment-loss-kpi payment-loss-stage" style="--stage-width:${first ? Math.min(100, stage.users / first * 100) : 0}%">
+        <div class="card h-100 payment-loss-kpi payment-loss-stage" style="--stage-width:${first ? Math.min(100, stage.users / first * 100) : 0}%;--stage-color:${stageColors[index]}">
           <div class="card-body">
             <div class="small text-uppercase fw-bold text-primary mb-2">${paymentLossEscape(stage.label)}</div>
             <button type="button" class="btn btn-link p-0 payment-loss-click payment-loss-count fw-bold text-body" data-payment-loss-stage="${stage.key}">${stage.users.toLocaleString('ru-RU')}</button>
             <button type="button" class="btn btn-link p-0 d-block small text-muted mt-1 payment-loss-click" data-payment-loss-stage="${stage.key}">Событий: ${stage.events.toLocaleString('ru-RU')}</button>
             <div class="small mt-2">От входа: <strong>${paymentLossPct(stage.conversionFromFirst)}</strong></div>
-            ${index ? (stage.dropoutUsers == null
+            ${index && stage.key !== 'payment' ? (stage.dropoutUsers == null
               ? '<span class="small text-muted">Потеря: н/д для неполного периода</span>'
               : `<button type="button" class="btn btn-link p-0 small text-danger payment-loss-click" data-payment-loss-stage="${dropKeys[stage.key]}">Потеря: ${stage.dropoutUsers.toLocaleString('ru-RU')} (${paymentLossPct(stage.dropoutPercent)})</button>`)
               : '<span class="small text-muted">Начало воронки</span>'}
@@ -1250,12 +1333,46 @@
     document.getElementById('payment-loss-derived').innerHTML = [
       ...Object.entries(derivedLabels).map(([key,label]) => [label,paymentLossPct(data.derivedMetrics[key])]),
       ...derivedDurations
-    ].map(([label,value]) => `<div class="col-6 col-lg-3"><div class="card shadow-sm border-0 h-100"><div class="card-body py-3"><div class="small text-muted">${paymentLossEscape(label)}</div><div class="h5 mb-0 mt-1">${paymentLossEscape(value)}</div></div></div></div>`).join('');
+    ].map(([label,value]) => `<div class="col-6 col-lg-3"><div class="card payment-loss-card payment-loss-compact-kpi h-100"><div class="card-body py-3"><div class="small text-muted">${paymentLossEscape(label)}</div><div class="h5 mb-0 mt-1">${value === 'н/д' ? paymentLossNa() : paymentLossEscape(value)}</div></div></div></div>`).join('');
+
+    const pi = data.productIntelligence || {};
+    const pricingLabels = {
+      daily_limit:'Дневной лимит', manual_menu:'Ручное открытие', premium_feature:'Premium-функция',
+      playlist_limit:'Лимит плейлиста', referral_bonus_end:'Окончание реферального бонуса',
+      notification:'Уведомление', other:'Другая / исторические данные'
+    };
+    const reasonRows = pi.pricingOpenReasons || [];
+    const reasonMax = Math.max(1, ...reasonRows.map(row => row.users));
+    document.getElementById('payment-loss-pricing-reasons').innerHTML = reasonRows.map(row => `
+      <div class="mb-3"><div class="d-flex justify-content-between gap-2 small mb-1"><span>${paymentLossEscape(pricingLabels[row.reason] || row.reason)}</span><strong>${row.users.toLocaleString('ru-RU')}</strong></div>
+      <div class="payment-loss-reason-bar"><span style="width:${Math.max(3, row.users / reasonMax * 100)}%"></span></div><div class="text-muted mt-1" style="font-size:.72rem">Событий: ${row.events.toLocaleString('ru-RU')}</div></div>`).join('')
+      || `<div class="payment-loss-growth-empty"><div><i class="bi bi-signpost fs-3 d-block mb-2"></i>Причины появятся после накопления новых событий.</div></div>`;
+
+    const timingLabels = {
+      registration_to_download:'Регистрация → первое скачивание', download_to_limit:'Первое скачивание → лимит',
+      limit_to_menu:'Лимит → меню', menu_to_plan:'Меню → выбор тарифа', plan_to_invoice:'Тариф → Invoice', invoice_to_payment:'Invoice → оплата'
+    };
+    document.getElementById('payment-loss-journey-timings').innerHTML = (pi.journeyTimings?.stages || []).map(row => `
+      <div class="col-sm-6"><div class="payment-loss-metric h-100"><div class="small text-muted">${paymentLossEscape(timingLabels[row.stage] || row.stage)}</div>
+      <strong class="d-block mt-1">${row.averageSeconds == null ? paymentLossNa() : paymentLossEscape(paymentLossDuration(row.averageSeconds))}</strong><span class="small text-muted">Выборка: ${row.users}</span></div></div>`).join('');
+
+    const sourceLabels = { organic:'Органика', telegram_ads:'Telegram Ads', telega_in:'Telega.in', referral:'Рефералы', channel:'Telegram-канал', search:'Поиск', unknown:'Неизвестно' };
+    document.getElementById('payment-loss-source-economics').innerHTML = (pi.sourceEconomics || []).map(row => `<tr><td><span class="badge rounded-pill text-bg-light border">${paymentLossEscape(sourceLabels[row.source] || row.source)}</span></td><td>${row.users}</td><td>${row.payers}</td><td>${paymentLossPctHtml(row.conversion, row.conversion >= 5 ? 'success' : 'warning')}</td><td>${paymentLossMoney(row.revenueRub)}</td><td>${paymentLossMoney(row.arpu)}</td><td>${paymentLossMoney(row.arppu)}</td><td>${paymentLossMoney(row.observedLtv)}</td></tr>`).join('') || `<tr><td colspan="8" class="text-center py-4">${paymentLossNa()}</td></tr>`;
+    document.getElementById('payment-loss-activity-conversion').innerHTML = (pi.activityConversion || []).map(row => `<tr><td><span class="badge rounded-pill text-bg-light border">${paymentLossEscape(row.segment)}</span></td><td>${row.users}</td><td>${row.payers}</td><td>${paymentLossPctHtml(row.conversion, row.conversion >= 5 ? 'success' : 'warning')}</td></tr>`).join('') || `<tr><td colspan="4" class="text-center py-4">${paymentLossNa()}</td></tr>`;
+
+    const comparisonLabels = { buyers:'Покупатели', non_buyers:'Непокупатели' };
+    document.getElementById('payment-loss-buyer-comparison').innerHTML = (pi.buyerComparison || []).map(row => `<tr><td><span class="badge rounded-pill text-bg-${row.group === 'buyers' ? 'success' : 'secondary'}">${paymentLossEscape(comparisonLabels[row.group] || row.group)}</span></td><td>${row.users}</td><td>${row.avgAccountAgeDays == null ? paymentLossNa() : `${paymentLossNumber(row.avgAccountAgeDays)} дн.`}</td><td>${paymentLossNumber(row.avgDownloads)}</td><td>${row.reachedLimitUsers}</td><td>${row.returnedUsers}</td><td>${paymentLossNumber(row.avgActivityEvents)}</td></tr>`).join('') || `<tr><td colspan="7" class="text-center py-4">${paymentLossNa()}</td></tr>`;
+    document.getElementById('payment-loss-paid-retention').innerHTML = (pi.paidRetention || []).map(row => `<div class="col-6"><div class="payment-loss-metric text-center"><div class="small text-muted">D${row.day}</div><strong class="d-block my-1">${paymentLossPctHtml(row.rate, row.rate >= 10 ? 'success' : 'secondary')}</strong><span class="small text-muted">${row.returned} / ${row.eligible}</span></div></div>`).join('');
+    const rejectionLabels = {
+      menu_without_plan:'Меню без выбора', plan_without_invoice:'Тариф без invoice', invoice_without_pre_checkout:'Invoice без pre-checkout',
+      pre_checkout_without_payment:'Pre-checkout без оплаты', returned_after_7d:'Вернулись через 7 дней', no_observed_activity:'Нет наблюдаемой активности'
+    };
+    document.getElementById('payment-loss-rejection-reasons').innerHTML = (pi.rejectionReasons || []).map(row => `<div class="d-flex justify-content-between gap-2 py-2 border-bottom"><span class="small">${paymentLossEscape(rejectionLabels[row.reason] || row.reason)}</span><span class="badge rounded-pill text-bg-${row.reason === 'returned_after_7d' ? 'secondary' : 'danger'}">${row.users}</span></div>`).join('') || `<div class="payment-loss-growth-empty">${paymentLossNa()}</div>`;
 
     document.getElementById('payment-loss-plans').innerHTML = data.plans.length ? data.plans.map(plan => `<tr>
       <td class="fw-semibold">${paymentLossEscape(plan.plan)}</td><td>${plan.selectedUsers}</td><td>${plan.invoiceUsers}</td><td>${plan.preCheckoutUsers}</td><td>${plan.paymentUsers}</td>
-      <td><span class="badge bg-${(plan.conversion || 0) >= 10 ? 'success' : 'warning'}">${paymentLossPct(plan.conversion)}</span></td>
-      <td>${paymentLossDuration(plan.avgSecondsToPayment)}</td><td>${plan.avgDownloadsBefore == null ? 'н/д' : Number(plan.avgDownloadsBefore).toLocaleString('ru-RU',{maximumFractionDigits:1})}</td><td>${plan.reachedLimitUsers}</td>
+      <td>${paymentLossPctHtml(plan.conversion, plan.conversion >= 10 ? 'success' : 'warning')}</td>
+      <td>${plan.avgSecondsToPayment == null ? paymentLossNa() : paymentLossEscape(paymentLossDuration(plan.avgSecondsToPayment))}</td><td>${paymentLossNumber(plan.avgDownloadsBefore)}</td><td>${plan.reachedLimitUsers}</td>
     </tr>`).join('') : '<tr><td colspan="9" class="text-center text-muted py-4">Нет подтверждённых событий выбора тарифа</td></tr>';
 
     const alt = data.alternative;
@@ -1271,28 +1388,31 @@
       changed_plan:'Сменили выбранный план', opened_alternative:'Открыли другой способ', returned_d1:'Вернулись D1', returned_d7:'Вернулись D7',
       no_observed_activity:'Нет наблюдаемой активности', payment_error_users:'Есть запись ошибки платежа'
     };
-    document.getElementById('payment-loss-behavior').innerHTML = Object.entries(behaviorLabels).map(([key,label]) => `<div class="col-sm-6"><div class="p-2 rounded bg-light d-flex justify-content-between gap-2"><span class="small">${label}</span><strong>${data.postFunnel[key] || 0}</strong></div></div>`).join('');
-    document.getElementById('payment-loss-segments').innerHTML = data.segments.map(row => `<tr><td>${paymentLossEscape(row.segment)}</td><td>${row.users}</td><td>${row.payers}</td><td>${paymentLossPct(row.conversion)}</td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-muted py-4">Нет данных</td></tr>';
-    document.getElementById('payment-loss-content-sources').innerHTML = data.contentSources.map(row => `<tr><td>${paymentLossEscape(row.source)}</td><td>${paymentLossEscape(row.entrySource)}</td><td>${row.users}</td><td>${row.successfulDownloads}</td><td>${row.errors ?? 'н/д'}</td><td>${row.reachedLimitUsers}</td><td>${row.selectedUsers}</td><td>${row.invoiceUsers}</td><td>${row.preCheckoutUsers}</td><td>${row.payers}</td><td>${paymentLossPct(row.conversion)}</td><td>${row.returnedD1} / ${row.returnedD7}</td></tr>`).join('') || '<tr><td colspan="12" class="text-center text-muted py-4">Источник не определён</td></tr>';
+    document.getElementById('payment-loss-behavior').innerHTML = Object.entries(behaviorLabels).map(([key,label]) => `<div class="col-sm-6"><div class="p-2 rounded bg-body-tertiary d-flex justify-content-between gap-2"><span class="small">${label}</span><strong>${data.postFunnel[key] || 0}</strong></div></div>`).join('');
+    document.getElementById('payment-loss-segments').innerHTML = data.segments.map(row => `<tr><td>${paymentLossEscape(row.segment)}</td><td>${row.users}</td><td>${row.payers}</td><td>${paymentLossPctHtml(row.conversion, row.conversion >= 5 ? 'success' : 'warning')}</td></tr>`).join('') || `<tr><td colspan="4" class="text-center py-4">${paymentLossNa()}</td></tr>`;
+    document.getElementById('payment-loss-content-sources').innerHTML = data.contentSources.map(row => `<tr><td>${paymentLossEscape(row.source)}</td><td>${paymentLossEscape(row.entrySource)}</td><td>${row.users}</td><td>${row.successfulDownloads}<div class="small text-muted">ср.: ${paymentLossNumber(row.avgDownloads)}</div></td><td>${row.errors == null ? paymentLossNa() : row.errors}</td><td>${row.reachedLimitUsers}</td><td>${row.selectedUsers}</td><td>${row.invoiceUsers}</td><td>${row.preCheckoutUsers}</td><td>${row.payers}</td><td>${paymentLossPctHtml(row.conversion, row.conversion >= 5 ? 'success' : 'warning')}</td><td>${row.returnedD1} / ${row.returnedD7}</td></tr>`).join('') || `<tr><td colspan="12" class="text-center py-4">${paymentLossNa()}</td></tr>`;
     document.getElementById('payment-loss-errors').innerHTML = data.paymentErrors.map(row => `<tr><td>${paymentLossEscape(row.category)}</td><td>${row.users}</td><td>${row.events}</td></tr>`).join('') || '<tr><td colspan="3" class="text-center text-muted py-4">Ошибок не зафиксировано</td></tr>';
     const dc = data.downloadContext;
+    const failureLabels = { drm:'DRM', file_too_large:'Файл слишком большой', '404':'404 / трек не найден', timeout:'Timeout', queue_failure:'Ошибка очереди', unsupported:'Формат не поддерживается', download_failed:'Прочая ошибка' };
+    const failureRows = data.productIntelligence?.downloadFailures || [];
     document.getElementById('payment-loss-download-context').innerHTML = `
       <div class="row g-2">${[
         ['Открыли тарифы после успешного скачивания',dc.menuAfterSuccess],['Открыли тарифы после ошибки',dc.menuAfterError],
         ['Оплатили после успешного скачивания',dc.paidAfterSuccess],['Оплатили после ошибки',dc.paidAfterError],
         ['Успех и ошибка до тарифов',dc.bothSuccessAndError],['Успешных скачиваний',dc.successfulDownloads]
-      ].map(([label,value])=>`<div class="col-sm-6"><div class="p-2 rounded bg-light d-flex justify-content-between gap-2"><span class="small">${label}</span><strong>${value}</strong></div></div>`).join('')}</div>
-      ${dc.errorTelemetryAvailable ? '' : `<div class="alert alert-warning small mt-3 mb-0">Детальные ошибки скачивания пока не пишутся в analytics_events. Поля ${paymentLossEscape(dc.unavailableFields.join(', '))} показаны как н/д, а не как ложный ноль.</div>`}`;
-    const contractRows = data.eventContract || [];
+      ].map(([label,value])=>`<div class="col-sm-6"><div class="payment-loss-metric d-flex justify-content-between gap-2"><span class="small">${label}</span><strong>${value}</strong></div></div>`).join('')}</div>
+      <div class="table-responsive mt-3"><table class="table table-hover align-middle mb-0 payment-loss-table"><thead class="table-light"><tr><th>Ошибка</th><th>Источник</th><th>Люди / события</th><th>Открыли меню</th><th>Оплатили</th></tr></thead><tbody>${failureRows.map(row => `<tr><td><span class="badge rounded-pill text-bg-danger">${paymentLossEscape(failureLabels[row.reason] || row.reason)}</span></td><td>${paymentLossEscape(row.source)}</td><td>${row.users} / ${row.events}</td><td>${row.openedMenuUsers}</td><td>${row.payerUsers}</td></tr>`).join('') || `<tr><td colspan="5" class="text-center py-3">${paymentLossNa()}</td></tr>`}</tbody></table></div>
+      ${dc.errorTelemetryAvailable ? '' : `<div class="alert alert-warning small mt-3 mb-0">Классифицированные ошибки начинают собираться с нового релиза. Исторический ноль не интерпретируется как отсутствие ошибок. Поле ${paymentLossEscape(dc.unavailableFields.join(', '))} остаётся ${paymentLossNa()}.</div>`}`;
+    const contractRows = [...(data.eventContract || [])].sort((a, b) => b.events - a.events || a.eventName.localeCompare(b.eventName));
     const observedContract = contractRows.filter(row => row.events > 0).length;
     document.getElementById('payment-loss-contract-summary').textContent = `${observedContract}/${contractRows.length} событий наблюдались`;
     document.getElementById('payment-loss-event-contract').innerHTML = contractRows.map(row => {
-      const fields = Object.entries(row.fields).filter(([,present])=>present).map(([name])=>name).join(', ') || '—';
-      return `<tr><td><code>${paymentLossEscape(row.eventName)}</code></td><td>${row.events}</td><td>${row.users}</td><td class="small">${paymentLossEscape(fields)}</td></tr>`;
+      const fields = Object.entries(row.fields).filter(([,present])=>present).map(([name])=>`<span class="badge rounded-pill text-bg-light border me-1 mb-1">${paymentLossEscape(name)}</span>`).join('') || paymentLossNa();
+      return `<tr><td><code>${paymentLossEscape(row.eventName)}</code></td><td><span class="badge rounded-pill text-bg-${row.events ? 'primary' : 'secondary'}">${row.events}</span></td><td><span class="badge rounded-pill text-bg-light border">${row.users}</span></td><td class="small">${fields}</td></tr>`;
     }).join('');
     document.getElementById('payment-loss-recommendations').innerHTML = data.recommendations.length
       ? data.recommendations.map(rec => `<div class="alert alert-warning mb-2"><strong>${paymentLossEscape(rec.title)}</strong><div class="small mt-1">${paymentLossEscape(rec.text)}</div></div>`).join('')
-      : '<div class="text-muted">Рекомендации не формируются: требуется минимум 30 пользователей в начале воронки.</div>';
+      : '<div class="payment-loss-growth-empty"><div><i class="bi bi-cpu fs-2 text-warning d-block mb-2"></i><strong class="d-block mb-1">Пока нет надёжной рекомендации</strong><span class="small">Для вывода нужно минимум 30 уникальных пользователей.</span></div></div>';
     document.getElementById('payment-loss-interpretation').innerHTML = data.interpretation.map(item => `<div><i class="bi bi-info-circle me-1"></i>${paymentLossEscape(item)}</div>`).join('');
     document.querySelectorAll('[data-payment-loss-stage]').forEach(button => button.addEventListener('click', () => openPaymentLossUsers(button.dataset.paymentLossStage, 1)));
   }

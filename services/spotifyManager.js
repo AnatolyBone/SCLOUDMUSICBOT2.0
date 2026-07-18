@@ -372,6 +372,12 @@ export async function handleSpotifyUrl(ctx, url) {
     
   } catch (error) {
     console.error('[Spotify] handleSpotifyUrl error:', error);
+    try {
+      const { analyticsService } = await import('./analyticsService.js');
+      await analyticsService.trackDownloadFailureSafe(ctx.from?.id, error, {
+        source: 'spotify', stage: 'metadata', correlation_id: correlationId
+      }, ctx);
+    } catch (_analyticsError) {}
     const errorMsg = '❌ Ошибка при обработке Spotify ссылки.';
     if (statusMessage) {
       await ctx.telegram.editMessageText(ctx.chat.id, statusMessage.message_id, undefined, errorMsg).catch(() => {});

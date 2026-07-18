@@ -1,5 +1,6 @@
 import { query } from '../db.js';
 import { getSetting } from './settingsManager.js';
+import { getProductIntelligenceAnalytics } from './productIntelligenceService.js';
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ALLOWED_WINDOWS = new Map([
@@ -43,8 +44,10 @@ export const PAYMENT_EVENT_CONTRACT = Object.freeze([
   'boosty_payment_link_opened',
   'daily_limit_reached',
   'download_attempt_over_limit',
+  'playlist_limit_reached',
   'track_download_requested',
-  'track_download_success'
+  'track_download_success',
+  'track_download_failed'
 ]);
 
 function asInteger(value, fallback = 0) {
@@ -540,6 +543,7 @@ const EVENT_CONTRACT_SQL = `
            BOOL_OR(ae.event_data ? 'order_id') AS has_order_id,
            BOOL_OR(ae.event_data ? 'payment_method') AS has_payment_method,
            BOOL_OR(ae.event_data ? 'source') AS has_source,
+           BOOL_OR(ae.event_data ? 'pricing_open_reason') AS has_pricing_open_reason,
            BOOL_OR(ae.deduplication_key IS NOT NULL OR ae.event_data ? 'deduplication_key') AS has_deduplication_key
     FROM public.analytics_events ae
     WHERE ae.event_name = ANY($5::text[])
@@ -555,6 +559,7 @@ const EVENT_CONTRACT_SQL = `
          COALESCE(observed.has_order_id, false) AS has_order_id,
          COALESCE(observed.has_payment_method, false) AS has_payment_method,
          COALESCE(observed.has_source, false) AS has_source,
+         COALESCE(observed.has_pricing_open_reason, false) AS has_pricing_open_reason,
          COALESCE(observed.has_deduplication_key, false) AS has_deduplication_key
   FROM required LEFT JOIN observed USING (event_name)
   ORDER BY required.event_name`;
@@ -600,7 +605,8 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
     alternativeDetailsRes,
     derivedRes,
     downloadContextRes,
-    eventContractRes
+    eventContractRes,
+    productIntelligence
   ] = await Promise.all([
     queryFn(FUNNEL_SQL, params),
     queryFn(PLAN_SQL, params),
@@ -612,9 +618,11 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
     queryFn(ALTERNATIVE_DETAIL_SQL, [...params, altEvents]),
     queryFn(DERIVED_METRICS_SQL, params),
     queryFn(DOWNLOAD_CONTEXT_SQL, params),
-    queryFn(EVENT_CONTRACT_SQL, [...params, PAYMENT_EVENT_CONTRACT])
+    queryFn(EVENT_CONTRACT_SQL, [...params, PAYMENT_EVENT_CONTRACT]),
+    getProductIntelligenceAnalytics(filters, excludedUserIds, queryFn)
   ]);
   const completeFrom = getSetting('analytics_payment_funnel_complete_from') || DEFAULT_COMPLETE_FROM;
+  const productIntelligenceCompleteFrom = getSetting('analytics_product_intelligence_complete_from') || DEFAULT_COMPLETE_FROM;
   const isCompleteRange = filters.startDate >= completeFrom;
   const funnel = createFunnel(funnelRes.rows[0] || {});
   if (!isCompleteRange) {
@@ -702,6 +710,9 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
       users: asInteger(row.users),
       successfulDownloads: asInteger(row.successful_downloads),
       errors: hasDownloadErrorTelemetry ? asInteger(row.errors) : null,
+      avgDownloads: asInteger(row.users) > 0
+        ? Number((asInteger(row.successful_downloads) / asInteger(row.users)).toFixed(2))
+        : null,
       reachedLimitUsers: asInteger(row.limit_users),
       selectedUsers: asInteger(row.selected_users),
       invoiceUsers: asInteger(row.invoice_users),
@@ -726,7 +737,7 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
       errorEvents: asInteger(downloadContext.error_events),
       successfulDownloads: asInteger(downloadContext.successful_downloads),
       errorTelemetryAvailable: hasDownloadErrorTelemetry,
-      unavailableFields: ['file_size', 'http_404', 'http_413', 'drm', 'timeout', 'queue_failure']
+      unavailableFields: ['file_size']
     },
     eventContract: (eventContractRes.rows || []).map(row => ({
       eventName: row.event_name,
@@ -738,9 +749,17 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
         orderId: Boolean(row.has_order_id),
         paymentMethod: Boolean(row.has_payment_method),
         source: Boolean(row.has_source),
+        pricingOpenReason: Boolean(row.has_pricing_open_reason),
         deduplicationKey: Boolean(row.has_deduplication_key)
       }
     })),
+    productIntelligence: {
+      ...productIntelligence,
+      telemetry: {
+        completeFrom: productIntelligenceCompleteFrom,
+        note: `pricing_open_reason и классифицированные ошибки скачивания полноценно собираются с ${productIntelligenceCompleteFrom}.`
+      }
+    },
     recommendations,
     interpretation: [
       'Этапы показывают уникальных пользователей; events — фактическое число событий.',

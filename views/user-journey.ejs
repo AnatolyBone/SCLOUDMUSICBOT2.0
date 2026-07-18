@@ -318,9 +318,11 @@
     track_search_started:'Запущен поиск музыкального трека.',
     track_download_requested:'Пользователь запросил скачивание трека.',
     track_download_success:'Трек успешно доставлен пользователю.',
+    track_download_failed:'Скачивание завершилось классифицированной ошибкой.',
     download:'Скачивание завершено и записано в историю.',
     daily_limit_reached:'Доступный дневной лимит был исчерпан.',
     download_attempt_over_limit:'Зафиксирована попытка скачивания сверх лимита.',
+    playlist_limit_reached:'Количество выбранных треков превысило лимит импорта плейлиста.',
     star_payment_option_shown:'Пользователь открыл экран выбора тарифа.',
     subscription_plan_clicked:'Пользователь выбрал тарифный план.',
     star_invoice_created:'Для оплаты сформирован счёт Telegram Stars.',
@@ -340,7 +342,19 @@
   function alertBox(id, message='') { const el=document.getElementById(id); el.className=message?'alert alert-danger':'alert d-none'; el.textContent=message; }
   async function json(url) { const response=await fetch(url,{headers:{Accept:'application/json'}}); const body=await response.json().catch(()=>({ok:false,error:'Некорректный ответ.'})); if(!response.ok||!body.ok) throw new Error(body.error||`HTTP ${response.status}`); return body.data; }
   function details(data) { const entries=Object.entries(data||{}).filter(([,v])=>v!==null&&v!==''&&v!==undefined); return entries.length?`<details class="mt-2"><summary class="small text-primary">Детали события</summary><dl class="details-grid small mt-2 mb-0">${entries.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(typeof v==='object'?JSON.stringify(v):v)}</dd>`).join('')}</dl></details>`:''; }
-  function eventDescription(event) { return EVENT_DESCRIPTIONS[event.name] || `Системное событие категории «${TONE_LABELS[event.tone]||event.category||'Событие'}».`; }
+  function eventDescription(event) {
+    if (event.name === 'star_payment_option_shown' && event.details?.pricing_open_reason) {
+      const reasons = {
+        daily_limit:'дневной лимит', manual_menu:'ручное открытие меню',
+        premium_feature:'Premium-функция', playlist_limit:'лимит плейлиста',
+        referral_bonus_end:'окончание реферального бонуса', notification:'уведомление',
+        other:'другая причина'
+      };
+      const reason = reasons[event.details.pricing_open_reason] || event.details.pricing_open_reason;
+      return `Пользователь открыл тарифы. Причина: ${reason}.`;
+    }
+    return EVENT_DESCRIPTIONS[event.name] || `Системное событие категории «${TONE_LABELS[event.tone]||event.category||'Событие'}».`;
+  }
   function userPlan(user) { const active=user.premium_until&&new Date(user.premium_until)>new Date(); if(!active)return 'Free'; if(user.premium_limit===null)return 'Unlimited'; if(Number(user.premium_limit)===30)return 'Plus'; if(Number(user.premium_limit)===100)return 'Pro'; return `Тариф ${number(user.premium_limit)}`; }
 
   function renderTimeline(data, append=false) {

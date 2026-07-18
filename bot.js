@@ -1611,7 +1611,7 @@ const helpHandler = async (ctx) => {
         ])
     });
 };
-const upgradeHandler = async (ctx) => {
+const upgradeHandler = async (ctx, explicitReason = null) => {
     try {
         const lang = ctx.state.lang || 'ru';
 
@@ -1640,8 +1640,13 @@ const upgradeHandler = async (ctx) => {
         const userId = ctx.from?.id;
         if (userId) {
             const { analyticsService } = await import('./services/analyticsService.js');
+            const pricingOpenReason = await analyticsService.inferPricingOpenReason(
+                userId,
+                typeof explicitReason === 'string' ? explicitReason : null
+            );
             await analyticsService.trackEventSafe(userId, 'star_payment_option_shown', 'monetization', {
                 placement: 'upgrade_menu',
+                pricing_open_reason: pricingOpenReason,
                 lang
             }, ctx);
         }
@@ -1987,6 +1992,19 @@ async function getPlaylistLimitForUser(userId) {
     }
 }
 
+async function trackPlaylistLimitReached(ctx, playlistLimit, requestedTracks) {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    try {
+        const { analyticsService } = await import('./services/analyticsService.js');
+        await analyticsService.trackEventSafe(userId, 'playlist_limit_reached', 'limits', {
+            playlist_limit: playlistLimit,
+            requested_tracks: requestedTracks,
+            deduplication_key: `playlist_limit:${userId}:${ctx.callbackQuery?.message?.message_id || Date.now()}`
+        }, ctx);
+    } catch (_error) {}
+}
+
 function generateInitialPlaylistMenu(playlistId, trackCount, playlistLimit) {
     const buttons = [
         [Markup.button.callback(`📥 Скачать все (${trackCount})`, `pl_download_all:${playlistId}`)]
@@ -2080,6 +2098,7 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
     
     let limitMessage = '';
     if (session.tracks.length > playlistLimit) {
+        await trackPlaylistLimitReached(ctx, playlistLimit, session.tracks.length);
         limitMessage = `⚠️ Внимание: согласно лимитам вашего тарифа, вы можете загрузить максимум <b>${playlistLimit}</b> трек(ов) из одного плейлиста.\n\n`;
     }
 
@@ -2248,6 +2267,7 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     if (!isAdmin) {
         const playlistLimit = await getPlaylistLimitForUser(userId);
         if (session.selected.size > playlistLimit) {
+            await trackPlaylistLimitReached(ctx, playlistLimit, session.selected.size);
             return await ctx.reply(`❌ Вы не можете выбрать более ${playlistLimit} треков за раз (лимит вашего тарифа на импорт плейлистов).`);
         }
     }
@@ -2553,6 +2573,12 @@ async function handleSoundCloudUrl(ctx, url) {
         
     } catch (error) {
         console.error('Ошибка handleSoundCloudUrl:', error.message);
+        try {
+            const { analyticsService } = await import('./services/analyticsService.js');
+            await analyticsService.trackDownloadFailureSafe(userId, error, {
+                source: 'soundcloud', stage: 'metadata', correlation_id: correlationId
+            }, ctx);
+        } catch (_analyticsError) {}
         let userMessage = '❌ Не удалось обработать ссылку. Возможно, трек удален или заблокирован.';
         if (error.message === 'DRM_PROTECTED') {
             userMessage = '❌ Этот трек защищен DRM-защитой (SoundCloud Go+). Скачивание платных премиум-треков невозможно.';
