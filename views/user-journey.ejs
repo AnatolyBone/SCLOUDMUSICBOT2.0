@@ -138,7 +138,7 @@
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 1rem;
   }
-  .kpi-card { min-height: 132px; }
+  .kpi-card { min-height: 118px; }
   .kpi-card:hover { transform: none; }
   .kpi-value { font-size: 1.7rem; font-weight: 750; line-height: 1.15; }
   .kpi-icon {
@@ -152,7 +152,18 @@
   }
   .source-bars { display: grid; gap: .9rem; }
   .source-bar-track { height: .7rem; border-radius: 999px; overflow: hidden; background: var(--bs-tertiary-bg); }
-  .source-bar-fill { height: 100%; min-width: 3px; border-radius: inherit; background: linear-gradient(90deg, var(--bs-primary-color), #6f42c1); }
+  .source-bar-fill { height: 100%; min-width: 4px; max-width: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--bs-primary-color), #6f42c1); }
+  .source-bar-meta { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: .75rem; }
+  .source-bar-count, .source-bar-share { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .source-kpi-card .card-body { min-height: 118px; padding: 1rem 1.1rem; display: flex; flex-direction: column; justify-content: space-between; }
+  .source-kpi-card .kpi-value { font-size: clamp(1.85rem, 2.4vw, 2.35rem); letter-spacing: -.035em; }
+  .source-kpi-label { font-size: .76rem; font-weight: 650; letter-spacing: .025em; text-transform: uppercase; }
+  .source-insights { border-left: 4px solid var(--bs-primary-color); }
+  .source-insights-list { display: grid; gap: .35rem; margin: 0; padding-left: 1.15rem; }
+  .source-details-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+  .source-detail-metric { min-width: 0; padding: .7rem .8rem; border: 1px solid var(--bs-border-color); border-radius: .65rem; background: var(--bs-body-bg); }
+  .source-detail-value { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .source-no-data { font-weight: 600; color: var(--bs-secondary-color); background: var(--bs-secondary-bg); border: 1px solid var(--bs-border-color); }
   .source-toggle {
     padding: .15rem .35rem;
     border: 0;
@@ -162,7 +173,7 @@
   .source-toggle:hover { transform: none; opacity: .75; }
   .source-raw-row td { background: var(--bs-tertiary-bg); }
   .raw-source-list { display: flex; flex-wrap: wrap; gap: .45rem; }
-  .source-table { min-width: 920px; font-size: .86rem; }
+  .source-table { min-width: 720px; font-size: .86rem; }
   .source-table th, .source-table td { padding: .72rem .8rem !important; }
   .pagination-panel { min-height: 42px; }
   [data-theme="dark"] .admin-workspace .text-bg-light,
@@ -192,6 +203,9 @@
     .details-grid { grid-template-columns: 1fr; gap: .15rem; }
     .details-grid dt { margin-top: .35rem; }
     .filter-panel .btn { width: 100%; }
+    .source-details-grid { grid-template-columns: 1fr; }
+    .source-bar-meta { grid-template-columns: minmax(0, 1fr) auto; gap: .25rem .6rem; }
+    .source-bar-share { grid-column: 2; }
   }
 </style>
 
@@ -300,7 +314,8 @@
             <div class="col-md-4"><label class="form-label small text-muted mb-1" for="sources-end">Когорта по</label><input id="sources-end" type="date" class="form-control form-control-sm" value="<%= defaultEndDate %>" required></div>
             <div class="col-md-4 d-grid"><button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-bar-chart me-1"></i>Рассчитать</button></div>
           </div>
-          <div class="form-text mt-2">Наблюдаемый LTV рассчитан за доступный период и не является прогнозом.</div>
+          <div class="form-text mt-2"><i class="bi bi-info-circle me-1"></i>Большая часть исторических регистраций произошла до полноценного внедрения атрибуции источников. Новые регистрации с ref/UTM/deep-link будут распределяться автоматически.</div>
+          <div class="form-text">Наблюдаемый LTV рассчитан за доступный период и не является прогнозом.</div>
         </div>
       </form>
       <div id="sources-alert" class="alert d-none"></div>
@@ -310,7 +325,8 @@
 </div>
 
 <script>
-  const SOURCE_LABELS = { organic:'Органика', unknown:'Неизвестно', referrals:'Рефералы', broadcasts:'Рассылки', advertising:'Реклама', vpn_bot:'VPN-бот', yandex:'Яндекс', telegram_channel:'Telegram-канал', other:'Другие' };
+  const SOURCE_LABELS = { organic:'Органика', unknown:'Не атрибутировано', referrals:'Рефералы', broadcasts:'Рассылки', advertising:'Реклама', vpn_bot:'VPN-бот', yandex:'Яндекс', telegram_channel:'Telegram-канал', other:'Другие' };
+  const ATTRIBUTION_COMPLETE_FROM = '2026-07-17';
   const TONE_LABELS = { primary:'Воронка', success:'Успех', warning:'Внимание', danger:'Ошибка', info:'Действие', secondary:'Система' };
   const EVENT_DESCRIPTIONS = {
     registration:'Пользователь зарегистрировался в боте.',
@@ -337,6 +353,7 @@
   let timelineEvents = [];
   const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
   const number = (value, digits=0) => (Number.isFinite(Number(value)) ? Number(value) : 0).toLocaleString('ru-RU',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+  const registrationsWord = value => { const n=Math.abs(Number(value)||0)%100, n1=n%10; return n>10&&n<20?'регистраций':n1===1?'регистрация':n1>=2&&n1<=4?'регистрации':'регистраций'; };
   const date = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
   const shortDate = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}) : '—';
   function alertBox(id, message='') { const el=document.getElementById(id); el.className=message?'alert alert-danger':'alert d-none'; el.textContent=message; }
@@ -403,12 +420,17 @@
 
   function renderSources(data){
     const totals=data.sources.reduce((a,s)=>({registrations:a.registrations+s.registrations,payers:a.payers+s.payingUsers,revenue:a.revenue+s.revenueRubEquivalent,unknown:a.unknown+(s.source==='unknown'?s.registrations:0)}),{registrations:0,payers:0,revenue:0,unknown:0});
-    const known=Math.max(totals.registrations-totals.unknown,0); const knownShare=totals.registrations?known/totals.registrations*100:0; const unknownShare=totals.registrations?totals.unknown/totals.registrations*100:0; const maxRegistrations=Math.max(...data.sources.map(s=>s.registrations),1);
+    const known=Math.max(totals.registrations-totals.unknown,0); const knownShare=totals.registrations?known/totals.registrations*100:0; const unknownShare=totals.registrations?totals.unknown/totals.registrations*100:0;
     const rawBySource=data.rawSources.reduce((acc,row)=>{(acc[row.normalizedSource]??=[]).push(row);return acc;},{});
-    const kpis=[['bi-people','Регистрации',number(totals.registrations),'primary'],['bi-person-check','Платящие',number(totals.payers),'info'],['bi-patch-check','Известный источник',number(knownShare,1)+'%','success'],['bi-question-circle','Неизвестный источник',number(unknownShare,1)+'%','warning'],['bi-cash-coin','Подтверждённая выручка',number(totals.revenue,2)+' ₽','success']];
-    const bars=data.sources.map(s=>`<div><div class="d-flex justify-content-between gap-3 small mb-1"><span class="fw-semibold">${esc(SOURCE_LABELS[s.source]||s.source)}</span><span>${number(s.registrations)} регистраций</span></div><div class="source-bar-track" role="img" aria-label="${esc(SOURCE_LABELS[s.source]||s.source)}: ${number(s.registrations)}"><div class="source-bar-fill" style="width:${Math.max(1,s.registrations/maxRegistrations*100)}%"></div></div></div>`).join('');
-    const rows=data.sources.map((s,index)=>{const raw=rawBySource[s.source]||[];return `<tr><td><button type="button" class="source-toggle" data-target="source-raw-${index}" aria-expanded="false"><i class="bi bi-chevron-right me-1"></i></button><strong>${esc(SOURCE_LABELS[s.source]||s.source)}</strong></td><td>${number(s.registrations)}</td><td>${number(s.payingUsers)}</td><td>${number(s.conversion,2)}%</td><td>${number(s.revenueRubEquivalent,2)} ₽</td><td>${number(s.ltv,2)} ₽</td><td>${number(s.arppu,2)} ₽</td><td>${s.retentionD7===null?'—':number(s.retentionD7,1)+'%'}</td></tr><tr id="source-raw-${index}" class="source-raw-row d-none"><td colspan="8"><div class="small fw-semibold mb-2">Исходные источники</div><div class="raw-source-list">${raw.length?raw.map(r=>`<span class="badge text-bg-light border">${esc(r.rawSource)} · ${number(r.registrations)}</span>`).join(''):'<span class="text-muted small">Исходных значений нет</span>'}</div></td></tr>`;}).join('');
-    document.getElementById('sources-results').innerHTML=`<div class="kpi-grid mb-4">${kpis.map(([icon,label,value,tone])=>`<article class="card workspace-card kpi-card"><div class="card-body"><span class="kpi-icon text-${tone}"><i class="bi ${icon}"></i></span><div class="small text-muted mt-2">${label}</div><div class="kpi-value mt-1">${value}</div></div></article>`).join('')}</div><div class="row g-4 mb-4"><div class="col-xl-4"><div class="card workspace-card h-100"><div class="card-body"><h2 class="h6 mb-3"><i class="bi bi-bar-chart-fill text-primary me-2"></i>Регистрации по источникам</h2><div class="source-bars">${bars||'<div class="text-muted">Нет данных</div>'}</div></div></div></div><div class="col-xl-8"><div class="card workspace-card h-100"><div class="table-responsive"><table class="table table-hover align-middle mb-0 source-table"><thead><tr><th>Нормализованный источник</th><th>Регистрации</th><th>Платящие</th><th>Конверсия</th><th>Подтверждённая выручка</th><th>Наблюдаемый LTV</th><th>ARPPU</th><th>D7</th></tr></thead><tbody>${rows||'<tr><td colspan="8" class="text-center text-muted py-4">Нет данных.</td></tr>'}</tbody></table></div></div></div></div>`;
+    const noData='<span class="badge source-no-data" title="Показатель невозможно рассчитать для выбранного периода">Нет данных</span>';
+    const kpis=[['bi-people','Регистрации',number(totals.registrations),'primary'],['bi-person-check','Платящие',number(totals.payers),'info'],['bi-patch-check','Известный источник',number(knownShare,1)+'%','success'],['bi-question-circle','Не атрибутировано',number(unknownShare,1)+'%','warning'],['bi-cash-coin','Подтверждённая выручка',number(totals.revenue,2)+' ₽','success']];
+    const bars=data.sources.map(s=>{const share=totals.registrations?s.registrations/totals.registrations*100:0;const label=SOURCE_LABELS[s.source]||s.source;const tooltip=`${label}: ${number(s.registrations)} ${registrationsWord(s.registrations)} (${number(share,2)}%)`;return `<div title="${esc(tooltip)}"><div class="source-bar-meta small mb-1"><span class="fw-semibold text-truncate">${esc(label)}</span><span class="source-bar-count">${number(s.registrations)}</span><span class="source-bar-share text-muted">${number(share,1)}%</span></div><div class="source-bar-track" role="img" aria-label="${esc(tooltip)}"><div class="source-bar-fill" style="width:${share}%"></div></div></div>`;}).join('');
+    const rows=data.sources.map((s,index)=>{const raw=rawBySource[s.source]||[];const sourceLabel=SOURCE_LABELS[s.source]||s.source;const d7=s.retentionD7===null?noData:number(s.retentionD7,1)+'%';const arppu=s.payingUsers?number(s.arppu,2)+' ₽':noData;const rawBadges=raw.length?raw.map(r=>{const rawLabel=r.rawSource==='unknown'?'Не атрибутировано':r.rawSource;return `<span class="badge text-bg-light border" title="Raw source: ${esc(r.rawSource)}">${esc(rawLabel)} · ${number(r.registrations)}</span>`;}).join(''):'<span class="text-muted small">Исходных значений нет</span>';return `<tr><td><button type="button" class="source-toggle" data-target="source-raw-${index}" aria-expanded="false" aria-label="Подробнее: ${esc(sourceLabel)}"><i class="bi bi-chevron-right me-1"></i><span class="small">Подробнее</span></button><strong class="ms-1">${esc(sourceLabel)}</strong></td><td>${number(s.registrations)}</td><td>${number(s.payingUsers)}</td><td>${number(s.conversion,2)}%</td><td>${number(s.revenueRubEquivalent,2)} ₽</td><td>${d7}</td></tr><tr id="source-raw-${index}" class="source-raw-row d-none"><td colspan="6"><div class="source-details-grid mb-3"><div class="source-detail-metric"><div class="small text-muted">Наблюдаемый LTV</div><div class="source-detail-value">${number(s.ltv,2)} ₽</div></div><div class="source-detail-metric"><div class="small text-muted">ARPU</div><div class="source-detail-value">${number(s.ltv,2)} ₽</div></div><div class="source-detail-metric"><div class="small text-muted">ARPPU</div><div class="source-detail-value">${arppu}</div></div></div><div class="small fw-semibold mb-2">Исходные источники</div><div class="raw-source-list">${rawBadges}</div></td></tr>`;}).join('');
+    const insights=[];
+    if(totals.registrations<30){insights.push(`В выборке ${number(totals.registrations)} регистраций — этого пока недостаточно для устойчивой интерпретации.`);}else{insights.push(`За период зарегистрировано ${number(totals.registrations)} пользователей.`);if(totals.unknown>0)insights.push(`${number(unknownShare,1)}% регистраций пока не атрибутированы к конкретному источнику.`);insights.push(totals.payers===0?'Подтверждённых оплат за период не найдено.':`Подтверждённо платящих пользователей: ${number(totals.payers)}.`);const referrals=data.sources.find(s=>s.source==='referrals');if(!referrals||referrals.registrations<30)insights.push('Для оценки эффективности рефералов пока недостаточно данных.');}
+    const historicalStart=data.period?.startDate||document.getElementById('sources-start').value;const includesHistorical=historicalStart<ATTRIBUTION_COMPLETE_FROM;
+    const historyAlert=includesHistorical?`<div class="alert alert-info py-2 px-3 small mb-4"><i class="bi bi-info-circle-fill me-2"></i>Выбранный период включает регистрации до ${esc(shortDate(ATTRIBUTION_COMPLETE_FROM))}. Для исторических данных источник часто не сохранялся — это не ошибка расчёта.</div>`:'';
+    document.getElementById('sources-results').innerHTML=`${historyAlert}<div class="kpi-grid mb-3">${kpis.map(([icon,label,value,tone])=>`<article class="card workspace-card kpi-card source-kpi-card"><div class="card-body"><div class="d-flex align-items-center justify-content-between gap-2"><div class="source-kpi-label text-muted">${label}</div><span class="kpi-icon text-${tone}"><i class="bi ${icon}"></i></span></div><div class="kpi-value mt-2">${value}</div></div></article>`).join('')}</div><div class="card workspace-card source-insights mb-4"><div class="card-body py-3"><div class="fw-semibold mb-2"><i class="bi bi-eye text-primary me-2"></i>Что видно по выбранному периоду</div><ul class="source-insights-list small">${insights.slice(0,4).map(item=>`<li>${esc(item)}</li>`).join('')}</ul></div></div><div class="row g-4 mb-4"><div class="col-xl-4"><div class="card workspace-card h-100"><div class="card-body"><h2 class="h6 mb-3"><i class="bi bi-bar-chart-fill text-primary me-2"></i>Регистрации по источникам</h2><div class="source-bars">${bars||'<div class="text-muted">Нет данных</div>'}</div></div></div></div><div class="col-xl-8"><div class="card workspace-card h-100"><div class="table-responsive"><table class="table table-hover align-middle mb-0 source-table"><thead><tr><th>Источник</th><th>Регистрации</th><th>Платящие</th><th>Конверсия</th><th>Выручка</th><th>D7</th></tr></thead><tbody>${rows||'<tr><td colspan="6" class="text-center text-muted py-4">Нет данных.</td></tr>'}</tbody></table></div></div></div></div>`;
   }
   async function loadSources(){alertBox('sources-alert');try{const p=new URLSearchParams({startDate:document.getElementById('sources-start').value,endDate:document.getElementById('sources-end').value});renderSources(await json(`/admin/api/acquisition-sources?${p}`));}catch(e){alertBox('sources-alert',e.message);}}
 
