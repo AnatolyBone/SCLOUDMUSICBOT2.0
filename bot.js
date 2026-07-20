@@ -29,7 +29,8 @@ import {
     isUserUnlimited as checkUserUnlimited
 } from './services/downloadLimitService.js';
 import { claimDownloadRequest, getDownloadCorrelationId, logDownloadFlow } from './services/downloadFlowService.js';
-import { buildLimitUpsell } from './services/limitUpsellService.js';
+import { buildLimitUpsell, buildUpgradeOffer } from './services/limitUpsellService.js';
+import { acquireInvoiceRequest, releaseInvoiceRequest } from './services/paymentInvoiceGuard.js';
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
@@ -1265,7 +1266,7 @@ bot.action('tbank_help', async (ctx) => {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [Markup.button.url('🔗 Перейти к оплате Т-Банк', TBANK_URL)],
-                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                    [Markup.button.callback('⬅ Назад', 'other_payment_methods')]
                 ])
             }
         );
@@ -1294,7 +1295,7 @@ bot.action('boosty_help', async (ctx) => {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [Markup.button.url('🔗 Перейти на Boosty', BOOSTY_URL)],
-                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                    [Markup.button.callback('⬅ Назад', 'other_payment_methods')]
                 ])
             }
         );
@@ -1322,7 +1323,7 @@ bot.action('yoomoney_plus', async (ctx) => {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [Markup.button.url('🔗 Перейти к оплате (119 ₽)', 'https://yoomoney.ru/bill/pay/1CI4F93M69C.250903')],
-                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                    [Markup.button.callback('⬅ Назад', 'other_payment_methods')]
                 ])
             }
         );
@@ -1350,7 +1351,7 @@ bot.action('yoomoney_pro', async (ctx) => {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [Markup.button.url('🔗 Перейти к оплате (199 ₽)', 'https://yoomoney.ru/bill/pay/1CI4JNMILG7.250903')],
-                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                    [Markup.button.callback('⬅ Назад', 'other_payment_methods')]
                 ])
             }
         );
@@ -1378,7 +1379,7 @@ bot.action('yoomoney_unlim', async (ctx) => {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [Markup.button.url('🔗 Перейти к оплате (299 ₽)', 'https://yoomoney.ru/bill/pay/1CI4K5962NE.250903')],
-                    [Markup.button.callback('« Назад к способам оплаты', 'other_payment_methods')]
+                    [Markup.button.callback('⬅ Назад', 'other_payment_methods')]
                 ])
             }
         );
@@ -1597,26 +1598,9 @@ const helpHandler = async (ctx) => {
 const upgradeHandler = async (ctx, explicitReason = null) => {
     try {
         const lang = ctx.state.lang || 'ru';
+        const offer = buildUpgradeOffer({ lang });
 
-        const text = i18n(lang, 'upgrade_info');
-
-        const otherPayBtn = lang === 'en' ? '💳 Other payment methods' : '💳 Другие способы оплаты';
-
-        await ctx.reply(text, {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-                [
-                    Markup.button.callback('⭐️ Plus — 79 Stars', 'buy_plan_plus'),
-                    Markup.button.callback('⭐️ Pro — 129 Stars', 'buy_plan_pro')
-                ],
-                [
-                    Markup.button.callback('💎 Unlimited — 199 Stars', 'buy_plan_unlim')
-                ],
-                [
-                    Markup.button.callback(otherPayBtn, 'other_payment_methods')
-                ]
-            ])
-        });
+        await ctx.reply(offer.text, offer.extra);
 
         const userId = ctx.from?.id;
         if (userId) {
@@ -1977,7 +1961,9 @@ function getLimitUpsellPayload(user, lang = 'ru') {
     return buildLimitUpsell({
         lang,
         channelUsername: CHANNEL_USERNAME,
-        bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used)
+        bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used),
+        user,
+        freeLimit: getConfiguredFreeDownloadLimit()
     });
 }
 
@@ -2808,6 +2794,11 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
     const plan = ctx.match[1];
     const userId = ctx.from?.id;
     if (!userId) return;
+    const lang = ctx.state.lang || 'ru';
+
+    if (!acquireInvoiceRequest(userId, plan)) {
+        return ctx.answerCbQuery(i18n(lang, 'invoice_request_in_progress')).catch(() => {});
+    }
 
     try {
         await ctx.answerCbQuery().catch(() => {});
@@ -2829,7 +2820,6 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
             periodDays: tariff.periodDays
         });
 
-        const lang = ctx.state.lang || 'ru';
         const isEn = lang === 'en';
 
         const title = isEn ? `Plan ${tariff.name}` : `Тариф ${tariff.name}`;
@@ -2848,19 +2838,23 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
         }];
 
         // Выставляем счет
-        await ctx.replyWithInvoice({
-            title,
-            description,
-            payload,
-            currency,
-            prices
-        }).catch(async (err) => {
+        try {
+            await ctx.replyWithInvoice({
+                title,
+                description,
+                payload,
+                currency,
+                prices
+            });
+        } catch (err) {
+            releaseInvoiceRequest(userId, plan);
             console.error('[Payment] Error sending Stars invoice:', err.message);
-            const errMsg = (ctx.state.lang === 'en')
+            const errMsg = lang === 'en'
                 ? '⚠️ Failed to issue invoice. Please try again or contact support.'
                 : '⚠️ Не удалось выставить счет. Пожалуйста, попробуйте еще раз или обратитесь в поддержку.';
             await ctx.reply(errMsg);
-        });
+            return;
+        }
 
         // Отслеживаем выбор плана и способа оплаты
         const { analyticsService } = await import('./services/analyticsService.js');
@@ -2879,6 +2873,7 @@ bot.action(/^buy_plan_(plus|pro|unlim)$/, async (ctx) => {
         }, ctx);
 
     } catch (e) {
+        releaseInvoiceRequest(userId, plan);
         console.error('[PaymentAction] Error:', e.message);
     }
 });

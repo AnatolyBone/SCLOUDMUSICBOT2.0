@@ -4,7 +4,7 @@ import { Markup } from 'telegraf';
 import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID, CHANNEL_USERNAME } from '../config.js';
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
-import { getDownloadQueuePriority, getRemainingDownloads, isDownloadLimitReachedForUser } from './downloadLimitService.js';
+import { getConfiguredFreeDownloadLimit, getDownloadQueuePriority, getRemainingDownloads, isDownloadLimitReachedForUser } from './downloadLimitService.js';
 import { getDownloadCorrelationId, logDownloadFlow } from './downloadFlowService.js';
 import { getUserLanguage } from './i18nService.js';
 import { buildLimitUpsell } from './limitUpsellService.js';
@@ -12,7 +12,9 @@ import { buildLimitUpsell } from './limitUpsellService.js';
 function getLimitUpsell(user) {
   return buildLimitUpsell({
     lang: getUserLanguage(user), channelUsername: CHANNEL_USERNAME,
-    bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used)
+    bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used),
+    user,
+    freeLimit: getConfiguredFreeDownloadLimit()
   });
 }
 

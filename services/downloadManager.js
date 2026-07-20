@@ -1709,7 +1709,9 @@ async function safeSendLimitUpsell(userId, user) {
   const payload = buildLimitUpsell({
     lang: getUserLanguage(user),
     channelUsername: CHANNEL_USERNAME,
-    bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used)
+    bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used),
+    user,
+    freeLimit: getConfiguredFreeDownloadLimit()
   });
   return safeSendMessage(userId, payload.text, payload.extra);
 }
