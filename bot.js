@@ -3,7 +3,7 @@
 import { Telegraf, Markup, TelegramError } from 'telegraf';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL, DATABASE_URL, KARAOKE_DATABASE_URL } from './config.js';
+import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
 import { getSetting } from './services/settingsManager.js';
 import { updateUserField, getUser, createUser, setPremium, setTariffAdmin, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage,
@@ -29,6 +29,7 @@ import {
     isUserUnlimited as checkUserUnlimited
 } from './services/downloadLimitService.js';
 import { claimDownloadRequest, getDownloadCorrelationId, logDownloadFlow } from './services/downloadFlowService.js';
+import { buildLimitUpsell } from './services/limitUpsellService.js';
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
@@ -181,17 +182,6 @@ async function isSubscribed(userId) {
     }
 }
 
-function maskConnectionString(url) {
-    if (!url) return 'not set';
-    try {
-        const parsed = new URL(url);
-        if (parsed.password) parsed.password = '*****';
-        return parsed.toString();
-    } catch {
-        return url.replace(/:([^:@]+)@/, ':*****@');
-    }
-}
-
 export function isUserUnlimited(user) {
     return checkUserUnlimited(user);
 }
@@ -200,7 +190,7 @@ export function getUserLimit(user) {
     return getEffectiveDownloadLimit(user, getConfiguredFreeDownloadLimit());
 }
 
-async function isDownloadLimitReached(ctx, userId) {
+async function isDownloadLimitReached(ctx, userId, correlationId = null) {
     const isAdmin = Number(userId) === Number(ADMIN_ID);
     if (isAdmin) return false;
 
@@ -210,10 +200,7 @@ async function isDownloadLimitReached(ctx, userId) {
     const downloadsToday = Number(user.downloads_today || 0);
     const limitFreeSetting = getConfiguredFreeDownloadLimit();
     const userLimit = getEffectiveDownloadLimit(user, limitFreeSetting);
-    const limitPlusSetting = parseInt(getSetting('daily_limit_plus') || '30', 10);
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
-    
-    const playlistLimit = await getPlaylistLimitForUser(userId);
     
     const limitSource = isUserUnlimited(user)
         ? 'active_unlimited'
@@ -224,18 +211,13 @@ async function isDownloadLimitReached(ctx, userId) {
     console.log(`[DEBUG] [Tariffs & Limits] User check:`, {
         telegram_id: userId,
         username: ctx.from?.username || 'unknown',
-        is_admin: isAdmin,
         is_premium: isPremium,
         premium_until: user.premium_until,
         daily_limit: Number.isFinite(userLimit) ? userLimit : 'unlimited',
-        playlist_limit: playlistLimit,
         downloaded_today: downloadsToday,
         remaining_downloads: Number.isFinite(userLimit) ? getRemainingDownloads(user, limitFreeSetting) : 'unlimited',
         limit_source: limitSource,
-        free_setting: limitFreeSetting,
-        plus_setting: limitPlusSetting,
-        database_url_masked: maskConnectionString(DATABASE_URL),
-        karaoke_database_url_masked: maskConnectionString(KARAOKE_DATABASE_URL)
+        correlation_id: correlationId
     });
 
     if (isDownloadLimitReachedForUser(user, limitFreeSetting)) {
@@ -1406,10 +1388,11 @@ bot.action('yoomoney_unlim', async (ctx) => {
 });
 
 // Возврат к меню тарифов
-bot.action('back_to_upgrade', async (ctx) => {
+bot.action(['back_to_upgrade', 'open_tariffs_limit'], async (ctx) => {
     try {
         await ctx.answerCbQuery();
-        await upgradeHandler(ctx);
+        const reason = ctx.callbackQuery?.data === 'open_tariffs_limit' ? 'limit_message' : 'menu_button';
+        await upgradeHandler(ctx, reason);
     } catch (_e) {}
 });
 
@@ -1615,9 +1598,7 @@ const upgradeHandler = async (ctx, explicitReason = null) => {
     try {
         const lang = ctx.state.lang || 'ru';
 
-        const text = lang === 'en'
-            ? `<b>💎 Download Limit Upgrade</b>\n\nChoose your plan — instant activation via <b>Telegram Stars</b>:\n\n⭐️ <b>Plus</b> — 30 downloads/day / 79 Stars / 30 days\n⭐️ <b>Pro</b> — 100 downloads/day / 129 Stars / 30 days\n💎 <b>Unlimited</b> — unlimited / 199 Stars / 30 days`
-            : `<b>💎 Увеличение лимитов скачивания</b>\n\nВыберите тарифный план — оплата через <b>Telegram Stars</b> (мгновенная автоматическая активация):\n\n⭐️ <b>Plus</b> — 30 скачиваний в день / 79 Stars / 30 дней\n⭐️ <b>Pro</b> — 100 скачиваний в день / 129 Stars / 30 дней\n💎 <b>Unlimited</b> — безлимит / 199 Stars / 30 дней`;
+        const text = i18n(lang, 'upgrade_info');
 
         const otherPayBtn = lang === 'en' ? '💳 Other payment methods' : '💳 Другие способы оплаты';
 
@@ -1661,7 +1642,7 @@ for (const lang of SUPPORTED_LANGUAGES) {
     bot.hears(i18n(lang, 'btn_menu'), menuHandler);
     bot.hears(i18n(lang, 'btn_mytracks'), mytracksHandler);
     bot.hears(i18n(lang, 'btn_help'), helpHandler);
-    bot.hears(i18n(lang, 'btn_upgrade'), upgradeHandler);
+    bot.hears(i18n(lang, 'btn_upgrade'), (ctx) => upgradeHandler(ctx, 'menu_button'));
     bot.hears(i18n(lang, 'btn_language'), sendLanguageMenu);
 }
 bot.hears('🆔 Распознать', recognizeHandler);
@@ -1672,9 +1653,9 @@ bot.command('mytracks', mytracksHandler);
 bot.command('help', helpHandler);
 bot.command('support', supportCommandHandler);
 bot.command('paysupport', paySupportHandler);
-bot.command('upgrade', upgradeHandler);
-bot.command('tariffs', upgradeHandler);
-bot.command('premium', upgradeHandler);
+bot.command('upgrade', (ctx) => upgradeHandler(ctx, 'manual_command'));
+bot.command('tariffs', (ctx) => upgradeHandler(ctx, 'manual_command'));
+bot.command('premium', (ctx) => upgradeHandler(ctx, 'manual_command'));
 bot.command('shazam', recognizeHandler);
 
 const vpnHandler = (ctx) => {
@@ -1992,6 +1973,14 @@ async function getPlaylistLimitForUser(userId) {
     }
 }
 
+function getLimitUpsellPayload(user, lang = 'ru') {
+    return buildLimitUpsell({
+        lang,
+        channelUsername: CHANNEL_USERNAME,
+        bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used)
+    });
+}
+
 async function trackPlaylistLimitReached(ctx, playlistLimit, requestedTracks) {
     const userId = ctx.from?.id;
     if (!userId) return;
@@ -2058,19 +2047,9 @@ async function processPlaylistDownload(ctx, session, isAll, userId) {
     const remainingLimit = isAdmin ? 99999 : userLimit - (user.downloads_today || 0);
 
     if (remainingLimit <= 0) {
-        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-        const bonusText = bonusAvailable
-            ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-            : '';
-        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-        if (bonusAvailable) {
-            extra.reply_markup = {
-                inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
-            };
-        }
         const _lang1 = ctx.state?.lang || 'ru';
-        await ctx.editMessageText(`${i18n(_lang1, 'limit_reached')}${bonusText}`, extra);
+        const payload = getLimitUpsellPayload(user, _lang1);
+        await ctx.editMessageText(payload.text, payload.extra);
         playlistSessions.delete(userId);
         return;
     }
@@ -2170,17 +2149,9 @@ bot.action(/pl_select_manual:(.+)/, async (ctx) => {
     const userLimit = getUserLimit(user);
     const remainingLimit = isAdmin ? 99999 : userLimit - (user.downloads_today || 0);
     if (remainingLimit <= 0) {
-        const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-        const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-        const bonusText = bonusAvailable
-            ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-            : '';
-        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-        if (bonusAvailable) {
-            extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
-        }
         const _lang2 = ctx.state?.lang || 'ru';
-        await ctx.editMessageText(`${i18n(_lang2, 'limit_reached')}${bonusText}`, extra);
+        const payload = getLimitUpsellPayload(user, _lang2);
+        await ctx.editMessageText(payload.text, payload.extra);
         playlistSessions.delete(userId);
         return await ctx.answerCbQuery('Лимит исчерпан');
     }
@@ -2283,25 +2254,12 @@ bot.action(/pl_finish:(.+)/, async (ctx) => {
     const remainingLimit = isAdmin ? 99999 : userLimit - (user.downloads_today || 0);
     
     if (remainingLimit <= 0) {
-  const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-  const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-  const bonusText = bonusAvailable
-    ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-    : '';
-  const extra = {
-    parse_mode: 'HTML',
-    disable_web_page_preview: true
-  };
-  if (bonusAvailable) {
-    extra.reply_markup = {
-      inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]]
-    };
-  }
-  const _langLR = ctx.state?.lang || 'ru';
-  await ctx.editMessageText(`${i18n(_langLR, 'limit_reached')}${bonusText}`, extra);
-  playlistSessions.delete(userId);
-  return;
-}
+        const _langLR = ctx.state?.lang || 'ru';
+        const payload = getLimitUpsellPayload(user, _langLR);
+        await ctx.editMessageText(payload.text, payload.extra);
+        playlistSessions.delete(userId);
+        return;
+    }
     
     await ctx.editMessageText(`✅ Готово! Добавляю ${session.selected.size} выбранных треков в очередь...`);
     
@@ -2464,20 +2422,12 @@ async function handleSoundCloudUrl(ctx, url) {
     const correlationId = getDownloadCorrelationId(ctx);
     logDownloadFlow(correlationId, 'limit-check', { userId, source: 'soundcloud' });
     try {
-        if (await isDownloadLimitReached(ctx, ctx.from.id)) {
+        if (await isDownloadLimitReached(ctx, ctx.from.id, correlationId)) {
             logDownloadFlow(correlationId, 'limit-rejected', { userId, source: 'soundcloud', queued: false });
             const user = await getUser(ctx.from.id);
-            const bonusAvailable = Boolean(CHANNEL_USERNAME && !user.subscribed_bonus_used);
-            const cleanUsername = CHANNEL_USERNAME?.replace('@', '');
-            const bonusText = bonusAvailable
-              ? `\n\n🎁 Доступен бонус! Подпишись на <a href="https://t.me/${cleanUsername}">@${cleanUsername}</a> и получи <b>7 дней тарифа Plus</b>.`
-              : '';
-            const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-            if (bonusAvailable) {
-              extra.reply_markup = { inline_keyboard: [[ { text: '✅ Я подписался, забрать бонус', callback_data: 'check_subscription' } ]] };
-            }
             const _lang4 = ctx.state?.lang || 'ru';
-        await ctx.reply(`${i18n(_lang4, 'limit_reached')}${bonusText}`, extra);
+            const payload = getLimitUpsellPayload(user, _lang4);
+            await ctx.reply(payload.text, payload.extra);
             return;
         }
 
@@ -2522,7 +2472,7 @@ async function handleSoundCloudUrl(ctx, url) {
                 performer: cachedTrack.artist || 'Unknown' 
             });
             
-            await incrementDownloadsAndSaveTrack(ctx.from.id, cachedTrack.title, cachedTrack.fileId, cleanUrl, 'soundcloud');
+            await incrementDownloadsAndSaveTrack(ctx.from.id, cachedTrack.title, cachedTrack.fileId, cleanUrl, 'soundcloud', true, correlationId);
             logDownloadFlow(correlationId, 'delivery-complete', { userId, source: 'soundcloud' });
             return;
         }
@@ -2537,6 +2487,12 @@ async function handleSoundCloudUrl(ctx, url) {
             console.error(`[youtube-dl] ДЕТАЛИ ОШИБКИ для ${cleanUrl}:`, redactSecretsInText(errText));
             if (errText.includes('DRM protected')) {
                 throw new Error('DRM_PROTECTED');
+            }
+            const httpStatus = errText.match(/(?:HTTP(?: Error)?\s*)?(403|404|413)\b/i)?.[1];
+            if (httpStatus) {
+                const safeHttpError = new Error(`HTTP ${httpStatus}`);
+                safeHttpError.status = Number(httpStatus);
+                throw safeHttpError;
             }
             throw new Error('Ошибка при запросе к SoundCloud (см. логи)');
         }
@@ -2576,7 +2532,8 @@ async function handleSoundCloudUrl(ctx, url) {
         try {
             const { analyticsService } = await import('./services/analyticsService.js');
             await analyticsService.trackDownloadFailureSafe(userId, error, {
-                source: 'soundcloud', stage: 'metadata', correlation_id: correlationId
+                source: 'soundcloud', path: 'direct_url', stage: 'metadata',
+                correlation_id: correlationId, is_playlist: false
             }, ctx);
         } catch (_analyticsError) {}
         let userMessage = '❌ Не удалось обработать ссылку. Возможно, трек удален или заблокирован.';

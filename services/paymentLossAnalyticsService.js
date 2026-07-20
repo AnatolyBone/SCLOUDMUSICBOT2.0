@@ -624,6 +624,7 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
   const completeFrom = getSetting('analytics_payment_funnel_complete_from') || DEFAULT_COMPLETE_FROM;
   const productIntelligenceCompleteFrom = getSetting('analytics_product_intelligence_complete_from') || DEFAULT_COMPLETE_FROM;
   const isCompleteRange = filters.startDate >= completeFrom;
+  const isDownloadErrorTelemetryAvailable = filters.startDate >= productIntelligenceCompleteFrom;
   const funnel = createFunnel(funnelRes.rows[0] || {});
   if (!isCompleteRange) {
     for (const stage of funnel) {
@@ -647,7 +648,6 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
   const segmentRows = segmentsRes.rows || [];
   const derived = derivedRes.rows[0] || {};
   const downloadContext = downloadContextRes.rows[0] || {};
-  const hasDownloadErrorTelemetry = asInteger(downloadContext.error_events) > 0;
   const sample = funnel[0]?.users || 0;
   const weakest = funnel.slice(1).reduce((best, stage) => !best || (stage.dropoutPercent || 0) > (best.dropoutPercent || 0) ? stage : best, null);
   const recommendations = !isCompleteRange || sample < 30 ? [] : [{
@@ -709,7 +709,7 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
       entrySource: row.entry_source,
       users: asInteger(row.users),
       successfulDownloads: asInteger(row.successful_downloads),
-      errors: hasDownloadErrorTelemetry ? asInteger(row.errors) : null,
+      errors: isDownloadErrorTelemetryAvailable ? asInteger(row.errors) : null,
       avgDownloads: asInteger(row.users) > 0
         ? Number((asInteger(row.successful_downloads) / asInteger(row.users)).toFixed(2))
         : null,
@@ -730,13 +730,13 @@ export async function getPaymentLossAnalytics(input = {}, { queryFn = query } = 
     derivedMetrics,
     downloadContext: {
       menuAfterSuccess: asInteger(downloadContext.menu_after_success),
-      menuAfterError: asInteger(downloadContext.menu_after_error),
+      menuAfterError: isDownloadErrorTelemetryAvailable ? asInteger(downloadContext.menu_after_error) : null,
       paidAfterSuccess: asInteger(downloadContext.paid_after_success),
-      paidAfterError: asInteger(downloadContext.paid_after_error),
-      bothSuccessAndError: asInteger(downloadContext.both_success_and_error),
-      errorEvents: asInteger(downloadContext.error_events),
+      paidAfterError: isDownloadErrorTelemetryAvailable ? asInteger(downloadContext.paid_after_error) : null,
+      bothSuccessAndError: isDownloadErrorTelemetryAvailable ? asInteger(downloadContext.both_success_and_error) : null,
+      errorEvents: isDownloadErrorTelemetryAvailable ? asInteger(downloadContext.error_events) : null,
       successfulDownloads: asInteger(downloadContext.successful_downloads),
-      errorTelemetryAvailable: hasDownloadErrorTelemetry,
+      errorTelemetryAvailable: isDownloadErrorTelemetryAvailable,
       unavailableFields: ['file_size']
     },
     eventContract: (eventContractRes.rows || []).map(row => ({

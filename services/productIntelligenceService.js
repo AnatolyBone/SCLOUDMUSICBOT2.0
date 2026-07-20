@@ -1,6 +1,6 @@
 const PRICING_REASONS = new Set([
-  'daily_limit', 'manual_menu', 'premium_feature', 'playlist_limit',
-  'referral_bonus_end', 'notification', 'other'
+  'daily_limit', 'manual_command', 'menu_button', 'limit_message',
+  'referral_bonus_expired', 'broadcast', 'other'
 ]);
 
 function integer(value) {
@@ -46,7 +46,7 @@ const PRICING_REASON_SQL = `
           WHERE lim.user_id = ae.user_id
             AND lim.event_name = 'playlist_limit_reached'
             AND lim.created_at BETWEEN ae.created_at - interval '30 minutes' AND ae.created_at
-        ) THEN 'playlist_limit'
+        ) THEN 'daily_limit'
         ELSE 'other'
       END AS reason
     FROM public.analytics_events ae
@@ -177,6 +177,7 @@ const PAID_RETENTION_SQL = `
     WHERE p.payment_status = 'completed'
       AND p.paid_at BETWEEN $1::timestamptz AND $2::timestamptz
       AND $3::int > 0
+      AND $3::int > 0
       AND NOT (p.user_id = ANY($4::bigint[]))
     ORDER BY p.user_id, p.paid_at, p.id
   ), activity_days AS (
@@ -270,7 +271,7 @@ const REJECTION_REASONS_SQL = `${BASE_MENU_CTE}, population AS (
 const DOWNLOAD_FAILURES_SQL = `
   WITH failures AS (
     SELECT ae.user_id, ae.created_at,
-      COALESCE(NULLIF(ae.event_data->>'failure_reason', ''), 'download_failed') AS reason,
+      COALESCE(NULLIF(ae.event_data->>'error_category', ''), NULLIF(ae.event_data->>'failure_reason', ''), 'unknown') AS reason,
       COALESCE(NULLIF(LOWER(ae.event_data->>'source'), ''), 'unknown') AS source
     FROM public.analytics_events ae
     WHERE ae.event_name = 'track_download_failed'
@@ -285,6 +286,16 @@ const DOWNLOAD_FAILURES_SQL = `
         AND menu.created_at BETWEEN failures.created_at AND failures.created_at + interval '7 days'
     ))::int AS opened_menu_users,
     COUNT(DISTINCT user_id) FILTER (WHERE EXISTS (
+      SELECT 1 FROM public.analytics_events plan
+      WHERE plan.user_id = failures.user_id AND plan.event_name = 'subscription_plan_clicked'
+        AND plan.created_at BETWEEN failures.created_at AND failures.created_at + interval '7 days'
+    ))::int AS selected_plan_users,
+    COUNT(DISTINCT user_id) FILTER (WHERE EXISTS (
+      SELECT 1 FROM public.analytics_events invoice
+      WHERE invoice.user_id = failures.user_id AND invoice.event_name = 'star_invoice_created'
+        AND invoice.created_at BETWEEN failures.created_at AND failures.created_at + interval '7 days'
+    ))::int AS invoice_users,
+    COUNT(DISTINCT user_id) FILTER (WHERE EXISTS (
       SELECT 1 FROM public.payments p
       WHERE p.user_id = failures.user_id AND p.payment_status = 'completed'
         AND p.paid_at BETWEEN failures.created_at AND failures.created_at + interval '7 days'
@@ -292,9 +303,50 @@ const DOWNLOAD_FAILURES_SQL = `
   FROM failures GROUP BY reason, source
   ORDER BY users DESC, events DESC, reason, source`;
 
+const LIMIT_REPETITION_SQL = `
+  WITH paid AS (
+    SELECT p.user_id, MIN(p.paid_at) AS anchor_at, 'paid'::text AS group_name
+    FROM public.payments p
+    WHERE p.payment_status = 'completed'
+      AND p.paid_at BETWEEN $1::timestamptz AND $2::timestamptz
+      AND NOT (p.user_id = ANY($4::bigint[]))
+    GROUP BY p.user_id
+  ), unpaid_opened AS (
+    SELECT ae.user_id, MIN(ae.created_at) AS anchor_at, 'opened_not_paid'::text AS group_name
+    FROM public.analytics_events ae
+    WHERE ae.event_name = 'star_payment_option_shown'
+      AND ae.created_at BETWEEN $1::timestamptz AND $2::timestamptz
+      AND $3::int > 0
+      AND NOT (ae.user_id = ANY($4::bigint[]))
+      AND NOT EXISTS (
+        SELECT 1 FROM public.payments p
+        WHERE p.user_id = ae.user_id AND p.payment_status = 'completed' AND p.paid_at <= $2::timestamptz
+      )
+    GROUP BY ae.user_id
+  ), population AS (
+    SELECT * FROM paid UNION ALL SELECT * FROM unpaid_opened
+  ), counts AS (
+    SELECT population.group_name, population.user_id, COUNT(lim.id)::int AS limit_count
+    FROM population
+    LEFT JOIN public.analytics_events lim ON lim.user_id = population.user_id
+      AND lim.event_name IN ('daily_limit_reached','download_attempt_over_limit')
+      AND lim.created_at <= population.anchor_at
+    GROUP BY population.group_name, population.user_id
+  )
+  SELECT group_name, COUNT(*)::int AS users,
+    AVG(limit_count)::float AS average,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY limit_count)::float AS median,
+    COUNT(*) FILTER (WHERE limit_count = 1)::int AS bucket_1,
+    COUNT(*) FILTER (WHERE limit_count BETWEEN 2 AND 3)::int AS bucket_2_3,
+    COUNT(*) FILTER (WHERE limit_count BETWEEN 4 AND 5)::int AS bucket_4_5,
+    COUNT(*) FILTER (WHERE limit_count >= 6)::int AS bucket_6_plus
+  FROM counts
+  GROUP BY group_name
+  ORDER BY group_name`;
+
 export async function getProductIntelligenceAnalytics(filters, excludedUserIds, queryFn) {
   const params = [filters.startAt, filters.endAt, filters.windowSeconds, excludedUserIds];
-  const [reasons, timings, activity, comparison, retention, economics, rejection, failures] = await Promise.all([
+  const [reasons, timings, activity, comparison, retention, economics, rejection, failures, limitRepetition] = await Promise.all([
     queryFn(PRICING_REASON_SQL, [...params, [...PRICING_REASONS]]),
     queryFn(JOURNEY_TIMINGS_SQL, params),
     queryFn(ACTIVITY_CONVERSION_SQL, params),
@@ -302,7 +354,8 @@ export async function getProductIntelligenceAnalytics(filters, excludedUserIds, 
     queryFn(PAID_RETENTION_SQL, params),
     queryFn(SOURCE_ECONOMICS_SQL, params),
     queryFn(REJECTION_REASONS_SQL, params),
-    queryFn(DOWNLOAD_FAILURES_SQL, params)
+    queryFn(DOWNLOAD_FAILURES_SQL, params),
+    queryFn(LIMIT_REPETITION_SQL, params)
   ]);
   const timing = timings.rows[0] || {};
   return {
@@ -346,8 +399,23 @@ export async function getProductIntelligenceAnalytics(filters, excludedUserIds, 
     rejectionReasons: rejection.rows.map(row => ({ reason: row.reason, users: integer(row.users) })),
     downloadFailures: failures.rows.map(row => ({
       reason: row.reason, source: row.source, events: integer(row.events), users: integer(row.users),
-      openedMenuUsers: integer(row.opened_menu_users), payerUsers: integer(row.payer_users)
-    }))
+      openedMenuUsers: integer(row.opened_menu_users), selectedPlanUsers: integer(row.selected_plan_users),
+      invoiceUsers: integer(row.invoice_users), payerUsers: integer(row.payer_users)
+    })),
+    limitRepetition: ['paid', 'opened_not_paid'].map(group => {
+      const row = limitRepetition.rows.find(item => item.group_name === group);
+      return {
+        group,
+        available: Boolean(row && integer(row.users) > 0),
+        users: row ? integer(row.users) : 0,
+        average: row ? numeric(row.average) : null,
+        median: row ? numeric(row.median) : null,
+        buckets: row ? {
+          one: integer(row.bucket_1), twoToThree: integer(row.bucket_2_3),
+          fourToFive: integer(row.bucket_4_5), sixPlus: integer(row.bucket_6_plus)
+        } : null
+      };
+    })
   };
 }
 
@@ -359,5 +427,6 @@ export const __productIntelligenceSql = Object.freeze({
   PAID_RETENTION_SQL,
   SOURCE_ECONOMICS_SQL,
   REJECTION_REASONS_SQL,
-  DOWNLOAD_FAILURES_SQL
+  DOWNLOAD_FAILURES_SQL,
+  LIMIT_REPETITION_SQL
 });

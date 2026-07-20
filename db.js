@@ -1034,7 +1034,7 @@ export async function getCacheStats() {
 
 /* ========================= Логирование ========================= */
 
-export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, url, source = null, isCacheHit = false) {
+export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, url, source = null, isCacheHit = false, correlationId = null) {
   const newTrack = { title: trackName, fileId, url };
   const res = await query(
     `UPDATE users
@@ -1057,7 +1057,7 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
   );
   if (res.rowCount > 0) {
     const updatedUser = res.rows[0];
-    await logDownload(userId, trackName, url, source, isCacheHit);
+    await logDownload(userId, trackName, url, source, isCacheHit, correlationId);
 
     // Проверяем, достиг ли пользователь дневного лимита
     const isPremium = updatedUser.premium_until && new Date(updatedUser.premium_until) > new Date();
@@ -1102,7 +1102,7 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
 // =========================================================
 // ИСПРАВЛЕННАЯ ФУНКЦИЯ (SQL вместо Supabase Client)
 // =========================================================
-export async function logDownload(userId, trackTitle, url, source = null, isCacheHit = false) {
+export async function logDownload(userId, trackTitle, url, source = null, isCacheHit = false, correlationId = null) {
   try {
     // Определяем источник, если он не передан
     let detectedSource = source;
@@ -1133,7 +1133,8 @@ export async function logDownload(userId, trackTitle, url, source = null, isCach
         source: detectedSource,
         delivery_source: isCacheHit ? 'cache' : 'download',
         download_log_id: downloadLogId,
-        deduplication_key: dedupKey
+        correlation_id: correlationId,
+        deduplication_key: correlationId ? `download_final:${correlationId}` : dedupKey
       });
     } catch (ae) {
       console.error('[Analytics] Error tracking download success:', ae.message);

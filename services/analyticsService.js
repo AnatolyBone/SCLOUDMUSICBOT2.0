@@ -3,26 +3,58 @@
 import { query } from '../db.js';
 import redisService from './redisClient.js';
 import { randomUUID } from 'crypto';
+import { getDownloadFinalDeduplicationKey } from './downloadFlowService.js';
 
 export const PRICING_OPEN_REASONS = Object.freeze([
   'daily_limit',
-  'manual_menu',
-  'premium_feature',
-  'playlist_limit',
-  'referral_bonus_end',
-  'notification',
+  'manual_command',
+  'menu_button',
+  'limit_message',
+  'referral_bonus_expired',
+  'broadcast',
   'other'
 ]);
 
-export function classifyDownloadFailure(error) {
+export function getDownloadFailureHttpStatus(error) {
+  const candidates = [
+    error?.response?.status,
+    error?.status,
+    error?.statusCode,
+    String(error?.stderr || error?.message || error || '').match(/(?:HTTP(?: Error)?\s*)?(403|404|413)\b/i)?.[1]
+  ];
+  const status = candidates.map(Number).find(value => [403, 404, 413].includes(value));
+  return status || null;
+}
+
+export function classifyDownloadFailure(error, details = {}) {
   const message = String(error?.stderr || error?.message || error || '').toLowerCase();
+  const status = getDownloadFailureHttpStatus(error);
+  if (status === 403) return 'http_403';
+  if (status === 404) return 'http_404';
+  if (status === 413) return 'http_413';
   if (/drm|preview_only|go\+|protected/.test(message)) return 'drm';
-  if (/413|file_too_large|buffer_too_large|too large|50 mb/.test(message)) return 'file_too_large';
-  if (/404|not found|video unavailable|removed/.test(message)) return '404';
+  if (/file_too_large|buffer_too_large|too large|50 mb|file exceeds/.test(message)) return 'file_too_large';
   if (/timeout|timed out|task_timeout|etimedout/.test(message)) return 'timeout';
   if (/queue|broker|redis|enqueue/.test(message)) return 'queue_failure';
   if (/unsupported|format is not available|no suitable format/.test(message)) return 'unsupported';
-  return 'download_failed';
+  if (details.stage === 'metadata') return 'metadata_failure';
+  if (details.stage === 'upload' || details.stage === 'delivery') return 'upload_failure';
+  return 'unknown';
+}
+
+export function buildDownloadFailureEventData(error, details = {}) {
+  const correlationId = details.correlation_id || details.correlationId || null;
+  return {
+    source: details.source || 'unknown',
+    path: details.path || 'direct_url',
+    error_category: classifyDownloadFailure(error, details),
+    http_status: getDownloadFailureHttpStatus(error),
+    is_playlist: Boolean(details.is_playlist),
+    stage: details.stage || 'download',
+    correlation_id: correlationId,
+    pricing_open_reason: null,
+    deduplication_key: getDownloadFinalDeduplicationKey(correlationId)
+  };
 }
 
 /**
@@ -68,32 +100,29 @@ class AnalyticsService {
          LIMIT 1`,
         [userId, [
           'daily_limit_reached', 'download_attempt_over_limit', 'playlist_limit_reached',
-          'premium_feature_opened', 'referral_bonus_ended', 'subscription_notification_opened'
+          'premium_feature_opened', 'referral_bonus_ended', 'subscription_notification_opened',
+          'broadcast_received', 'broadcast_clicked'
         ]]
       );
       const eventName = recent.rows[0]?.event_name;
       if (eventName === 'daily_limit_reached' || eventName === 'download_attempt_over_limit') return 'daily_limit';
-      if (eventName === 'playlist_limit_reached') return 'playlist_limit';
-      if (eventName === 'premium_feature_opened') return 'premium_feature';
-      if (eventName === 'referral_bonus_ended') return 'referral_bonus_end';
-      if (eventName === 'subscription_notification_opened') return 'notification';
+      if (eventName === 'referral_bonus_ended') return 'referral_bonus_expired';
+      if (eventName === 'broadcast_received' || eventName === 'broadcast_clicked') return 'broadcast';
     } catch (error) {
       console.warn('[Analytics] Pricing reason inference failed:', error.message);
     }
-    return 'manual_menu';
+    return 'other';
   }
 
   async trackDownloadFailureSafe(userId, error, details = {}, ctx = null) {
     if (!userId) return;
-    const failureReason = classifyDownloadFailure(error);
-    const correlationId = details.correlation_id || details.correlationId || null;
-    await this.trackEventSafe(userId, 'track_download_failed', 'downloads', {
-      failure_reason: failureReason,
-      source: details.source || 'unknown',
-      stage: details.stage || 'download',
-      correlation_id: correlationId,
-      deduplication_key: correlationId ? `download_failure:${correlationId}:${failureReason}` : null
-    }, ctx);
+    await this.trackEventSafe(
+      userId,
+      'track_download_failed',
+      'downloads',
+      buildDownloadFailureEventData(error, details),
+      ctx
+    );
   }
 
   /**
@@ -213,7 +242,15 @@ class AnalyticsService {
    */
   async trackEventSafe(userId, eventName, category, eventData = {}, ctx = null) {
     try {
-      await this.trackEvent(userId, eventName, category, eventData, ctx);
+      let safeEventData = eventData;
+      if (eventName === 'track_download_success' || eventName === 'track_download_failed') {
+        const correlationId = eventData?.correlation_id || eventData?.correlationId || null;
+        const finalDeduplicationKey = getDownloadFinalDeduplicationKey(correlationId);
+        if (finalDeduplicationKey) {
+          safeEventData = { ...eventData, deduplication_key: finalDeduplicationKey };
+        }
+      }
+      await this.trackEvent(userId, eventName, category, safeEventData, ctx);
     } catch (e) {
       // Игнорируем ошибку
     }

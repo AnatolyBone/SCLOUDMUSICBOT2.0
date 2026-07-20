@@ -1,11 +1,20 @@
 // services/spotifyManager.js - Spotify с выбором треков и качества
 
 import { Markup } from 'telegraf';
-import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID } from '../config.js';
+import { SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, ADMIN_ID, CHANNEL_USERNAME } from '../config.js';
 import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
 import { getDownloadQueuePriority, getRemainingDownloads, isDownloadLimitReachedForUser } from './downloadLimitService.js';
 import { getDownloadCorrelationId, logDownloadFlow } from './downloadFlowService.js';
+import { getUserLanguage } from './i18nService.js';
+import { buildLimitUpsell } from './limitUpsellService.js';
+
+function getLimitUpsell(user) {
+  return buildLimitUpsell({
+    lang: getUserLanguage(user), channelUsername: CHANNEL_USERNAME,
+    bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used)
+  });
+}
 
 // ========================= QUALITY PRESETS =========================
 
@@ -282,7 +291,8 @@ export async function handleSpotifyUrl(ctx, url) {
       const user = await getUser(ctx.from.id);
       if (isDownloadLimitReachedForUser(user)) {
         logDownloadFlow(correlationId, 'spotify-limit-rejected', { userId: ctx.from.id, source: 'spotify', queued: false });
-        return await ctx.reply('🚫 Дневной лимит загрузок исчерпан.');
+        const payload = getLimitUpsell(user);
+        return await ctx.reply(payload.text, payload.extra);
       }
     }
     
@@ -302,9 +312,10 @@ export async function handleSpotifyUrl(ctx, url) {
     const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
     
     if (remainingLimit <= 0) {
+      const payload = getLimitUpsell(user);
       return await ctx.telegram.editMessageText(
         ctx.chat.id, statusMessage.message_id, undefined,
-        '🚫 Дневной лимит загрузок исчерпан.'
+        payload.text, payload.extra
       );
     }
     
@@ -375,7 +386,8 @@ export async function handleSpotifyUrl(ctx, url) {
     try {
       const { analyticsService } = await import('./analyticsService.js');
       await analyticsService.trackDownloadFailureSafe(ctx.from?.id, error, {
-        source: 'spotify', stage: 'metadata', correlation_id: correlationId
+        source: 'spotify', path: 'direct_url', stage: 'metadata',
+        correlation_id: correlationId, is_playlist: false
       }, ctx);
     } catch (_analyticsError) {}
     const errorMsg = '❌ Ошибка при обработке Spotify ссылки.';
@@ -626,7 +638,8 @@ export function registerSpotifyCallbacks(bot) {
     const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
     
     if (remainingLimit <= 0) {
-      return ctx.editMessageText('🚫 Дневной лимит загрузок исчерпан.');
+      const payload = getLimitUpsell(user);
+      return ctx.editMessageText(payload.text, payload.extra);
     }
     
     const tracksToProcess = tracksToDownload.slice(0, remainingLimit);

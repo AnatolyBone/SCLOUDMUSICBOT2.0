@@ -360,11 +360,24 @@
   async function json(url) { const response=await fetch(url,{headers:{Accept:'application/json'}}); const body=await response.json().catch(()=>({ok:false,error:'Некорректный ответ.'})); if(!response.ok||!body.ok) throw new Error(body.error||`HTTP ${response.status}`); return body.data; }
   function details(data) { const entries=Object.entries(data||{}).filter(([,v])=>v!==null&&v!==''&&v!==undefined); return entries.length?`<details class="mt-2"><summary class="small text-primary">Детали события</summary><dl class="details-grid small mt-2 mb-0">${entries.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(typeof v==='object'?JSON.stringify(v):v)}</dd>`).join('')}</dl></details>`:''; }
   function eventDescription(event) {
+    if (event.name === 'track_download_failed') {
+      const categories = {
+        http_403:'HTTP 403', http_404:'HTTP 404', http_413:'HTTP 413', drm:'DRM-защита',
+        timeout:'тайм-аут', queue_failure:'ошибка очереди', file_too_large:'файл слишком большой',
+        unsupported:'формат не поддерживается', metadata_failure:'ошибка метаданных',
+        upload_failure:'ошибка отправки', unknown:'неизвестная ошибка'
+      };
+      const sources = { soundcloud:'SoundCloud', spotify:'Spotify', youtube:'YouTube', unknown:'Неизвестный источник' };
+      const category = categories[event.details?.error_category] || event.details?.error_category || 'неизвестная ошибка';
+      const source = sources[event.details?.download_source] || event.details?.download_source || 'Неизвестный источник';
+      const stage = event.details?.download_stage ? ` Этап: ${event.details.download_stage}.` : '';
+      return `${source} — ${category}.${stage}`;
+    }
     if (event.name === 'star_payment_option_shown' && event.details?.pricing_open_reason) {
       const reasons = {
-        daily_limit:'дневной лимит', manual_menu:'ручное открытие меню',
-        premium_feature:'Premium-функция', playlist_limit:'лимит плейлиста',
-        referral_bonus_end:'окончание реферального бонуса', notification:'уведомление',
+        daily_limit:'лимит исчерпан', manual_command:'команда тарифов', menu_button:'кнопка меню',
+        limit_message:'сообщение о лимите', referral_bonus_expired:'бонус завершён',
+        broadcast:'рассылка',
         other:'другая причина'
       };
       const reason = reasons[event.details.pricing_open_reason] || event.details.pricing_open_reason;

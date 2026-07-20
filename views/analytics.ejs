@@ -664,7 +664,7 @@
 
       <div class="row g-3 mb-4">
         <div class="col-xl-7"><div class="card payment-loss-card h-100">
-          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-download text-primary"></i>Контекст скачиваний до открытия тарифов</div>
+          <div class="card-header bg-white fw-bold payment-loss-section-title"><i class="bi bi-download text-primary"></i>Ошибки перед открытием тарифов</div>
           <div class="card-body" id="payment-loss-download-context"></div>
         </div></div>
         <div class="col-xl-5"><div class="card payment-loss-card h-100">
@@ -1337,9 +1337,9 @@
 
     const pi = data.productIntelligence || {};
     const pricingLabels = {
-      daily_limit:'Дневной лимит', manual_menu:'Ручное открытие', premium_feature:'Premium-функция',
-      playlist_limit:'Лимит плейлиста', referral_bonus_end:'Окончание реферального бонуса',
-      notification:'Уведомление', other:'Другая / исторические данные'
+      daily_limit:'Дневной лимит', manual_command:'Команда тарифов', menu_button:'Кнопка меню',
+      limit_message:'Сообщение о лимите', referral_bonus_expired:'Окончание бонуса',
+      broadcast:'Рассылка', other:'Другая / исторические данные'
     };
     const reasonRows = pi.pricingOpenReasons || [];
     const reasonMax = Math.max(1, ...reasonRows.map(row => row.users));
@@ -1393,15 +1393,20 @@
     document.getElementById('payment-loss-content-sources').innerHTML = data.contentSources.map(row => `<tr><td>${paymentLossEscape(row.source)}</td><td>${paymentLossEscape(row.entrySource)}</td><td>${row.users}</td><td>${row.successfulDownloads}<div class="small text-muted">ср.: ${paymentLossNumber(row.avgDownloads)}</div></td><td>${row.errors == null ? paymentLossNa() : row.errors}</td><td>${row.reachedLimitUsers}</td><td>${row.selectedUsers}</td><td>${row.invoiceUsers}</td><td>${row.preCheckoutUsers}</td><td>${row.payers}</td><td>${paymentLossPctHtml(row.conversion, row.conversion >= 5 ? 'success' : 'warning')}</td><td>${row.returnedD1} / ${row.returnedD7}</td></tr>`).join('') || `<tr><td colspan="12" class="text-center py-4">${paymentLossNa()}</td></tr>`;
     document.getElementById('payment-loss-errors').innerHTML = data.paymentErrors.map(row => `<tr><td>${paymentLossEscape(row.category)}</td><td>${row.users}</td><td>${row.events}</td></tr>`).join('') || '<tr><td colspan="3" class="text-center text-muted py-4">Ошибок не зафиксировано</td></tr>';
     const dc = data.downloadContext;
-    const failureLabels = { drm:'DRM', file_too_large:'Файл слишком большой', '404':'404 / трек не найден', timeout:'Timeout', queue_failure:'Ошибка очереди', unsupported:'Формат не поддерживается', download_failed:'Прочая ошибка' };
+    const failureLabels = { http_403:'HTTP 403', http_404:'HTTP 404', http_413:'HTTP 413', drm:'DRM', file_too_large:'Файл слишком большой', timeout:'Timeout', queue_failure:'Ошибка очереди', unsupported:'Формат не поддерживается', metadata_failure:'Ошибка метаданных', upload_failure:'Ошибка отправки', unknown:'Прочая ошибка' };
     const failureRows = data.productIntelligence?.downloadFailures || [];
+    const limitRepetition = data.productIntelligence?.limitRepetition || [];
+    const renderLimitRepetition = row => row?.available
+      ? `<div class="payment-loss-metric h-100"><div class="fw-semibold mb-2">${row.group === 'paid' ? 'Оплатившие' : 'Открыли тарифы, но не оплатили'}</div><div class="d-flex gap-3 mb-2"><span>Среднее: <strong>${paymentLossNumber(row.average)}</strong></span><span>Медиана: <strong>${paymentLossNumber(row.median)}</strong></span></div><div class="small text-muted">1 раз: ${row.buckets.one} · 2–3: ${row.buckets.twoToThree} · 4–5: ${row.buckets.fourToFive} · 6+: ${row.buckets.sixPlus} · выборка: ${row.users}</div></div>`
+      : `<div class="payment-loss-metric h-100"><div class="fw-semibold mb-2">${row?.group === 'paid' ? 'Оплатившие' : 'Открыли тарифы, но не оплатили'}</div>${paymentLossNa()}</div>`;
     document.getElementById('payment-loss-download-context').innerHTML = `
       <div class="row g-2">${[
         ['Открыли тарифы после успешного скачивания',dc.menuAfterSuccess],['Открыли тарифы после ошибки',dc.menuAfterError],
         ['Оплатили после успешного скачивания',dc.paidAfterSuccess],['Оплатили после ошибки',dc.paidAfterError],
         ['Успех и ошибка до тарифов',dc.bothSuccessAndError],['Успешных скачиваний',dc.successfulDownloads]
       ].map(([label,value])=>`<div class="col-sm-6"><div class="payment-loss-metric d-flex justify-content-between gap-2"><span class="small">${label}</span><strong>${value}</strong></div></div>`).join('')}</div>
-      <div class="table-responsive mt-3"><table class="table table-hover align-middle mb-0 payment-loss-table"><thead class="table-light"><tr><th>Ошибка</th><th>Источник</th><th>Люди / события</th><th>Открыли меню</th><th>Оплатили</th></tr></thead><tbody>${failureRows.map(row => `<tr><td><span class="badge rounded-pill text-bg-danger">${paymentLossEscape(failureLabels[row.reason] || row.reason)}</span></td><td>${paymentLossEscape(row.source)}</td><td>${row.users} / ${row.events}</td><td>${row.openedMenuUsers}</td><td>${row.payerUsers}</td></tr>`).join('') || `<tr><td colspan="5" class="text-center py-3">${paymentLossNa()}</td></tr>`}</tbody></table></div>
+      <div class="table-responsive mt-3"><table class="table table-hover align-middle mb-0 payment-loss-table"><thead class="table-light"><tr><th>Ошибка</th><th>Источник</th><th>Люди / события</th><th>Открыли меню</th><th>Выбрали тариф</th><th>Invoice</th><th>Оплатили</th></tr></thead><tbody>${failureRows.map(row => `<tr><td><span class="badge rounded-pill text-bg-danger">${paymentLossEscape(failureLabels[row.reason] || row.reason)}</span></td><td>${paymentLossEscape(row.source)}</td><td>${row.users} / ${row.events}</td><td>${row.openedMenuUsers}</td><td>${row.selectedPlanUsers}</td><td>${row.invoiceUsers}</td><td>${row.payerUsers}</td></tr>`).join('') || `<tr><td colspan="7" class="text-center py-3">${paymentLossNa()}</td></tr>`}</tbody></table></div>
+      <div class="mt-3"><div class="small fw-semibold text-uppercase text-muted mb-2">Повторные достижения лимита до оплаты</div><div class="row g-2">${limitRepetition.map(row => `<div class="col-md-6">${renderLimitRepetition(row)}</div>`).join('')}</div></div>
       ${dc.errorTelemetryAvailable ? '' : `<div class="alert alert-warning small mt-3 mb-0">Классифицированные ошибки начинают собираться с нового релиза. Исторический ноль не интерпретируется как отсутствие ошибок. Поле ${paymentLossEscape(dc.unavailableFields.join(', '))} остаётся ${paymentLossNa()}.</div>`}`;
     const contractRows = [...(data.eventContract || [])].sort((a, b) => b.events - a.events || a.eventName.localeCompare(b.eventName));
     const observedContract = contractRows.filter(row => row.events > 0).length;

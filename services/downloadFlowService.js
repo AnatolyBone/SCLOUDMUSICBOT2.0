@@ -22,6 +22,11 @@ export function getDownloadCorrelationId(ctx) {
   return `tg-${updateId}-${userId}`;
 }
 
+export function getDownloadFinalDeduplicationKey(correlationId) {
+  const normalized = String(correlationId || '').trim();
+  return normalized ? `download_final:${normalized}` : null;
+}
+
 export function claimDownloadRequest(ctx, url) {
   if (!ctx) return true;
   ctx.state ||= {};

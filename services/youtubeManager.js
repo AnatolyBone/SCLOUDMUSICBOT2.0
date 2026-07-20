@@ -1,7 +1,7 @@
 // services/youtubeManager.js - YouTube/YouTube Music для Render Free Tier
 
 import ytdl from 'youtube-dl-exec';
-import { PROXY_URL, ADMIN_ID } from '../config.js';
+import { PROXY_URL, ADMIN_ID, CHANNEL_USERNAME } from '../config.js';
 import { redactSecretsInText } from './logSanitizer.js';
 
 async function ytdlWithFallback(url, flags) {
@@ -22,6 +22,15 @@ import { downloadQueue } from './downloadManager.js';
 import { getUser } from '../db.js';
 import { getDownloadQueuePriority, getRemainingDownloads, isDownloadLimitReachedForUser } from './downloadLimitService.js';
 import { getDownloadCorrelationId, logDownloadFlow } from './downloadFlowService.js';
+import { getUserLanguage } from './i18nService.js';
+import { buildLimitUpsell } from './limitUpsellService.js';
+
+function getLimitUpsell(user) {
+  return buildLimitUpsell({
+    lang: getUserLanguage(user), channelUsername: CHANNEL_USERNAME,
+    bonusAvailable: Boolean(CHANNEL_USERNAME && !user?.subscribed_bonus_used)
+  });
+}
 
 // ========================= QUALITY PRESETS =========================
 
@@ -90,7 +99,8 @@ export async function handleYouTubeUrl(ctx, url) {
       const user = await getUser(ctx.from.id);
       if (isDownloadLimitReachedForUser(user)) {
         logDownloadFlow(correlationId, 'youtube-limit-rejected', { userId: ctx.from.id, source: 'youtube', queued: false });
-        return await ctx.reply('🚫 Дневной лимит загрузок исчерпан.');
+        const payload = getLimitUpsell(user);
+        return await ctx.reply(payload.text, payload.extra);
       }
     }
 
@@ -109,9 +119,10 @@ export async function handleYouTubeUrl(ctx, url) {
     const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
     
     if (remainingLimit <= 0) {
+      const payload = getLimitUpsell(user);
       return await ctx.telegram.editMessageText(
         ctx.chat.id, statusMessage.message_id, undefined,
-        '🚫 Дневной лимит загрузок исчерпан.'
+        payload.text, payload.extra
       );
     }
     
@@ -181,7 +192,8 @@ export async function handleYouTubeUrl(ctx, url) {
     try {
       const { analyticsService } = await import('./analyticsService.js');
       await analyticsService.trackDownloadFailureSafe(ctx.from?.id, error, {
-        source: 'youtube', stage: 'metadata', correlation_id: correlationId
+        source: 'youtube', path: 'direct_url', stage: 'metadata',
+        correlation_id: correlationId, is_playlist: false
       }, ctx);
     } catch (_analyticsError) {}
     const msg = '❌ Ошибка при обработке YouTube ссылки.';
@@ -214,7 +226,8 @@ export async function handleYouTubeQualitySelection(ctx, sessionId, quality) {
   const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
   
   if (remainingLimit <= 0) {
-    return ctx.editMessageText('🚫 Дневной лимит загрузок исчерпан.');
+    const payload = getLimitUpsell(user);
+    return ctx.editMessageText(payload.text, payload.extra);
   }
   
   if (metadata.entries && metadata.entries.length > 0) {
