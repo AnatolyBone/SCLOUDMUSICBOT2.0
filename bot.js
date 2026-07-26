@@ -31,6 +31,7 @@ import {
 import { claimDownloadRequest, getDownloadCorrelationId, logDownloadFlow } from './services/downloadFlowService.js';
 import { buildLimitUpsell, buildUpgradeOffer } from './services/limitUpsellService.js';
 import { acquireInvoiceRequest, releaseInvoiceRequest } from './services/paymentInvoiceGuard.js';
+import { notifyAdminAboutConfirmedStarsPayment } from './services/starsPaymentNotificationService.js';
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
@@ -2944,6 +2945,19 @@ bot.on('successful_payment', async (ctx) => {
         });
 
         if (result && result.status === 'success') {
+            try {
+                const { query } = await import('./db.js');
+                await notifyAdminAboutConfirmedStarsPayment({
+                    paymentResult: result,
+                    paymentChargeId: payment.telegram_payment_charge_id,
+                    adminId: ADMIN_ID,
+                    queryFn: query,
+                    sendMessage: (...args) => bot.telegram.sendMessage(...args)
+                });
+            } catch (notifyError) {
+                console.error('[Payment/AdminNotify] Failed to notify administrator:', notifyError.message);
+            }
+
             const { TARIFFS } = await import('./config/tariffs.js');
             const tariff = TARIFFS[result.plan];
             const name = tariff ? tariff.name : result.plan;
