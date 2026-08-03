@@ -220,6 +220,22 @@ class RedisService {
     }
   }
 
+  async publish(channel, message) {
+    try { const client = await this.ensureConnection(); return client ? await client.publish(channel, String(message)) : 0; }
+    catch (e) { console.error(`[Redis PUBLISH] ${channel}:`, e.message); return 0; }
+  }
+
+  async subscribe(channel, handler) {
+    try {
+      const client = await this.ensureConnection();
+      if (!client) return null;
+      const subscriber = client.duplicate();
+      await subscriber.connect();
+      await subscriber.subscribe(channel, handler);
+      return subscriber;
+    } catch (e) { console.error(`[Redis SUBSCRIBE] ${channel}:`, e.message); return null; }
+  }
+
   /**
    * Устанавливает TTL для существующего ключа
    */
