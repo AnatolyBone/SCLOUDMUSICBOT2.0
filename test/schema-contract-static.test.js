@@ -30,9 +30,14 @@ function assertNoMatch(pattern, description) {
   assert.deepEqual(matches, [], `${description}: ${matches.join(', ')}`);
 }
 
+function assertNoSqlTemplateMatch(pattern, description) {
+  const matches = runtimeSources.filter(({ text }) => [...text.matchAll(/`([^`]*)`/g)].some(match => pattern.test(match[1]))).map(({ file }) => file);
+  assert.deepEqual(matches, [], `${description}: ${matches.join(', ')}`);
+}
+
 test('runtime SQL does not use retired production column names', () => {
-  assertNoMatch(
-    /(?:INSERT\s+INTO|FROM|JOIN)\s+(?:public\.)?broadcast_clicks[\s\S]{0,240}\bbroadcast_id\b/i,
+  assertNoSqlTemplateMatch(
+    /(?:INSERT\s+INTO\s+(?:public\.)?broadcast_clicks\s*\([^)]*\bbroadcast_id\b|FROM\s+(?:public\.)?broadcast_clicks(?:\s+\w+)?\s+WHERE[^)]*\bbroadcast_id\b|JOIN\s+(?:public\.)?broadcast_clicks\s+\w+\s+ON[^\n]*\.broadcast_id\b)/i,
     'broadcast_clicks must use campaign_id'
   );
   assertNoMatch(

@@ -35,17 +35,20 @@
   const freeLimit = parseInt(getSetting('daily_limit_free') || '3', 10);
   const plusLimit = parseInt(getSetting('daily_limit_plus') || '30', 10);
   const proLimit = parseInt(getSetting('daily_limit_pro') || '100', 10);
+  const unlimitedLimit = parseInt(getSetting('daily_limit_unlimited') || getSetting('daily_limit_unlim') || '10000', 10);
   const premiumUntil = u.premium_until ? new Date(u.premium_until) : null;
   const premiumActive = Boolean(premiumUntil && !Number.isNaN(premiumUntil.getTime()) && premiumUntil > new Date());
-  const unlimited = premiumActive && u.premium_limit === null;
+  const activeTariff = premiumActive ? (u.tariff_code || (u.premium_limit === null ? 'unlimited' : Number(u.premium_limit) >= 100 ? 'pro' : 'plus')) : 'free';
+  const unlimited = activeTariff === 'unlimited';
   let planName = 'Free';
   let planClass = 'text-bg-secondary';
   if (unlimited) { planName = 'Unlimited'; planClass = 'text-bg-primary'; }
-  else if (premiumActive && Number(u.premium_limit) === plusLimit) { planName = 'Plus'; planClass = 'text-bg-info'; }
-  else if (premiumActive && Number(u.premium_limit) === proLimit) { planName = 'Pro'; planClass = 'text-bg-warning'; }
+  else if (activeTariff === 'plus') { planName = 'Plus'; planClass = 'text-bg-info'; }
+  else if (activeTariff === 'pro') { planName = 'Pro'; planClass = 'text-bg-warning'; }
   else if (premiumActive && Number(u.premium_limit) > freeLimit) { planName = `Тариф ${u.premium_limit}`; planClass = 'text-bg-primary'; }
   const expiredPremium = Boolean(!premiumActive && premiumUntil && (u.premium_limit === null || Number(u.premium_limit) > freeLimit));
-  const currentLimit = unlimited ? null : (premiumActive ? Number(u.premium_limit || freeLimit) : freeLimit);
+  const tariffLimits = { free: freeLimit, plus: plusLimit, pro: proLimit, unlimited: unlimitedLimit };
+  const currentLimit = u.daily_limit_override ?? (unlimited ? null : tariffLimits[activeTariff]);
   const downloadsToday = Number(u.downloads_today || 0);
   const limitPercent = unlimited ? 0 : Math.min(100, Math.round(downloadsToday / Math.max(currentLimit, 1) * 100));
   const progressClass = limitPercent >= 100 ? 'bg-danger' : limitPercent > 75 ? 'bg-warning' : 'bg-success';

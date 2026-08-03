@@ -14,19 +14,27 @@ export function getConfiguredFreeDownloadLimit() {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
 }
 
+export function getConfiguredTariffLimits() {
+  return {
+    free: getConfiguredFreeDownloadLimit(),
+    plus: Number(getSetting('daily_limit_plus')) || 30,
+    pro: Number(getSetting('daily_limit_pro')) || 100,
+    unlimited: Number(getSetting('daily_limit_unlimited') || getSetting('daily_limit_unlim')) || 10000
+  };
+}
+
 export function getEffectiveDownloadLimit(user, freeLimit = getConfiguredFreeDownloadLimit(), now = new Date()) {
-  return getEffectiveLimit(user, freeLimit, now);
+  return getEffectiveLimit(user, getConfiguredTariffLimits(), now);
 }
 
 export function isDownloadLimitReachedForUser(user, freeLimit = getConfiguredFreeDownloadLimit(), now = new Date()) {
-  return isLimitReached(user, freeLimit, now);
+  return isLimitReached(user, getConfiguredTariffLimits(), now);
 }
 
 export function getRemainingDownloads(user, freeLimit = getConfiguredFreeDownloadLimit(), now = new Date()) {
-  return getRemaining(user, freeLimit, now);
+  return getRemaining(user, getConfiguredTariffLimits(), now);
 }
 
 export function getDownloadQueuePriority(user, freeLimit = getConfiguredFreeDownloadLimit(), now = new Date()) {
-  return getQueuePriority(user, freeLimit, now);
+  return getQueuePriority(user, getConfiguredTariffLimits(), now);
 }
-

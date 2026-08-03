@@ -1,0 +1,10 @@
+BEGIN;
+DELETE FROM storage.buckets WHERE id='support-attachments' AND NOT EXISTS (SELECT 1 FROM storage.objects WHERE bucket_id='support-attachments');
+DROP INDEX IF EXISTS public.idx_support_messages_storage_path;
+DROP INDEX IF EXISTS public.idx_subscription_activation_user_created;
+ALTER TABLE public.support_messages DROP COLUMN IF EXISTS file_size, DROP COLUMN IF EXISTS mime_type, DROP COLUMN IF EXISTS storage_path;
+ALTER TABLE public.users DROP COLUMN IF EXISTS tariff_code, DROP COLUMN IF EXISTS daily_limit_override;
+DELETE FROM public.app_settings WHERE key='daily_limit_unlimited';
+ALTER TABLE public.app_settings DROP COLUMN IF EXISTS updated_at;
+DROP TABLE IF EXISTS public.subscription_activation_log;
+COMMIT;

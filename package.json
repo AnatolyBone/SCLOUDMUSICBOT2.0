@@ -14,7 +14,7 @@
     "test:payments:integration": "node scripts/run-payment-integration.js",
     "test:insights:integration": "node scripts/run-user-insights-integration.js",
     "release:check": "node scripts/release-check.js",
-    "test": "node --test --test-isolation=none"
+    "test": "node scripts/run-tests.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.6",
