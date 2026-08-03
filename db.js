@@ -465,6 +465,7 @@ export async function getUser(id, firstName = '', username = '', startPayload = 
 const allowedFields = new Set([
   'premium_limit', 'downloads_today', 'total_downloads', 'first_name', 'username',
   'premium_until', 'subscribed_bonus_used', 'tracks_today', 'last_reset_date',
+  'tariff_code', 'daily_limit_override',
   'active', 'referred_count', 'promo_1plus1_used', 'has_reviewed',
   'notified_about_expiration',
   'notified_exp_3d', 'notified_exp_1d', 'notified_exp_0d',
@@ -1045,11 +1046,12 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
          tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
      WHERE id = $2
        AND (
-         (premium_until IS NOT NULL AND premium_until >= NOW() AND premium_limit IS NULL)
+         (daily_limit_override IS NULL AND premium_until IS NOT NULL AND premium_until >= NOW() AND COALESCE(tariff_code, CASE WHEN premium_limit IS NULL THEN 'unlimited' END) = 'unlimited')
          OR downloads_today < CASE
-           WHEN premium_until IS NOT NULL AND premium_until >= NOW()
-             THEN premium_limit
-           ELSE COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+           WHEN daily_limit_override IS NOT NULL THEN daily_limit_override
+           WHEN premium_until IS NULL OR premium_until < NOW() THEN COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+           WHEN COALESCE(tariff_code, CASE WHEN premium_limit >= 100 THEN 'pro' ELSE 'plus' END) = 'pro' THEN COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100)
+           ELSE COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)
          END
        )
      RETURNING *`,
@@ -1060,10 +1062,8 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
     await logDownload(userId, trackName, url, source, isCacheHit, correlationId);
 
     // Проверяем, достиг ли пользователь дневного лимита
-    const isPremium = updatedUser.premium_until && new Date(updatedUser.premium_until) > new Date();
-    const { getSetting } = await import('./services/settingsManager.js');
-    const freeLimit = parseInt(getSetting('daily_limit_free') || '3', 10);
-    const userLimit = isPremium ? updatedUser.premium_limit : freeLimit;
+    const { getEffectiveDownloadLimit } = await import('./services/downloadLimitService.js');
+    const userLimit = getEffectiveDownloadLimit(updatedUser);
     if (userLimit !== null && updatedUser.downloads_today === userLimit) {
       try {
         const { analyticsService } = await import('./services/analyticsService.js');
@@ -1080,7 +1080,7 @@ export async function incrementDownloadsAndSaveTrack(userId, trackName, fileId, 
     try {
       await query(
         `INSERT INTO user_promo_progress (user_id, campaign_id, progress, shown)
-         SELECT $1, id, 1, false FROM promo_campaigns
+         SELECT $1, id, 1, false FROM ad_campaigns
          WHERE id > 2 AND is_active = true
          ON CONFLICT (user_id, campaign_id) DO UPDATE
          SET progress = user_promo_progress.progress + 1
@@ -2370,11 +2370,12 @@ export async function incrementDownloadsAndLogPg(userId, trackTitle, fileId, url
            tracks_today     = COALESCE(tracks_today, '[]'::jsonb) || $1::jsonb
        WHERE id = $2
          AND (
-           (premium_until IS NOT NULL AND premium_until >= NOW() AND premium_limit IS NULL)
+           (daily_limit_override IS NULL AND premium_until IS NOT NULL AND premium_until >= NOW() AND COALESCE(tariff_code, CASE WHEN premium_limit IS NULL THEN 'unlimited' END) = 'unlimited')
            OR downloads_today < CASE
-             WHEN premium_until IS NOT NULL AND premium_until >= NOW()
-               THEN premium_limit
-             ELSE COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+             WHEN daily_limit_override IS NOT NULL THEN daily_limit_override
+             WHEN premium_until IS NULL OR premium_until < NOW() THEN COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3)
+             WHEN COALESCE(tariff_code, CASE WHEN premium_limit >= 100 THEN 'pro' ELSE 'plus' END) = 'pro' THEN COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_pro'), 100)
+             ELSE COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_plus'), 30)
            END
          )
        RETURNING id`,
@@ -2444,8 +2445,8 @@ export async function getAppSettings() {
  */
 export async function setAppSetting(key, value) {
   await query(
-    `INSERT INTO app_settings (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
     [key, value]
   );
 }
@@ -2797,39 +2798,120 @@ export async function markYandexMusicPromoShown(userId) {
   return res.rowCount > 0;
 }
 
-export async function getPromoCampaigns() {
-  const { rows } = await query('SELECT * FROM promo_campaigns ORDER BY id ASC');
+export async function getPromoCampaigns(forDelivery = false) {
+  const { rows } = await query(`SELECT * FROM ad_campaigns WHERE deleted_at IS NULL ${forDelivery ? 'AND is_active=true AND is_archived=false' : ''} ORDER BY id ASC`);
   return rows;
 }
 
 export async function createPromoCampaign(data) {
-  const { name, trigger_downloads, message_text, button_text, url, is_active } = data;
+  const { name, promo_key, trigger_downloads, trigger_type, trigger_download_count, global_category_cooldown_days, cooldown_after_click_days, activity_cooldown, message_text, button_text, url, is_active, category, weight, cooldown_days, max_impressions_per_user, starts_at, ends_at, media_type, media_storage_path, media_mime_type, media_file_size, media_file_name } = data;
   const { rows } = await query(
-    `INSERT INTO promo_campaigns (name, trigger_downloads, message_text, button_text, url, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO ad_campaigns (name,promo_key,trigger_downloads,trigger_type,trigger_download_count,global_category_cooldown_days,cooldown_after_click_days,activity_cooldown,message_text,button_text,url,is_active,category,weight,cooldown_days,max_impressions_per_user,starts_at,ends_at,is_system,media_type,media_storage_path,media_mime_type,media_file_size,media_file_name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,false,$19,$20,$21,$22,$23)
      RETURNING *`,
-    [name, trigger_downloads, message_text, button_text, url, is_active ?? true]
+    [name,promo_key,trigger_downloads,trigger_type,trigger_download_count,global_category_cooldown_days,cooldown_after_click_days,Boolean(activity_cooldown),message_text,button_text,url,is_active ?? true,category,weight,cooldown_days,max_impressions_per_user,starts_at||null,ends_at||null,media_type||null,media_storage_path||null,media_mime_type||null,media_file_size||null,media_file_name||null]
   );
   return rows[0];
 }
 
 export async function updatePromoCampaign(id, data) {
-  const { name, trigger_downloads, message_text, button_text, url, is_active } = data;
+  const { name, trigger_downloads, trigger_type, trigger_download_count, global_category_cooldown_days, cooldown_after_click_days, activity_cooldown, message_text, button_text, url, is_active, category, weight, cooldown_days, max_impressions_per_user, starts_at, ends_at, media_type, media_storage_path, media_mime_type, media_file_size, media_file_name } = data;
   const { rows } = await query(
-    `UPDATE promo_campaigns
-     SET name = $1, trigger_downloads = $2, message_text = $3, button_text = $4, url = $5, is_active = $6
-     WHERE id = $7
+    `UPDATE ad_campaigns
+     SET name=$1,trigger_downloads=$2,trigger_type=$3,trigger_download_count=$4,global_category_cooldown_days=$5,cooldown_after_click_days=$6,activity_cooldown=$7,message_text=$8,button_text=$9,url=$10,is_active=$11,category=$12,weight=$13,cooldown_days=$14,max_impressions_per_user=$15,starts_at=$16,ends_at=$17,media_type=$18,media_storage_path=$19,media_mime_type=$20,media_file_size=$21,media_file_name=$22
+     WHERE id = $23
      RETURNING *`,
-    [name, trigger_downloads, message_text, button_text, url, is_active, id]
+    [name,trigger_downloads,trigger_type,trigger_download_count,global_category_cooldown_days,cooldown_after_click_days,Boolean(activity_cooldown),message_text,button_text,url,is_active,category,weight,cooldown_days,max_impressions_per_user,starts_at||null,ends_at||null,media_type||null,media_storage_path||null,media_mime_type||null,media_file_size||null,media_file_name||null,id]
   );
   return rows[0];
 }
 
 export async function deletePromoCampaign(id) {
-  if (Number(id) === 1 || Number(id) === 2) {
+  const campaign = await query('SELECT is_system FROM ad_campaigns WHERE id=$1', [id]);
+  if (campaign.rows[0]?.is_system) {
     throw new Error('Нельзя удалить системную кампанию');
   }
-  await query('DELETE FROM promo_campaigns WHERE id = $1', [id]);
+  throw new Error('Используйте безопасное архивирование или soft delete кампании');
+}
+
+export async function getPromoCampaignByKey(promoKey) {
+  const { rows } = await query('SELECT * FROM ad_campaigns WHERE promo_key=$1 AND deleted_at IS NULL LIMIT 1', [promoKey]);
+  return rows[0] || null;
+}
+
+export async function getPromoCampaignById(id) {
+  const { rows } = await query('SELECT * FROM ad_campaigns WHERE id=$1 LIMIT 1',[id]);
+  return rows[0] || null;
+}
+
+export async function writeAdCampaignAudit({campaignId,promoKey,action,adminId,oldValues,newValues}) {
+  await query('INSERT INTO ad_campaign_audit_log(campaign_id,promo_key,action,admin_id,old_values,new_values) VALUES($1,$2,$3,$4,$5,$6)',[campaignId,promoKey,action,String(adminId),oldValues?JSON.stringify(oldValues):null,newValues?JSON.stringify(newValues):null]);
+}
+
+export async function archivePromoCampaign(id,adminId) {
+  const current=await getPromoCampaignById(id);
+  if(!current||current.deleted_at) throw new Error('Кампания не найдена');
+  if(current.is_system) throw new Error('Системную кампанию архивировать нельзя. Её можно отключить.');
+  const {rows}=await query('UPDATE ad_campaigns SET is_active=false,is_archived=true,archived_at=NOW(),archived_by=$2 WHERE id=$1 AND is_system=false AND deleted_at IS NULL RETURNING *',[id,String(adminId)]);
+  await writeAdCampaignAudit({campaignId:id,promoKey:current.promo_key,action:'campaign_archived',adminId,oldValues:current,newValues:rows[0]});
+  return rows[0];
+}
+
+export async function restorePromoCampaign(id,adminId) {
+  const current=await getPromoCampaignById(id);
+  if(!current||current.deleted_at) throw new Error('Кампания не найдена');
+  if(current.is_system) throw new Error('Системная кампания не требует восстановления');
+  const {rows}=await query('UPDATE ad_campaigns SET is_archived=false,archived_at=NULL,archived_by=NULL WHERE id=$1 AND is_system=false AND deleted_at IS NULL RETURNING *',[id]);
+  await writeAdCampaignAudit({campaignId:id,promoKey:current.promo_key,action:'campaign_restored',adminId,oldValues:current,newValues:rows[0]});
+  return rows[0];
+}
+
+export async function softDeletePromoCampaign(id,adminId) {
+  const current=await getPromoCampaignById(id);
+  if(!current||current.deleted_at) throw new Error('Кампания не найдена');
+  if(current.is_system) throw new Error('Системную кампанию удалить нельзя. Её можно отключить.');
+  if(!current.is_archived) throw new Error('Удаление доступно только для архивной кампании');
+  const {rows}=await query(`UPDATE ad_campaigns SET is_active=false,is_archived=true,deleted_at=NOW(),deleted_by=$2,media_type=NULL,media_storage_path=NULL,media_mime_type=NULL,media_file_size=NULL,media_file_name=NULL WHERE id=$1 AND is_system=false AND is_archived=true AND deleted_at IS NULL RETURNING *`,[id,String(adminId)]);
+  await writeAdCampaignAudit({campaignId:id,promoKey:current.promo_key,action:'campaign_deleted',adminId,oldValues:current,newValues:rows[0]});
+  return rows[0];
+}
+
+export async function resetSystemPromoCampaign(id,adminId) {
+  const current=await getPromoCampaignById(id);
+  if(!current||!current.is_system||current.deleted_at) throw new Error('Системная кампания не найдена');
+  const defaults={
+    balance300:{weight:25,cooldown_days:7,max_impressions_per_user:3,trigger_downloads:3},
+    music:{weight:0,cooldown_days:14,global_category_cooldown_days:14,cooldown_after_click_days:30,max_impressions_per_user:3,trigger_downloads:3,trigger_download_count:3,trigger_type:'combined',activity_cooldown:true,is_active:false},
+    rewards_landing:{weight:50,cooldown_days:7,max_impressions_per_user:3,trigger_downloads:3,is_active:false},
+    alice_app:{weight:25,cooldown_days:7,max_impressions_per_user:3,trigger_downloads:3,is_active:false}
+  }[current.promo_key];
+  if(!defaults) throw new Error('Для кампании не определены настройки по умолчанию');
+  const next={...current,...defaults,is_archived:false,archived_at:null,archived_by:null,starts_at:null,ends_at:null};
+  const saved=await updatePromoCampaign(id,next);
+  await writeAdCampaignAudit({campaignId:id,promoKey:current.promo_key,action:'campaign_updated',adminId,oldValues:current,newValues:saved});
+  return saved;
+}
+
+export async function isPromoMediaPathInUse(storagePath, excludingCampaignId = null) {
+  const { rows } = await query('SELECT EXISTS(SELECT 1 FROM ad_campaigns WHERE media_storage_path=$1 AND ($2::integer IS NULL OR id<>$2)) in_use',[storagePath,excludingCampaignId]);
+  return rows[0]?.in_use === true;
+}
+
+export async function getPromoDeliveryContext(userId) {
+  const { rows } = await query(`SELECT campaign_id,impressions_count,last_shown_at,last_clicked_at,next_eligible_at FROM ad_campaign_user_state WHERE user_id=$1`, [userId]);
+  const byCampaign = Object.fromEntries(rows.map(r => [r.campaign_id, { impressions:r.impressions_count, lastShownAt:r.last_shown_at,lastClickedAt:r.last_clicked_at,nextEligibleAt:r.next_eligible_at }]));
+  const categories = await query(`SELECT category,last_shown_at,next_eligible_at FROM ad_user_category_state WHERE user_id=$1`,[userId]);
+  return { byCampaign, byCategory:Object.fromEntries(categories.rows.map(r=>[r.category,{lastShownAt:r.last_shown_at,nextEligibleAt:r.next_eligible_at}])) };
+}
+
+export async function recordPromoImpression({ campaignId, userId, promoKey, messageId, placement, urlHash, triggerDownloadCount, hasMedia, mediaType, creativeVariant, triggerType, userSessionId }) {
+  const { rows } = await query(`SELECT record_ad_campaign_impression($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) impression_number`, [campaignId,userId,promoKey,messageId,placement,urlHash,triggerDownloadCount,Boolean(hasMedia),mediaType||null,creativeVariant,triggerType,userSessionId]);
+  return rows[0]?.impression_number == null ? null : Number(rows[0].impression_number);
+}
+
+export async function recordPromoClick({ campaignId, userId, promoKey, messageId, placement, urlHash }) {
+  const { rows } = await query(`SELECT record_ad_campaign_click($1,$2,$3,$4,$5,$6) recorded`, [campaignId,userId,promoKey,messageId,placement,urlHash]);
+  return rows[0]?.recorded === true;
 }
 
 export async function markCustomPromoShown(userId, campaignId) {
@@ -2845,29 +2927,50 @@ export async function markCustomPromoShown(userId, campaignId) {
 }
 
 export async function getPromoStats() {
-  const stats = {};
-  
-  const res1 = await query('SELECT COUNT(*)::int as count FROM users WHERE yandex_promo_shown = true');
-  stats[1] = res1.rows[0]?.count || 0;
-  
-  const res2 = await query('SELECT COUNT(*)::int as count FROM users WHERE yandex_music_promo_shown = true');
-  stats[2] = res2.rows[0]?.count || 0;
-  
-  const resCustom = await query(
-    'SELECT campaign_id, COUNT(*)::int as count FROM user_promo_progress WHERE shown = true GROUP BY campaign_id'
-  );
-  for (const row of resCustom.rows) {
-    stats[row.campaign_id] = row.count;
+  const { rows } = await query(`SELECT p.period_key,s.* FROM (VALUES('24h',NOW()-INTERVAL '24 hours'),('7d',NOW()-INTERVAL '7 days'),('30d',NOW()-INTERVAL '30 days'),('total',NULL::timestamptz)) p(period_key,from_at) CROSS JOIN LATERAL get_ad_campaign_stats(p.from_at,NOW()) s`);
+  const result = {};
+  for (const row of rows) {
+    const target = result[row.campaign_id] ||= {};
+    for (const key of ['impressions','unique_impressions','clicks','unique_clicks','ctr']) target[`${key}_${row.period_key}`] = Number(row[key] || 0);
+    if (row.period_key === 'total') Object.assign(target,{repeat_users:Number(row.repeat_impressions||0),avg_impressions:Number(row.average_impressions_per_user||0),last_shown_at:row.last_shown_at,last_clicked_at:row.last_clicked_at});
   }
-  
-  return stats;
+  return result;
+}
+
+export async function getPromoCreativeStats() {
+  const { rows } = await query('SELECT * FROM get_ad_campaign_creative_stats(NULL,NOW()) ORDER BY has_media DESC,creative_variant');
+  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0)}));
+}
+
+export async function getPromoTriggerStats() {
+  const {rows}=await query('SELECT * FROM get_ad_campaign_trigger_stats(NULL,NOW()) ORDER BY trigger_type');
+  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0)}));
+}
+
+export async function getDashboardPromoCampaignStats({period='30d',includeArchived=false}={}) {
+  const periods={today:`date_trunc('day',NOW())`,'7d':`NOW()-INTERVAL '7 days'`,'30d':`NOW()-INTERVAL '30 days'`,all:'NULL::timestamptz'};
+  const fromSql=periods[period]||periods['30d'];
+  const {rows}=await query(`WITH stats AS(SELECT * FROM get_ad_campaign_stats(${fromSql},NOW())), legacy AS(
+    SELECT c.id campaign_id,COUNT(u.id)::bigint legacy_impressions FROM ad_campaigns c LEFT JOIN users u ON
+      (c.promo_key='balance300' AND COALESCE(u.yandex_promo_shown,false)=true OR c.promo_key='music' AND COALESCE(u.yandex_music_promo_shown,false)=true)
+      AND NOT EXISTS(SELECT 1 FROM analytics_events e WHERE e.user_id=u.id AND e.event_name='yandex_promo_shown' AND COALESCE(e.campaign_id::text,e.event_data->>'campaign_id')=c.id::text)
+    WHERE c.promo_key IN('balance300','music') GROUP BY c.id
+  ) SELECT c.id campaign_id,c.promo_key,c.name,c.is_active,c.is_archived,
+    COALESCE(s.impressions,0)::bigint impressions,COALESCE(s.unique_impressions,0)::bigint unique_impressions,
+    COALESCE(s.clicks,0)::bigint clicks,COALESCE(s.unique_clicks,0)::bigint unique_clicks,COALESCE(s.ctr,0)::numeric ctr,
+    COALESCE(l.legacy_impressions,0)::bigint legacy_impressions
+    FROM ad_campaigns c LEFT JOIN stats s ON s.campaign_id=c.id LEFT JOIN legacy l ON l.campaign_id=c.id
+    WHERE c.deleted_at IS NULL AND ($1::boolean OR c.is_archived=false)
+      AND (c.is_active=true OR COALESCE(s.impressions,0)>0 OR COALESCE(l.legacy_impressions,0)>0)
+    ORDER BY c.is_active DESC,c.id`,[Boolean(includeArchived)]);
+  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0),legacy_impressions:Number(row.legacy_impressions||0)}));
 }
 
 export async function getCustomPromoProgressForUser(userId) {
   const { rows } = await query(
     `SELECT p.*, c.trigger_downloads, c.message_text, c.button_text, c.url, c.is_active 
      FROM user_promo_progress p
-     JOIN promo_campaigns c ON p.campaign_id = c.id
+     JOIN ad_campaigns c ON p.campaign_id = c.id
      WHERE p.user_id = $1`,
     [userId]
   );
@@ -2877,12 +2980,12 @@ export async function getCustomPromoProgressForUser(userId) {
 export async function resetPromoCampaign(id) {
   const campaignId = Number(id);
   if (campaignId === 1) {
-    await query('UPDATE users SET yandex_promo_shown = false, yandex_promo_progress = 0');
+    await query('DELETE FROM ad_campaign_user_state WHERE campaign_id=$1', [campaignId]);
   } else if (campaignId === 2) {
-    await query('UPDATE users SET yandex_music_promo_shown = false');
+    await query('DELETE FROM ad_campaign_user_state WHERE campaign_id=$1', [campaignId]);
   } else {
     // Для кастомных кампаний сбрасываем как статус shown, так и прогресс, чтобы отсчет пошел заново
-    await query('UPDATE user_promo_progress SET shown = false, progress = 0 WHERE campaign_id = $1', [campaignId]);
+    await query('DELETE FROM ad_campaign_user_state WHERE campaign_id=$1', [campaignId]);
   }
 }
 
@@ -2977,16 +3080,21 @@ export async function runPreflightFixesMigration() {
   }
 }
 
-export async function createSupportMessage(userId, text, sender, mediaType = 'text', fileId = null) {
+export async function createSupportMessage(userId, text, sender, mediaType = 'text', fileId = null, attachment = {}) {
   const sql = `
-    INSERT INTO support_messages (user_id, message_text, sender, is_read, media_type, file_id)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO support_messages (user_id, message_text, sender, is_read, media_type, file_id, storage_path, mime_type, file_size)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     RETURNING *
   `;
   // Если отправитель - админ, сообщение считается прочитанным по умолчанию
   const isRead = sender === 'admin';
-  const { rows } = await query(sql, [userId, text, sender, isRead, mediaType, fileId]);
+  const { rows } = await query(sql, [userId, text, sender, isRead, mediaType, fileId, attachment.storagePath || null, attachment.mimeType || null, attachment.fileSize || null]);
   return rows[0];
+}
+
+export async function getSupportMessageById(id) {
+  const { rows } = await query('SELECT * FROM support_messages WHERE id = $1 LIMIT 1', [id]);
+  return rows[0] || null;
 }
 
 export async function getSupportTickets() {
@@ -4457,6 +4565,3 @@ export async function checkSchemaPreflight({ throwOnMissing = true } = {}) {
 
   return report;
 }
-
-
-

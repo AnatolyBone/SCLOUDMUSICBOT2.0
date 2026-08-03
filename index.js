@@ -17,6 +17,8 @@ import { checkAndSendExpirationNotifications, notifyExpiringTodayHourly } from '
 import { loadSettings,getAllSettings,getSetting} from './services/settingsManager.js';
 import {
   pool,
+  query,
+  supabase,
   karaokePool,
   getUserById,
   resetDailyStats,
@@ -66,10 +68,20 @@ import {
   setAppSetting,
   getNewUsersCount,
   getPromoCampaigns,
+  getPromoCampaignById,
+  isPromoMediaPathInUse,
   createPromoCampaign,
   updatePromoCampaign,
   deletePromoCampaign,
+  archivePromoCampaign,
+  restorePromoCampaign,
+  softDeletePromoCampaign,
+  resetSystemPromoCampaign,
+  writeAdCampaignAudit,
   getPromoStats,
+  getPromoCreativeStats,
+  getPromoTriggerStats,
+  getDashboardPromoCampaignStats,
   resetPromoCampaign,
   runSupportSystemMigration,
   runAnalyticsSystemMigration,
@@ -77,6 +89,7 @@ import {
   runPreflightFixesMigration,
   checkSchemaPreflight,
   createSupportMessage,
+  getSupportMessageById,
   getSupportTickets,
   getSupportMessages,
   markSupportMessagesAsRead,
@@ -89,6 +102,10 @@ import { initializeWorkers } from './services/workerManager.js';
 import { runBroadcastBatch } from './services/broadcastManager.js';
 import { isShuttingDown, setShuttingDown, setMaintenanceMode, isMaintenanceMode } from './services/appState.js';
 import { bot } from './bot.js';
+import { resolveUserIdentifier } from './services/userResolver.js';
+import { resolveSupportImage, validateSupportImage } from './services/supportMediaService.js';
+import { normalizePromoKey, PROMO_CATEGORIES } from './services/promoCampaignService.js';
+import { AD_CAMPAIGN_MEDIA_BUCKET, createAdCampaignMediaSignedUrl, removeAdCampaignMediaSafely, uploadAdCampaignMedia } from './services/adCampaignMediaService.js';
 import redisService from './services/redisClient.js';
 import {
   WEBHOOK_URL, PORT, SESSION_SECRET, ADMIN_ID, ADMIN_LOGIN, ADMIN_PASSWORD,
@@ -122,6 +139,12 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage, limits: { fileSize: 49 * 1024 * 1024 } });
+const promoMediaUpload = multer({ storage:multer.memoryStorage(), limits:{fileSize:20*1024*1024} });
+const handlePromoMediaUpload = (req,res,next) => promoMediaUpload.single('media')(req,res,error => {
+  if (!error) return next();
+  const message = error.code === 'LIMIT_FILE_SIZE' ? 'Файл превышает максимально допустимые 20 МБ.' : `Ошибка загрузки файла: ${error.message}`;
+  res.redirect(`/promos?error=${encodeURIComponent(message)}`);
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -146,6 +169,13 @@ async function startApp() {
     await loadTexts(true);
     await redisService.connect();
     await loadSettings();
+    await redisService.subscribe('settings:invalidate', () => loadSettings().catch(error => {
+      console.error('[Settings] Redis refresh failed:', error.message);
+    }));
+    const settingsRefreshTimer = setInterval(() => loadSettings().catch(error => {
+      console.error('[Settings] Background refresh failed:', error.message);
+    }), 15_000);
+    settingsRefreshTimer.unref?.();
     
     // Запуск фоновой проверки/восстановления агрегации за последние 7 дней
     backfillMissingDays().catch(e => console.error('[Startup/Backfill] Ошибка:', e.message));
@@ -770,6 +800,8 @@ app.post('/settings/update', requireAuth, async (req, res) => {
     }
     
     await loadSettings(); // Обновляем кеш
+    const settingsVersion = await redisService.incr('settings:version');
+    await redisService.publish('settings:invalidate', settingsVersion || Date.now());
     console.log('[Settings/Update] ✅ Настройки сохранены и кеш обновлён');
 
     res.redirect('/settings?success=true');
@@ -797,6 +829,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     // Получаем даты из запроса (или undefined)
     const startDate = req.query.startDate;
     const endDate = req.query.endDate;
+    const promoPeriod = ['today','7d','30d','all'].includes(req.query.promoPeriod) ? req.query.promoPeriod : '30d';
+    const showArchivedPromos = req.query.showArchivedPromos === '1';
 
     const [
       totals,
@@ -875,27 +909,13 @@ app.get('/dashboard', requireAuth, async (req, res) => {
           AND premium_until < NOW()
           AND (premium_limit <> COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3) OR premium_limit IS NULL)
       `),
-      // Статистика промо Яндекс (воронка акции по yandex_promo_progress; lifetime отдельно)
-      pool.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE yandex_promo_shown = true)::int AS promo_shown,
-          COUNT(*) FILTER (WHERE COALESCE(yandex_promo_progress, 0) >= 3)::int AS eligible_campaign,
-          COUNT(*) FILTER (WHERE COALESCE(downloads_count, 0) >= 3)::int AS lifetime_3plus,
-          COUNT(*) FILTER (WHERE yandex_music_promo_shown = true)::int AS music_promo_shown
-        FROM users
-      `)
+      getDashboardPromoCampaignStats({period:promoPeriod,includeArchived:showArchivedPromos})
     ]);
 
     const expiredCount = Number(expiredCountResult?.rows?.[0]?.expired_count ?? 0);
     const t = tariffsActiveResult?.rows?.[0] || {};
     const othersCount = Number(othersResult?.rows?.[0]?.other ?? 0);
-    const promoRow = promoStatsResult?.rows?.[0] || {};
-    const promoStats = {
-      shown: Number(promoRow.promo_shown ?? 0),
-      eligibleCampaign: Number(promoRow.eligible_campaign ?? 0),
-      lifetime3plus: Number(promoRow.lifetime_3plus ?? 0),
-      musicPromoShown: Number(promoRow.music_promo_shown ?? 0)
-    };
+    const promoStats = promoStatsResult || [];
 
     const usersByTariff = {
       Free: Number(t.free || 0),
@@ -1030,7 +1050,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       topUsers,
       expiredCount,
       promoStats,
-      promoStatsByid: { 2: promoStats.musicPromoShown }
+      promoPeriod,
+      showArchivedPromos
     });
 
   } catch (error) {
@@ -1640,7 +1661,7 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
   app.get('/promos', requireAuth, async (req, res) => {
     try {
       const campaigns = await getPromoCampaigns();
-      const stats = await getPromoStats();
+      const [stats,creativeStats,triggerStats] = await Promise.all([getPromoStats(),getPromoCreativeStats(),getPromoTriggerStats()]);
       const editableTexts = getEditableTexts();
       
       const preparedCampaigns = campaigns.map(c => {
@@ -1667,6 +1688,8 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
         page: 'promos',
         campaigns: preparedCampaigns,
         stats,
+        creativeStats,
+        triggerStats,
         success: req.query.success,
         error: req.query.error
       });
@@ -1676,71 +1699,79 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     }
   });
 
-  app.post('/promos/save', requireAuth, async (req, res) => {
-    const { id, name, trigger_downloads, message_text, button_text, url } = req.body;
+  app.post('/promos/save', requireAuth, handlePromoMediaUpload, async (req, res) => {
+    const { id, name, promo_key, trigger_downloads, trigger_type='download_count', trigger_download_count, global_category_cooldown_days='7', cooldown_after_click_days='30', message_text, button_text, url, category='custom', weight='1', cooldown_days='7', max_impressions_per_user='3', starts_at, ends_at } = req.body;
+    let uploadedMedia = null;
+    let previousCampaign = null;
+    let campaignSaved = false;
     try {
       if (!name || !message_text || !url) {
         throw new Error('Название, текст сообщения и ссылка не могут быть пустыми.');
       }
       
       const campaignId = parseInt(id, 10);
+      const normalizedPromoKey = normalizePromoKey(promo_key, name);
+      if (!PROMO_CATEGORIES.has(category)) throw new Error('Некорректная категория кампании.');
+      if (trigger_type === 'manual') throw new Error('Ручной запуск кампаний пока недоступен: API отправки ещё не реализован.');
+      if (!['download_count','activity_cooldown','combined'].includes(trigger_type)) throw new Error('Некорректный тип запуска кампании.');
       
       // Вытягиваем текущий статус активности, чтобы не сбрасывать его при сохранении настроек
       let currentIsActive = true;
       if (campaignId) {
-        const campaigns = await getPromoCampaigns();
-        const current = campaigns.find(c => c.id === campaignId);
-        if (current) {
-          currentIsActive = current.is_active;
+        previousCampaign = await getPromoCampaignById(campaignId);
+        if (previousCampaign) {
+          currentIsActive = previousCampaign.is_active;
         }
       }
+      if (req.file) {
+        if (!supabase) throw new Error('Supabase Storage не настроен. Медиа не сохранено.');
+        uploadedMedia = await uploadAdCampaignMedia({storage:supabase.storage.from(AD_CAMPAIGN_MEDIA_BUCKET),buffer:req.file.buffer,originalName:req.file.originalname});
+      }
+      const removeMedia = req.body.remove_media === '1';
+      const mediaFields = uploadedMedia || (removeMedia ? {media_type:null,media_storage_path:null,media_mime_type:null,media_file_size:null,media_file_name:null} : {
+        media_type:previousCampaign?.media_type||null,media_storage_path:previousCampaign?.media_storage_path||null,media_mime_type:previousCampaign?.media_mime_type||null,media_file_size:previousCampaign?.media_file_size||null,media_file_name:previousCampaign?.media_file_name||null
+      });
+      const triggerCount=Math.max(1,parseInt(trigger_download_count||trigger_downloads,10)||1);
+      const common = { name, trigger_downloads:triggerCount, trigger_type, trigger_download_count:triggerCount, global_category_cooldown_days:Math.max(0,parseInt(global_category_cooldown_days,10)||0), cooldown_after_click_days:Math.max(0,parseInt(cooldown_after_click_days,10)||0), activity_cooldown:['activity_cooldown','combined'].includes(trigger_type), message_text, button_text:button_text||'Открыть', url, is_active:currentIsActive, category, weight:Math.max(0,parseInt(weight,10)||0), cooldown_days:Math.max(0,parseInt(cooldown_days,10)||0), max_impressions_per_user:Math.max(1,parseInt(max_impressions_per_user,10)||3), starts_at:starts_at||null, ends_at:ends_at||null, ...mediaFields };
       
+      let savedCampaign;
       if (campaignId === 1) {
         await setText('yandex_promo_message', message_text);
         await setText('yandex_promo_button', button_text || '💰 Забрать 300₽ на телефон');
         await setText('yandex_promo_url', url);
-        await updatePromoCampaign(1, {
-          name,
-          trigger_downloads: parseInt(trigger_downloads, 10) || 3,
+        savedCampaign = await updatePromoCampaign(1, {
+          ...common,
           message_text: '',
           button_text: '',
-          url: '',
-          is_active: currentIsActive
+          url: ''
         });
       } else if (campaignId === 2) {
         await setText('yandex_music_promo_message', message_text);
         await setText('yandex_music_promo_button', button_text || '🎵 Попробовать Яндекс Музыку');
         await setText('yandex_music_promo_url', url);
-        await updatePromoCampaign(2, {
-          name,
-          trigger_downloads: parseInt(trigger_downloads, 10) || 3,
+        savedCampaign = await updatePromoCampaign(2, {
+          ...common,
           message_text: '',
           button_text: '',
-          url: '',
-          is_active: currentIsActive
+          url: ''
         });
       } else if (campaignId) {
-        await updatePromoCampaign(campaignId, {
-          name,
-          trigger_downloads: parseInt(trigger_downloads, 10) || 1,
-          message_text,
-          button_text: button_text || '🔗 Перейти',
-          url,
-          is_active: currentIsActive
-        });
+        savedCampaign = await updatePromoCampaign(campaignId, common);
       } else {
-        await createPromoCampaign({
-          name,
-          trigger_downloads: parseInt(trigger_downloads, 10) || 1,
-          message_text,
-          button_text: button_text || '🔗 Перейти',
-          url,
-          is_active: true
+        savedCampaign = await createPromoCampaign({
+          ...common, promo_key:normalizedPromoKey, is_active:true
         });
+      }
+      campaignSaved = true;
+      await writeAdCampaignAudit({campaignId:savedCampaign.id,promoKey:savedCampaign.promo_key,action:previousCampaign?'campaign_updated':'campaign_created',adminId:req.session.userId,oldValues:previousCampaign,newValues:savedCampaign});
+      if (previousCampaign && previousCampaign.media_storage_path !== savedCampaign.media_storage_path) await writeAdCampaignAudit({campaignId:savedCampaign.id,promoKey:savedCampaign.promo_key,action:'campaign_media_replaced',adminId:req.session.userId,oldValues:{media_storage_path:previousCampaign.media_storage_path},newValues:{media_storage_path:savedCampaign.media_storage_path}});
+      if (previousCampaign?.media_storage_path && previousCampaign.media_storage_path !== mediaFields.media_storage_path) {
+        await removeAdCampaignMediaSafely({storage:supabase.storage.from(AD_CAMPAIGN_MEDIA_BUCKET),storagePath:previousCampaign.media_storage_path,isInUse:path=>isPromoMediaPathInUse(path,campaignId)}).catch(error=>console.error('[Admin Promos Media Cleanup]',error.message));
       }
       
       res.redirect('/promos?success=true');
     } catch (e) {
+      if (!campaignSaved && uploadedMedia?.media_storage_path && supabase) await supabase.storage.from(AD_CAMPAIGN_MEDIA_BUCKET).remove([uploadedMedia.media_storage_path]).catch(()=>{});
       console.error('[Admin Promos Save] Error:', e);
       res.redirect(`/promos?error=${encodeURIComponent(e.message)}`);
     }
@@ -1758,6 +1789,19 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     }
   });
 
+  app.get('/promos/media/:id', requireAuth, async (req,res) => {
+    try {
+      const campaign = await getPromoCampaignById(Number(req.params.id));
+      if (!campaign?.media_storage_path || !supabase) return res.status(404).send('Медиа не найдено.');
+      const signedUrl = await createAdCampaignMediaSignedUrl({storage:supabase.storage.from(AD_CAMPAIGN_MEDIA_BUCKET),storagePath:campaign.media_storage_path,expiresIn:60});
+      res.setHeader('Cache-Control','private, no-store');
+      res.redirect(302,signedUrl);
+    } catch (error) {
+      console.error('[Admin Promos Media Preview]',error.message);
+      res.status(404).send('Медиа недоступно.');
+    }
+  });
+
   app.post('/promos/toggle', requireAuth, async (req, res) => {
     const { id, is_active } = req.body;
     try {
@@ -1771,13 +1815,11 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
       }
       
       await updatePromoCampaign(campaignId, {
-        name: current.name,
-        trigger_downloads: current.trigger_downloads,
-        message_text: current.message_text,
-        button_text: current.button_text,
-        url: current.url,
+        ...current,
         is_active: active
       });
+      const updated = await getPromoCampaignById(campaignId);
+      await writeAdCampaignAudit({campaignId,promoKey:current.promo_key,action:active?'campaign_enabled':'campaign_disabled',adminId:req.session.userId,oldValues:current,newValues:updated});
       
       res.json({ success: true });
     } catch (e) {
@@ -1786,16 +1828,49 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     }
   });
 
-  app.post('/promos/delete', requireAuth, async (req, res) => {
-    const { id } = req.body;
+  app.post('/admin/api/ad-campaigns/:id/archive',requireAuth,async(req,res)=>{
+    try { const campaign=await archivePromoCampaign(Number(req.params.id),req.session.userId); res.json({success:true,campaign}); }
+    catch(error){res.status(400).json({success:false,error:error.message});}
+  });
+
+  app.post('/admin/api/ad-campaigns/:id/restore',requireAuth,async(req,res)=>{
+    try { const campaign=await restorePromoCampaign(Number(req.params.id),req.session.userId); res.json({success:true,campaign}); }
+    catch(error){res.status(400).json({success:false,error:error.message});}
+  });
+
+  app.post('/admin/api/ad-campaigns/:id/reset',requireAuth,async(req,res)=>{
+    try { const campaign=await resetSystemPromoCampaign(Number(req.params.id),req.session.userId); res.json({success:true,campaign}); }
+    catch(error){res.status(400).json({success:false,error:error.message});}
+  });
+
+  app.delete('/admin/api/ad-campaigns/:id',requireAuth,async(req,res)=>{
+    const campaignId=Number(req.params.id);
+    let removedMedia=null;
     try {
-      const campaignId = parseInt(id, 10);
-      await deletePromoCampaign(campaignId);
-      res.redirect('/promos?success=true');
-    } catch (e) {
-      console.error('[Admin Promos Delete] Error:', e);
-      res.redirect(`/promos?error=${encodeURIComponent(e.message)}`);
-    }
+      if(!Number.isSafeInteger(campaignId)||campaignId<=0) throw new Error('Некорректный идентификатор кампании');
+      const campaign=await getPromoCampaignById(campaignId);
+      if(!campaign) throw new Error('Кампания не найдена');
+      if(campaign.is_system) throw new Error('Системную кампанию удалить нельзя. Её можно отключить.');
+      if(!campaign.is_archived) throw new Error('Удаление доступно только из архива');
+      if(String(req.body?.confirm_name||'')!==campaign.name) throw new Error('Для удаления введите точное название кампании');
+      if(campaign.media_storage_path&&!supabase) throw new Error('Supabase Storage недоступен. Кампания не удалена.');
+      if(campaign.media_storage_path&&supabase&&!await isPromoMediaPathInUse(campaign.media_storage_path,campaignId)){
+        const bucket=supabase.storage.from(AD_CAMPAIGN_MEDIA_BUCKET);
+        const {data,error}=await bucket.download(campaign.media_storage_path);if(error||!data)throw new Error(`Не удалось подготовить удаление медиа: ${error?.message||'empty file'}`);
+        removedMedia={path:campaign.media_storage_path,buffer:Buffer.from(await data.arrayBuffer()),mime:campaign.media_mime_type};
+        const removal=await bucket.remove([campaign.media_storage_path]);if(removal.error)throw new Error(`Не удалось удалить медиа: ${removal.error.message}`);
+      }
+      try { await softDeletePromoCampaign(campaignId,req.session.userId); }
+      catch(dbError){
+        if(removedMedia&&supabase){const restored=await supabase.storage.from(AD_CAMPAIGN_MEDIA_BUCKET).upload(removedMedia.path,removedMedia.buffer,{contentType:removedMedia.mime,upsert:false});if(restored.error)console.error('[Admin Promos Delete Rollback]',restored.error.message);}
+        throw dbError;
+      }
+      res.json({success:true});
+    } catch(error){res.status(400).json({success:false,error:error.message});}
+  });
+
+  app.post('/promos/delete', requireAuth, async (req, res) => {
+    res.redirect('/promos?error='+encodeURIComponent('Сначала архивируйте кампанию, затем удалите её из раздела «Архивные».'));
   });
 
   app.get('/expiring-users', requireAuth, async (req, res) => {
@@ -1881,50 +1956,55 @@ app.post('/user/:id/set-language', requireAuth, async (req, res) => {
     }
   });
 
-  app.get('/support/file/:fileId', requireAuth, async (req, res) => {
-    const { fileId } = req.params;
+  app.get('/support/file/:messageId', requireAuth, async (req, res) => {
     try {
-      const fileLink = await bot.telegram.getFileLink(fileId);
-      const url = typeof fileLink === 'string' ? fileLink : fileLink.href;
-
-      const response = await axios({
-        method: 'get',
-        url: url,
-        responseType: 'stream'
-      });
-
-      const contentType = response.headers['content-type'];
-      if (contentType) {
-        res.setHeader('Content-Type', contentType);
-      }
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-
-      response.data.pipe(res);
+      const message = await getSupportMessageById(req.params.messageId);
+      if (!message || message.media_type !== 'photo') return res.status(404).send('Вложение не найдено.');
+      const resolved = await resolveSupportImage({ message, storage: supabase.storage.from('support-attachments'), telegram: bot.telegram });
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.redirect(302, resolved.url);
     } catch (e) {
       console.error('[Support File Proxy] Error:', e.message);
       res.status(404).send('File not found');
     }
   });
 
-  app.post('/support/:userId/send', requireAuth, async (req, res) => {
+app.post('/support/:userId/send', requireAuth, upload.single('image'), async (req, res) => {
     const { userId } = req.params;
     const { message } = req.body;
     
-    if (!message || !message.trim()) {
+    if ((!message || !message.trim()) && !req.file) {
       return res.status(400).send('Сообщение не может быть пустым');
     }
 
     try {
       // 1. Отправляем в Telegram
-      await bot.telegram.sendMessage(userId, `✉️ <b>Ответ от поддержки:</b>\n\n${message}`, { parse_mode: 'HTML' });
+      let fileId = null;
+      if (req.file) {
+        validateSupportImage({ mimeType: req.file.mimetype, size: req.file.size });
+        try {
+          const sent = await bot.telegram.sendPhoto(userId, { source: req.file.path }, { caption: message?.trim() || undefined });
+          fileId = sent.photo?.at(-1)?.file_id || null;
+        } catch (imageError) {
+          if (!message?.trim()) throw imageError;
+          await bot.telegram.sendMessage(userId, `✉️ <b>Ответ от поддержки:</b>\n\n${message}`, { parse_mode: 'HTML' });
+          await createSupportMessage(userId, message, 'admin');
+          console.error('[Support Send] Image failed; text delivered:', imageError.message);
+          return res.redirect(`/support/${userId}?image_error=1`);
+        }
+      } else {
+        await bot.telegram.sendMessage(userId, `✉️ <b>Ответ от поддержки:</b>\n\n${message}`, { parse_mode: 'HTML' });
+      }
       
       // 2. Сохраняем в БД
-      await createSupportMessage(userId, message, 'admin');
+      await createSupportMessage(userId, message || '', 'admin', fileId ? 'photo' : 'text', fileId);
       
       res.redirect(`/support/${userId}`);
     } catch (e) {
       console.error('[Support Send] Error:', e);
       res.status(500).send('Ошибка при отправке сообщения: ' + e.message);
+    } finally {
+      if (req.file?.path) await fs.promises.unlink(req.file.path).catch(() => {});
     }
   });
 
@@ -2476,7 +2556,9 @@ app.get('/admin/user-journey', requireAuth, (req, res) => {
 app.get('/admin/api/user-journey/:userId', requireAuth, async (req, res) => {
   try {
     const { getUserTimeline } = await import('./services/userInsightsService.js');
-    const data = await getUserTimeline(req.params.userId, {
+    const resolved = await resolveUserIdentifier(req.params.userId, query);
+    if (!resolved) return res.status(404).json({ ok: false, error: 'Пользователь не найден.' });
+    const data = await getUserTimeline(resolved.id, {
       startDate: req.query.startDate,
       endDate: req.query.endDate,
       limit: req.query.limit,

@@ -5,14 +5,14 @@ import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ADMIN_ID, BOT_TOKEN, WEBHOOK_URL, CHANNEL_USERNAME, STORAGE_CHANNEL_ID, PROXY_URL } from './config.js';
 import { getSetting } from './services/settingsManager.js';
-import { updateUserField, getUser, createUser, setPremium, setTariffAdmin, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
+import { pool, supabase, updateUserField, getUser, createUser, setPremium, setTariffAdmin, getAllUsers, resetDailyLimitIfNeeded, getCachedTracksCount, logUserAction, getTopFailedSearches, getTopRecentSearches, getNewUsersCount,findCachedTrack,
     incrementDownloadsAndSaveTrack, getReferrerInfo, getReferredUsers, resetExpiredPremiumIfNeeded, getReferralStats, getUserUniqueDownloadedUrls, findCachedTrackByFileId, cleanUpDatabase, updateFileId, createSupportMessage,
     grantKaraokeTesterAccess, getKaraokeTester, addKaraokeFeedback, getKaraokeTestersStats, logKaraokeInvitation} from './db.js';
 import { T, allTextsSync } from './config/texts.js';
 import { performInlineSearch } from './services/searchManager.js';
 import { handleSpotifyUrl, handleQualitySelection as handleSpotifyQuality, registerSpotifyCallbacks } from './services/spotifyManager.js';
 import { handleYouTubeUrl, handleYouTubeQualitySelection } from './services/youtubeManager.js';
-import { downloadQueue, enqueue } from './services/downloadManager.js';
+import { checkAndSendPromos, downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
 import { identifyTrack } from './services/shazamService.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
@@ -20,6 +20,11 @@ import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './service
 import { t as i18n, getUserLanguage, normalizeLanguageCode, getUserLanguageSegment } from './services/i18nService.js';
 import { SUPPORTED_LANGUAGES, LANGUAGE_LABELS } from './config/languages.js';
 import { redactSecretsInText } from './services/logSanitizer.js';
+import { activateSubscription } from './services/subscriptionService.js';
+import redisService from './services/redisClient.js';
+import { isSubscribedStatus } from './services/channelSubscriptionService.js';
+import { createHash } from 'crypto';
+import { storeTelegramSupportImage, SUPPORT_IMAGE_MIME_TYPES } from './services/supportMediaService.js';
 import {
     getConfiguredFreeDownloadLimit,
     getDownloadQueuePriority,
@@ -177,7 +182,7 @@ async function isSubscribed(userId) {
     if (!CHANNEL_USERNAME) return false;
     try {
         const member = await bot.telegram.getChatMember(CHANNEL_USERNAME, userId);
-        return ['creator', 'administrator', 'member'].includes(member.status);
+        return isSubscribedStatus(member);
     } catch (e) {
         console.error(`Ошибка проверки подписки для ${userId} на ${CHANNEL_USERNAME}:`, e.message);
         return false;
@@ -1439,6 +1444,28 @@ bot.command('maintenance', async (ctx) => {
 //    ДОБАВЬ ЭТОТ БЛОК ДЛЯ ОБРАБОТКИ КНОПКИ "ПОЛУЧИТЬ БОНУС"
 // ==========================================================
 
+bot.action(/^yandex_promo_click:([a-z0-9_]+)$/, async (ctx) => {
+    const promoKey = ctx.match[1];
+    const { getPromoCampaignByKey, recordPromoClick } = await import('./db.js');
+    const campaign = await getPromoCampaignByKey(promoKey);
+    if (!campaign) return ctx.answerCbQuery('Предложение больше недоступно.', { show_alert:true });
+    const legacyUrl = promoKey === 'balance300' ? T('yandex_promo_url') : promoKey === 'music' ? T('yandex_music_promo_url') : '';
+    const promoUrl = String(legacyUrl || campaign?.url || '').trim();
+    if (!/^https:\/\//i.test(promoUrl)) return ctx.answerCbQuery('Ссылка временно недоступна.', { show_alert: true });
+    const messageId = ctx.callbackQuery?.message?.message_id || null;
+    try {
+        const urlHash = createHash('sha256').update(promoUrl).digest('hex');
+        const click = await recordPromoClick({ campaignId:campaign.id, userId:ctx.from.id, promoKey, messageId, placement:'post_download', urlHash });
+        if (!click) return ctx.answerCbQuery('Предложение больше недоступно.', { show_alert:true });
+        await ctx.answerCbQuery('Нажмите кнопку ещё раз, чтобы перейти.');
+        const label = campaign.category === 'yandex' ? 'Открыть предложение Яндекса' : `Открыть: ${campaign.name}`;
+        await ctx.editMessageReplyMarkup(Markup.inlineKeyboard([[Markup.button.url(label, promoUrl)]]).reply_markup);
+    } catch (error) {
+        console.error('[YandexPromo] Click tracking error:', error.message);
+        await ctx.answerCbQuery('Не удалось открыть ссылку. Попробуйте ещё раз.', { show_alert: true }).catch(() => {});
+    }
+});
+
 bot.action('check_subscription', async (ctx) => {
     try {
         console.log(`[Bonus] User ${ctx.from.id} пытается получить бонус.`);
@@ -1455,8 +1482,13 @@ bot.action('check_subscription', async (ctx) => {
 
         if (subscribed) {
             console.log(`[Bonus] User ${ctx.from.id} подписан. Начисляю бонус.`);
-            await setPremium(ctx.from.id, 30, 7); // 30 скачиваний в день на 7 дней
-            await updateUserField(ctx.from.id, 'subscribed_bonus_used', true);
+            await activateSubscription(pool, {
+                userId: ctx.from.id,
+                tariff: 'plus',
+                durationDays: 7,
+                source: 'channel_subscription',
+                transactionId: `channel-subscription:${ctx.from.id}`
+            }, { cache: redisService });
             await logUserAction(ctx.from.id, 'bonus_received');
             
             // Завершаем "загрузку" кнопки
@@ -1508,6 +1540,7 @@ const menuHandler = async (ctx) => {
         Object.assign(extraOptions, getMainKeyboard(lang));
     }
     await ctx.reply(message, extraOptions);
+    void checkAndSendPromos(ctx.from.id,user,'main_menu');
 };
 
 const recognizeHandler = (ctx) => {
@@ -2616,6 +2649,34 @@ const handleMediaForShazam = async (ctx) => {
 // Подключаем обработчик ко всем медиа-типам
 bot.on(['voice', 'video_note', 'audio', 'video'], handleMediaForShazam);
 
+bot.on('document', async (ctx, next) => {
+    const user = ctx.state.user;
+    if (!user?.support_mode) return next();
+    const document = ctx.message.document;
+    const mimeType = String(document.mime_type || '').toLowerCase();
+    if (!SUPPORT_IMAGE_MIME_TYPES.has(mimeType)) return ctx.reply('Допустимы только PNG, JPG, JPEG и WEBP.');
+    try {
+        let attachment = {};
+        try {
+            attachment = await storeTelegramSupportImage({
+                telegram: ctx.telegram,
+                storage: supabase.storage.from('support-attachments'),
+                fileId: document.file_id,
+                mimeType,
+                userId: ctx.from.id,
+                fetchBuffer: async url => Buffer.from((await axios.get(url, { responseType: 'arraybuffer' })).data)
+            });
+        } catch (storageError) {
+            console.error('[Support Storage] Document fallback to Telegram file_id:', storageError.message);
+        }
+        await createSupportMessage(ctx.from.id, ctx.message.caption || '', 'user', 'photo', document.file_id, attachment);
+        await ctx.reply('✅ Ваше изображение отправлено в поддержку. Ожидайте ответа.');
+    } catch (error) {
+        console.error('[Support Document] Error:', error.message);
+        await ctx.reply('❌ Не удалось отправить изображение. Попробуйте ещё раз.');
+    }
+});
+
 bot.on('photo', async (ctx) => {
     if (isShuttingDown()) return;
     if (ctx.chat.type !== 'private') return;
@@ -2627,7 +2688,20 @@ bot.on('photo', async (ctx) => {
             const fileId = photo.file_id;
             const caption = ctx.message.caption || '';
 
-            await createSupportMessage(ctx.from.id, caption, 'user', 'photo', fileId);
+            let attachment = {};
+            try {
+                attachment = await storeTelegramSupportImage({
+                    telegram: ctx.telegram,
+                    storage: supabase.storage.from('support-attachments'),
+                    fileId,
+                    mimeType: 'image/jpeg',
+                    userId: ctx.from.id,
+                    fetchBuffer: async url => Buffer.from((await axios.get(url, { responseType: 'arraybuffer' })).data)
+                });
+            } catch (storageError) {
+                console.error('[Support Storage] Falling back to Telegram file_id:', storageError.message);
+            }
+            await createSupportMessage(ctx.from.id, caption, 'user', 'photo', fileId, attachment);
 
             const safeName = ctx.from.first_name ? ctx.from.first_name.replace(/</g, '&lt;').replace(/>/g, '&gt;') : 'Без имени';
             const adminMessage = `📷 <b>Новое фото в поддержку!</b>\n` +

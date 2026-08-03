@@ -85,6 +85,13 @@ import {
 import { logDownloadFlow } from './downloadFlowService.js';
 import { getUserLanguage } from './i18nService.js';
 import { buildLimitUpsell } from './limitUpsellService.js';
+import { analyticsService } from './analyticsService.js';
+import { createHash } from 'crypto';
+import { selectWeightedCampaign } from './promoCampaignService.js';
+import { AD_CAMPAIGN_MEDIA_BUCKET, downloadAdCampaignMedia } from './adCampaignMediaService.js';
+import { claimPromoSession, getPromoSessionId, releasePromoSession } from './promoSessionService.js';
+
+const promoUrlHash = url => createHash('sha256').update(String(url || '')).digest('hex');
 
 // Папка для обложек
 const THUMB_DIR = path.join(os.tmpdir(), 'sc-thumbs');
@@ -487,7 +494,7 @@ async function safeSendMessage(userId, text, extra = {}) {
 async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = null, correlationId = null) {
   const updatedUser = await db.incrementDownloadsAndSaveTrack(userId, trackTitle, fileId, cacheKey, source, false, correlationId);
   if (updatedUser) {
-    checkAndSendPromos(userId, updatedUser);
+    checkAndSendPromos(userId, updatedUser, 'download_success');
   }
   return updatedUser;
 }
@@ -496,102 +503,40 @@ async function incrementDownload(userId, trackTitle, fileId, cacheKey, source = 
 const YANDEX_PROMO_URL_FALLBACK =
   'https://yandex.ru/portal/defsearchpromo/landing/ru_mobile300?partner=G8FvrGl1U5keQ46802&offer_type=DLbgMOQ1TioAY31862&utm_source=promocodes_ru&utm_medium=affiliate_default&utm_campaign=300&utm_content=90920252&clid=14695911';
 
-async function checkAndSendPromos(userId, user) {
+export async function checkAndSendPromos(userId, user, activityType='download_success') {
   if (!user) return;
-  
   try {
-    const campaigns = await db.getPromoCampaigns();
-    
-    // 1. Системная кампания #1 (Баланс телефона)
-    const c1 = campaigns.find(c => c.id === 1);
-    if (c1 && c1.is_active) {
-      const progress = Number(user.yandex_promo_progress);
-      const promoAlready = user.yandex_promo_shown === true || user.yandex_promo_shown === 'true';
-      const threshold = Number(c1.trigger_downloads) || 3;
-      
-      if (progress === threshold && !promoAlready) {
-        const wasSet = await db.markYandexPromoShown(userId);
-        if (wasSet) {
-          setTimeout(async () => {
-            try {
-              const promoBody = T('yandex_promo_message');
-              const btnLabel = (T('yandex_promo_button') || '💰 Забрать 300₽ на телефон').trim();
-              const promoUrl = (T('yandex_promo_url') || '').trim() || YANDEX_PROMO_URL_FALLBACK;
-              if (promoBody) {
-                await bot.telegram.sendMessage(userId, promoBody, {
-                  parse_mode: 'HTML',
-                  disable_web_page_preview: true,
-                  ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
-                });
-                console.log(`[YandexPromo] ✅ Системное промо #1 отправлено пользователю ${userId}`);
-              }
-            } catch (e) {
-              console.error(`[YandexPromo] Ошибка отправки промо #1 для ${userId}:`, e.message);
-            }
-          }, 2500);
+    const campaigns = (await db.getPromoCampaigns(true)).map(c => c.promo_key === 'balance300' ? {...c,message_text:T('yandex_promo_message')||c.message_text,button_text:T('yandex_promo_button')||c.button_text,url:T('yandex_promo_url')||c.url||YANDEX_PROMO_URL_FALLBACK} : c.promo_key === 'music' ? {...c,message_text:T('yandex_music_promo_message')||c.message_text,button_text:T('yandex_music_promo_button')||c.button_text,url:T('yandex_music_promo_url')||c.url} : c);
+    const delivery = await db.getPromoDeliveryContext(userId);
+    const selectionContext={...delivery,downloadCount:Number(user.yandex_promo_progress),activityType};
+    const campaign = selectWeightedCampaign(campaigns,selectionContext);
+    if (!campaign) return;
+    const userSessionId=await getPromoSessionId(userId);
+    if(!await claimPromoSession(userId,userSessionId))return;
+    setTimeout(async () => {
+      let sentAny=false;
+      try {
+        const keyboard = Markup.inlineKeyboard([[Markup.button.callback(campaign.button_text || 'Открыть', `yandex_promo_click:${campaign.promo_key}`)]]);
+        let sent;
+        if (campaign.media_storage_path) {
+          if (!db.supabase) throw new Error('Supabase Storage is not configured');
+          const media = await downloadAdCampaignMedia({storage:db.supabase.storage.from(AD_CAMPAIGN_MEDIA_BUCKET),storagePath:campaign.media_storage_path});
+          const longText = campaign.message_text.length > 900;
+          const mediaExtra = longText ? {caption:campaign.name} : {caption:campaign.message_text,parse_mode:'HTML',...keyboard};
+          let mediaSent;
+          if (campaign.media_type === 'video') mediaSent = await bot.telegram.sendVideo(userId,{source:media},mediaExtra);
+          else if (campaign.media_mime_type === 'image/gif') mediaSent = await bot.telegram.sendAnimation(userId,{source:media},mediaExtra);
+          else mediaSent = await bot.telegram.sendPhoto(userId,{source:media},mediaExtra);
+          sentAny=true;
+          sent = longText ? await bot.telegram.sendMessage(userId,campaign.message_text,{parse_mode:'HTML',disable_web_page_preview:true,...keyboard}) : mediaSent;
+        } else {
+          sent = await bot.telegram.sendMessage(userId, campaign.message_text, { parse_mode:'HTML', disable_web_page_preview:true, ...keyboard });
+          sentAny=true;
         }
-      }
-    }
-    
-    // 2. Системная кампания #2 (Яндекс Музыка)
-    const c2 = campaigns.find(c => c.id === 2);
-    if (c2 && c2.is_active) {
-      const progress = Number(user.yandex_promo_progress);
-      const promoAlready = user.yandex_music_promo_shown === true || user.yandex_music_promo_shown === 'true';
-      const threshold = Number(c2.trigger_downloads) || 3;
-      
-      if (progress === threshold && !promoAlready) {
-        const wasSet = await db.markYandexMusicPromoShown(userId);
-        if (wasSet) {
-          setTimeout(async () => {
-            try {
-              const promoBody = T('yandex_music_promo_message');
-              const btnLabel = (T('yandex_music_promo_button') || '🎵 Попробовать Яндекс Музыку').trim();
-              const promoUrl = (T('yandex_music_promo_url') || '').trim() || 'https://music.yandex.ru';
-              if (promoBody) {
-                await bot.telegram.sendMessage(userId, promoBody, {
-                  parse_mode: 'HTML',
-                  disable_web_page_preview: true,
-                  ...Markup.inlineKeyboard([[Markup.button.url(btnLabel, promoUrl)]])
-                });
-                console.log(`[YandexPromo] ✅ Системное промо #2 отправлено пользователю ${userId}`);
-              }
-            } catch (e) {
-              console.error(`[YandexPromo] Ошибка отправки промо #2 для ${userId}:`, e.message);
-            }
-          }, 2500);
-        }
-      }
-    }
-    
-    // 3. Кастомные кампании (ID > 2)
-    const customProgressList = await db.getCustomPromoProgressForUser(userId);
-    for (const p of customProgressList) {
-      if (!p.is_active || p.shown) continue;
-      
-      const progress = Number(p.progress);
-      const threshold = Number(p.trigger_downloads) || 3;
-      
-      if (progress === threshold) {
-        const wasSet = await db.markCustomPromoShown(userId, p.campaign_id);
-        if (wasSet) {
-          setTimeout(async () => {
-            try {
-              if (p.message_text) {
-                await bot.telegram.sendMessage(userId, p.message_text, {
-                  parse_mode: 'HTML',
-                  disable_web_page_preview: true,
-                  ...Markup.inlineKeyboard([[Markup.button.url(p.button_text || '🔗 Перейти', p.url)]])
-                });
-                console.log(`[CustomPromo] ✅ Промо #${p.campaign_id} отправлено пользователю ${userId}`);
-              }
-            } catch (e) {
-              console.error(`[CustomPromo] Ошибка отправки промо #${p.campaign_id} для ${userId}:`, e.message);
-            }
-          }, 2500);
-        }
-      }
-    }
+        const urlHash = promoUrlHash(campaign.url);
+        await db.recordPromoImpression({campaignId:campaign.id,userId,promoKey:campaign.promo_key,messageId:sent.message_id,placement:activityType,urlHash,triggerDownloadCount:Number(user.yandex_promo_progress),hasMedia:Boolean(campaign.media_storage_path),mediaType:campaign.media_type||null,creativeVariant:`${campaign.promo_key}:${campaign.media_type||'text'}`,triggerType:campaign.selected_trigger_type,userSessionId});
+      } catch (e) { if(!sentAny)await releasePromoSession(userId,userSessionId);console.error(`[PromoSystem] Send failed for ${campaign.promo_key}/${userId}:`,e.message); }
+    },2500);
   } catch (e) {
     console.error(`[PromoSystem] Ошибка при проверке промо для ${userId}:`, e.message);
   }
