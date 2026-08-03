@@ -59,6 +59,13 @@ test('bot guard and user card resolve the same current limit without reading num
   assert.match(profile,/tariffLimits\[activeTariff\]/); assert.doesNotMatch(profile,/premiumActive \? Number\(u\.premium_limit/);
 });
 
+test('bot limit diagnostics identify tariff settings and never claim premium_limit is the source', async () => {
+  const botSource = await readFile(new URL('../bot.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(botSource, /user_premium_limit_db/);
+  assert.match(botSource, /daily_limit_\$\{activeTariff\}_setting/);
+  assert.match(botSource, /daily_limit_override/);
+});
+
 test('channel membership statuses accept subscribers and reject left or kicked', () => {
   for (const status of ['member','administrator','creator']) assert.equal(isSubscribedStatus({status}), true);
   assert.equal(isSubscribedStatus({status:'restricted',is_member:true}), true);

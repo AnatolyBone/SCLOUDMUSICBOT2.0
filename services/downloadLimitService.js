@@ -1,5 +1,6 @@
 import { getSetting } from './settingsManager.js';
 import {
+  getActiveTariffCode,
   getDownloadQueuePriority as getQueuePriority,
   getEffectiveDownloadLimit as getEffectiveLimit,
   getRemainingDownloads as getRemaining,
@@ -7,7 +8,7 @@ import {
   isUserUnlimited
 } from './downloadLimitCore.js';
 
-export { isUserUnlimited };
+export { getActiveTariffCode, isUserUnlimited };
 
 export function getConfiguredFreeDownloadLimit() {
   const parsed = Number(getSetting('daily_limit_free'));

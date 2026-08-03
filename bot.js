@@ -26,6 +26,7 @@ import { isSubscribedStatus } from './services/channelSubscriptionService.js';
 import { createHash } from 'crypto';
 import { storeTelegramSupportImage, SUPPORT_IMAGE_MIME_TYPES } from './services/supportMediaService.js';
 import {
+    getActiveTariffCode,
     getConfiguredFreeDownloadLimit,
     getDownloadQueuePriority,
     getEffectiveDownloadLimit,
@@ -209,16 +210,17 @@ async function isDownloadLimitReached(ctx, userId, correlationId = null) {
     const userLimit = getEffectiveDownloadLimit(user, limitFreeSetting);
     const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
     
-    const limitSource = isUserUnlimited(user)
-        ? 'active_unlimited'
-        : isPremium
-        ? 'user_premium_limit_db'
-        : 'daily_limit_free_setting';
+    const activeTariff = getActiveTariffCode(user);
+    const hasOverride = user.daily_limit_override !== null && user.daily_limit_override !== undefined;
+    const limitSource = hasOverride
+        ? 'daily_limit_override'
+        : `daily_limit_${activeTariff}_setting`;
 
     console.log(`[DEBUG] [Tariffs & Limits] User check:`, {
         telegram_id: userId,
         username: ctx.from?.username || 'unknown',
         is_premium: isPremium,
+        active_tariff: activeTariff,
         premium_until: user.premium_until,
         daily_limit: Number.isFinite(userLimit) ? userLimit : 'unlimited',
         downloaded_today: downloadsToday,
