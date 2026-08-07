@@ -21,6 +21,7 @@ import { t as i18n, getUserLanguage, normalizeLanguageCode, getUserLanguageSegme
 import { SUPPORTED_LANGUAGES, LANGUAGE_LABELS } from './config/languages.js';
 import { redactSecretsInText } from './services/logSanitizer.js';
 import { activateSubscription } from './services/subscriptionService.js';
+import { grantKaraokeTesterBonus } from './services/karaokeBonusService.js';
 import redisService from './services/redisClient.js';
 import { isSubscribedStatus } from './services/channelSubscriptionService.js';
 import { createHash } from 'crypto';
@@ -1765,8 +1766,8 @@ bot.action('karaoke_join', async (ctx) => {
         // Выдаем/продлеваем Plus-доступ в локальной базе музыкального бота (кроме администраторов)
         const isBotAdmin = Number(ctx.from.id) === Number(ADMIN_ID);
         if (!isBotAdmin) {
-            await setTariffAdmin(ctx.from.id, 30, 30, { mode: 'extend' });
-            console.log(`[Karaoke/Tester] Granted/extended Plus in Bot DB for user ${ctx.from.id} (30 days)`);
+            const activation = await grantKaraokeTesterBonus(pool, ctx.from.id, { cache: redisService });
+            console.log(`[Karaoke/Tester] Plus activation for user ${ctx.from.id}: ${activation.duplicate ? 'already granted' : 'granted (30 days)'}`);
         }
         
         // Логируем действие в системный лог

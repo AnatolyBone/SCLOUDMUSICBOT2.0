@@ -7,6 +7,8 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { PassThrough } from 'stream';
 import ffmpegPath from 'ffmpeg-static';
+import { removeTempArtifacts, startTempDirectoryJanitor } from './tempStorage.js';
+import { abortError, bindAbortSignal, terminateChildProcess } from './abortableProcess.js';
 
 const TEMP_DIR = path.join(os.tmpdir(), 'spotify-dl');
 
@@ -39,6 +41,11 @@ if (fs.existsSync(COOKIES_PATH)) {
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
+startTempDirectoryJanitor(TEMP_DIR, {
+  startupMaxAgeMs: 1,
+  maxAgeMs: Number(process.env.TEMP_CACHE_MAX_AGE_MS) || 30 * 60 * 1000,
+  maxBytes: (Number(process.env.TEMP_CACHE_MAX_MB) || 1024) * 1024 * 1024
+});
 
 /**
  * Скачивает и конвертирует в MP3 через pipe (без записи на диск)
@@ -52,7 +59,7 @@ if (!fs.existsSync(TEMP_DIR)) {
  * Возвращает readable stream вместо buffer
  */
 export async function downloadSpotifyAsStream(searchQuery, options = {}) {
-  const { quality = 'medium' } = options;
+  const { quality = 'medium', signal = null } = options;
   
   const bitrate = {
     'high': '320k',
@@ -79,8 +86,10 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
       console.log(`[SpotifyDL/Stream] Использую куки из: ${WRITABLE_COOKIES_PATH}`);
     }
     
+    const processGroup = process.platform !== 'win32';
     const ytdlp = spawn('python3', ytdlpArgs, {
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      detached: processGroup
     });
 
     // FFmpeg конвертирует поток в MP3
@@ -92,6 +101,8 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
       '-f', 'mp3',
       'pipe:1'  // ✅ Вывод в stdout
     ]);
+    const unbindYtdlp = bindAbortSignal(ytdlp, signal, { processGroup });
+    const unbindFfmpeg = bindAbortSignal(ffmpeg, signal);
 
     // Соединяем pipe
     ytdlp.stdout.pipe(ffmpeg.stdin);
@@ -127,8 +138,8 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
     const startTimeout = setTimeout(() => {
       if (!hasStarted) {
         console.error(`[SpotifyDL/Stream] ❌ Таймаут: поток не начался за 30 сек`);
-        ytdlp.kill('SIGTERM');
-        ffmpeg.kill('SIGTERM');
+        void terminateChildProcess(ytdlp, { processGroup });
+        void terminateChildProcess(ffmpeg);
         reject(new Error('STREAM_START_TIMEOUT'));
       }
     }, 30000); // 30 сек чтобы начался
@@ -149,8 +160,8 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
         // Функция для принудительной остановки
         cleanup: () => {
           console.log(`[SpotifyDL/Stream] 🧹 Cleanup вызван (получено ${(bytesReceived/1024/1024).toFixed(2)} MB)`);
-          ytdlp.kill('SIGTERM');
-          ffmpeg.kill('SIGTERM');
+          void terminateChildProcess(ytdlp, { processGroup });
+          void terminateChildProcess(ffmpeg);
         },
         
         // Promise который резолвится когда скачивание завершится
@@ -166,20 +177,22 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
 
     // Обработка ошибок процессов
     ytdlp.on('close', (code) => {
+      unbindYtdlp();
       if (code !== 0 && code !== null && !hasStarted) {
         clearTimeout(startTimeout);
         console.error(`[SpotifyDL/Stream] yt-dlp error (code ${code}): ${errorLogs.slice(-300)}`);
-        reject(new Error(`yt-dlp failed: ${errorLogs.slice(-200)}`));
+        reject(signal?.aborted ? abortError(signal) : new Error(`yt-dlp failed: ${errorLogs.slice(-200)}`));
       }
     });
 
     ffmpeg.on('close', (code) => {
+      unbindFfmpeg();
       clearTimeout(startTimeout);
       outputStream.end();
       
       if (code !== 0 && !hasStarted) {
         console.error(`[SpotifyDL/Stream] FFmpeg error (code ${code}): ${errorLogs.slice(-300)}`);
-        reject(new Error(`FFmpeg failed`));
+        reject(signal?.aborted ? abortError(signal) : new Error(`FFmpeg failed`));
       }
     });
 
@@ -197,7 +210,7 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
   });
 }
 export async function downloadSpotifyStream(searchQuery, options = {}) {
-  const { quality = 'medium' } = options;
+  const { quality = 'medium', signal = null } = options;
   
   const bitrate = {
     'high': '320k',
@@ -226,8 +239,10 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
       console.warn('[SpotifyDL/Stream] Куки не найдены, пробую без них (возможна блокировка)');
     }
     
+    const processGroup = process.platform !== 'win32';
     const ytdlp = spawn('python3', ytdlpArgs, {
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      detached: processGroup
     });
 
     // Шаг 2: FFmpeg читает из stdin и конвертирует в MP3
@@ -239,6 +254,8 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
       '-f', 'mp3',               // Формат
       'pipe:1'                   // Вывод в stdout
     ]);
+    const unbindYtdlp = bindAbortSignal(ytdlp, signal, { processGroup });
+    const unbindFfmpeg = bindAbortSignal(ffmpeg, signal);
 
     // Соединяем: yt-dlp stdout → ffmpeg stdin
     ytdlp.stdout.pipe(ffmpeg.stdin);
@@ -265,30 +282,31 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
 
     // Таймаут 2 минуты
     const timeout = setTimeout(() => {
-      ytdlp.kill();
-      ffmpeg.kill();
+      void terminateChildProcess(ytdlp, { processGroup });
+      void terminateChildProcess(ffmpeg);
       reject(new Error('TIMEOUT'));
     }, 120000);
 
     // Проверяем ошибки yt-dlp
     ytdlp.on('close', (code) => {
+      unbindYtdlp();
       if (code !== 0 && code !== null) {
         clearTimeout(timeout);
-        ytdlp.kill();
-        ffmpeg.kill();
+        void terminateChildProcess(ffmpeg);
         console.error(`[SpotifyDL/Stream] yt-dlp exited with code ${code}`);
         console.error(`[SpotifyDL/Stream] yt-dlp error: ${ytdlpError.slice(-200)}`);
-        reject(new Error(`yt-dlp failed: ${ytdlpError.slice(-200)}`));
+        reject(signal?.aborted ? abortError(signal) : new Error(`yt-dlp failed: ${ytdlpError.slice(-200)}`));
       }
     });
 
     ffmpeg.on('close', (code) => {
+      unbindFfmpeg();
       clearTimeout(timeout);
       outputStream.end();
       
       if (code !== 0) {
         console.error(`[SpotifyDL/Stream] FFmpeg error: ${ffmpegError.slice(-200)}`);
-        return reject(new Error('FFmpeg conversion failed'));
+        return reject(signal?.aborted ? abortError(signal) : new Error('FFmpeg conversion failed'));
       }
 
       if (chunks.length === 0) {
@@ -324,7 +342,7 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
  * @returns {Promise<{filePath: string, duration: number}>}
  */
 export async function downloadFromYouTube(searchQuery, options = {}) {
-  const { quality = 'high', metadata = {} } = options;
+  const { quality = 'high', metadata = {}, signal = null } = options;
   
   const baseName = `spotify_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const outputPath = path.join(TEMP_DIR, `${baseName}.mp3`);
@@ -389,8 +407,11 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
     
     const proc = spawn('python3', args, {
       cwd: TEMP_DIR,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      detached: process.platform !== 'win32'
     });
+    const processGroup = process.platform !== 'win32';
+    const unbindAbort = bindAbortSignal(proc, signal, { processGroup });
 
     let stdout = '';
     let stderr = '';
@@ -420,7 +441,13 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
     });
 
     proc.on('close', (code) => {
+      unbindAbort();
       if (code !== 0) {
+        if (signal?.aborted) {
+          removeTempArtifacts(TEMP_DIR, baseName);
+          return reject(abortError(signal));
+        }
+        removeTempArtifacts(TEMP_DIR, baseName);
         console.error(`[SpotifyDL] ❌ yt-dlp код: ${code}`);
         console.error(`[SpotifyDL] stderr: ${stderr.slice(-500)}`);
         
@@ -474,6 +501,8 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
     });
 
     proc.on('error', (err) => {
+      unbindAbort();
+      removeTempArtifacts(TEMP_DIR, baseName);
       console.error(`[SpotifyDL] ❌ Spawn error:`, err);
       reject(new Error(`Spawn failed: ${err.message}`));
     });
@@ -485,9 +514,9 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
  * Использует другой формат и fallback на видео
  */
 export async function downloadFromYouTubeFallback(searchQuery, options = {}) {
-  const { quality = 'medium' } = options;
+  const { quality = 'medium', signal = null } = options;
   
-  const baseName = `spotify_fb_${Date.now()}`;
+  const baseName = `spotify_fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
   
   console.log(`[SpotifyDL/Fallback] 🔄 Пробуем альтернативный метод...`);
@@ -512,14 +541,18 @@ export async function downloadFromYouTubeFallback(searchQuery, options = {}) {
       console.warn('[SpotifyDL/Fallback] Куки не найдены, пробую без них (возможна блокировка)');
     }
 
-    const proc = spawn('python3', args, { cwd: TEMP_DIR });
+    const processGroup = process.platform !== 'win32';
+    const proc = spawn('python3', args, { cwd: TEMP_DIR, detached: processGroup });
+    const unbindAbort = bindAbortSignal(proc, signal, { processGroup });
 
     let stderr = '';
     proc.stderr.on('data', (data) => { stderr += data.toString(); });
 
     proc.on('close', (code) => {
+      unbindAbort();
       if (code !== 0) {
-        return reject(new Error(`Fallback failed: ${stderr.slice(-200)}`));
+        removeTempArtifacts(TEMP_DIR, baseName);
+        return reject(signal?.aborted ? abortError(signal) : new Error(`Fallback failed: ${stderr.slice(-200)}`));
       }
       
       const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(baseName));
@@ -533,7 +566,11 @@ export async function downloadFromYouTubeFallback(searchQuery, options = {}) {
       resolve({ filePath, size: fs.statSync(filePath).size });
     });
 
-    proc.on('error', reject);
+    proc.on('error', error => {
+      unbindAbort();
+      removeTempArtifacts(TEMP_DIR, baseName);
+      reject(error);
+    });
   });
 }
 
@@ -552,6 +589,7 @@ export async function downloadSpotifyTrack(trackInfo, options = {}) {
         metadata: trackInfo 
       });
     } catch (err) {
+      if (options.signal?.aborted) throw abortError(options.signal);
       const isRetryable = ['NO_DATA_BLOCKS', 'TIMEOUT'].includes(err.message);
       
       if (isRetryable && attempt < maxRetries) {
@@ -569,6 +607,7 @@ export async function downloadSpotifyTrack(trackInfo, options = {}) {
   try {
     return await downloadFromYouTubeFallback(searchQuery, options);
   } catch (err) {
+    if (options.signal?.aborted) throw abortError(options.signal);
     console.warn(`[SpotifyDL] Метод 2 не сработал: ${err.message}`);
   }
   
@@ -611,4 +650,3 @@ export function cleanupTempFiles(maxAgeMs = 30 * 60 * 1000) {
 
 // Автоочистка каждые 10 минут
 setInterval(() => cleanupTempFiles(), 10 * 60 * 1000);
-

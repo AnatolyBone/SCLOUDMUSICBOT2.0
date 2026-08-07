@@ -1,7 +1,8 @@
 // services/referralManager.js (улучшенная версия)
 
-import { setTariffAdmin, getUser, logUserAction } from '../db.js';
+import { pool, getUser, logUserAction } from '../db.js';
 import { bot } from '../bot.js';
+import { grantReferralBonus, REFERRAL_BONUS_TYPES } from './referralBonusService.js';
 
 const REFERRER_BONUS_DAYS = 3;   // бонус за приглашение рефереру
 const NEW_USER_BONUS_DAYS = 3;   // приветственный бонус новому пользователю
@@ -80,19 +81,24 @@ export async function processNewUserReferral(newUser, ctx) {
 
   try {
     // --- 1) Бонус новому пользователю ---
-    await setTariffAdmin(newUser.id, 30, NEW_USER_BONUS_DAYS, { mode: 'extend' });
-    
-    await ctx.reply(
+    const newUserGrant = await grantReferralBonus(pool, {
+      referrerId,
+      referredUserId: newUser.id,
+      bonusType: REFERRAL_BONUS_TYPES.NEW_USER
+    });
+    if (!newUserGrant.duplicate) {
+      await ctx.reply(
       `🎉 В качестве приветственного бонуса мы начислили вам ` +
       `<b>${NEW_USER_BONUS_DAYS} ${pluralDays(NEW_USER_BONUS_DAYS)} тарифа Plus!</b>`,
       { parse_mode: 'HTML' }
     );
     
-    await logUserAction(newUser.id, 'referral_bonus_received', { 
+      await logUserAction(newUser.id, 'referral_bonus_received', { 
       type: 'new_user', 
       days: NEW_USER_BONUS_DAYS, 
       limit: 30 
-    });
+      });
+    }
 
     // --- 2) Бонус рефереру ---
     const referrer = await getUser(referrerId);
@@ -103,12 +109,12 @@ export async function processNewUserReferral(newUser, ctx) {
 
     if (referrer.premium_limit > 30) {
       // У реферера тариф выше чем Plus — продлеваем текущий лимит
-      await setTariffAdmin(
-        referrer.id, 
-        referrer.premium_limit, 
-        REFERRER_BONUS_DAYS, 
-        { mode: 'extend' }
-      );
+      const referrerGrant = await grantReferralBonus(pool, {
+        referrerId,
+        referredUserId: newUser.id,
+        bonusType: REFERRAL_BONUS_TYPES.REFERRER
+      });
+      if (referrerGrant.duplicate) return;
       
       console.log(`[Referral] Реферер ${referrerId} имеет тариф ${referrer.premium_limit}. Продлеваем на ${REFERRER_BONUS_DAYS} ${pluralDays(REFERRER_BONUS_DAYS)}.`);
       
@@ -122,7 +128,12 @@ export async function processNewUserReferral(newUser, ctx) {
       });
     } else {
       // Выдаём/продлеваем Plus
-      await setTariffAdmin(referrer.id, 30, REFERRER_BONUS_DAYS, { mode: 'extend' });
+      const referrerGrant = await grantReferralBonus(pool, {
+        referrerId,
+        referredUserId: newUser.id,
+        bonusType: REFERRAL_BONUS_TYPES.REFERRER
+      });
+      if (referrerGrant.duplicate) return;
       
       console.log(`[Referral] Реферер ${referrerId} получает Plus на ${REFERRER_BONUS_DAYS} ${pluralDays(REFERRER_BONUS_DAYS)}.`);
       

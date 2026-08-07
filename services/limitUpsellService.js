@@ -1,5 +1,6 @@
 import { t as i18n, normalizeLanguageCode } from './i18nService.js';
 import { TARIFFS } from '../config/tariffs.js';
+import { getEffectiveDownloadLimit } from './downloadLimitService.js';
 
 function getTariffVariables() {
   return {
@@ -65,13 +66,8 @@ export function buildLimitUpsell({
   const safeFreeLimit = Number.isFinite(configuredFreeLimit) && configuredFreeLimit >= 0
     ? configuredFreeLimit
     : 3;
-  const configuredPlanLimit = Number(user?.premium_limit);
-  const dailyLimit = hasActivePlan
-    && user?.premium_limit !== null
-    && Number.isFinite(configuredPlanLimit)
-    && configuredPlanLimit >= 0
-    ? configuredPlanLimit
-    : safeFreeLimit;
+  const effectiveLimit = getEffectiveDownloadLimit(user, safeFreeLimit, now);
+  const dailyLimit = Number.isFinite(effectiveLimit) ? effectiveLimit : '∞';
   const textKey = hasActivePlan
     ? (canClaimBonus ? 'limit_upsell_plan_with_bonus' : 'limit_upsell_plan_without_bonus')
     : (canClaimBonus ? 'limit_upsell_free_with_bonus' : 'limit_upsell_free_without_bonus');

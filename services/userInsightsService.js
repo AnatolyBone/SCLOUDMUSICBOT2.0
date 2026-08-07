@@ -253,7 +253,7 @@ export async function getUserTimeline(userIdValue, options = {}, queryFn = null)
   }
   const [userResult, eventResult] = await Promise.all([
     queryFn(`SELECT id, username, first_name, created_at, last_active, total_downloads,
-                    premium_limit, premium_until, referrer_id, referral_source,
+                    premium_limit, premium_until, tariff_code, daily_limit_override, referrer_id, referral_source,
                     language_code, active
                FROM public.users WHERE id = $1`, [userId]),
     queryFn(TIMELINE_SQL, [userId, startAt, endAt, beforeOccurredAt, beforeEventId, limit + 1])

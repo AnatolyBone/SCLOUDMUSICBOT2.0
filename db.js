@@ -10,6 +10,7 @@ import { SUPABASE_URL, SUPABASE_KEY, DATABASE_URL, KARAOKE_DATABASE_URL, KARAOKE
 import { SUPPORTED_LANGUAGES } from './config/languages.js';
 import { countUndeliverableRecipients } from './services/broadcastAudienceRules.js';
 import { toFiniteNumber } from './services/revenueNumber.js';
+import { averageAvailable, markActivityAvailability, resolveReportPeriod } from './services/analyticsReportSemantics.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3755,6 +3756,16 @@ export async function getBroadcastTaskStats(broadcastId) {
 }
 
 export async function getExcelAnalyticsData(startDate, endDate) {
+  const requestedStartDate = startDate;
+  const requestedEndDate = endDate;
+  const coverageRes = await query(
+    `SELECT MIN(day)::text AS first_day, MAX(day)::text AS last_day
+     FROM analytics_daily WHERE day BETWEEN $1 AND $2`,
+    [startDate, endDate]
+  );
+  const period = resolveReportPeriod(startDate, endDate, coverageRes.rows[0]?.last_day);
+  startDate = period.startDate;
+  endDate = period.endDate;
   const mskStart = `${startDate}T00:00:00+03:00`;
   const mskEnd = `${endDate}T23:59:59.999+03:00`;
   const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
@@ -3767,17 +3778,13 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   const newUsersRes = await query(`SELECT COUNT(*)::int FROM users WHERE created_at BETWEEN $1 AND $2 AND NOT (id = ANY($3::bigint[]))`, [mskStart, mskEnd, excludedAnalyticsUserIds]);
   const newUsers = newUsersRes.rows[0].count || 0;
 
-  const dailyAggRes = await query(
-    `SELECT 
-       COALESCE(AVG(dau), 0)::int AS avg_dau,
-       COALESCE(AVG(wau), 0)::int AS avg_wau,
-       COALESCE(AVG(mau), 0)::int AS avg_mau,
-       COALESCE(SUM(downloads_total), 0)::int AS total_downloads
-     FROM analytics_daily
-     WHERE day BETWEEN $1 AND $2`,
-    [startDate, endDate]
+  const activityCoverageRes = await query(
+    `SELECT MIN((created_at AT TIME ZONE 'Europe/Moscow')::date)::text AS complete_from
+     FROM analytics_events
+     WHERE event_origin = 'live' AND event_name <> 'session_started' AND user_id IS NOT NULL`,
+    []
   );
-  const dailyAgg = dailyAggRes.rows[0];
+  const activityCompleteFrom = activityCoverageRes.rows[0]?.complete_from || null;
 
   const revRubRes = await query(
     `SELECT COALESCE(SUM(amount_minor), 0)::bigint AS sum, COUNT(*)::int AS count
@@ -3849,7 +3856,32 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   );
   const paidUsers = paidUsersRes.rows[0].count || 0;
 
-  const funnel = [
+  const monetizationRes = await query(
+    `WITH limit_users AS (
+       SELECT user_id, MIN(created_at) AS occurred_at FROM analytics_events
+       WHERE event_name = 'daily_limit_reached' AND created_at BETWEEN $1 AND $2
+         AND user_id IS NOT NULL AND NOT (user_id = ANY($3::bigint[])) GROUP BY user_id
+     ), tariff_users AS (
+       SELECT e.user_id, MIN(e.created_at) AS occurred_at FROM analytics_events e
+       JOIN limit_users p ON p.user_id = e.user_id AND p.occurred_at <= e.created_at
+       WHERE e.event_name = 'star_payment_option_shown' AND e.created_at BETWEEN $1 AND $2 GROUP BY e.user_id
+     ), started_users AS (
+       SELECT e.user_id, MIN(e.created_at) AS occurred_at FROM analytics_events e
+       JOIN tariff_users p ON p.user_id = e.user_id AND p.occurred_at <= e.created_at
+       WHERE e.event_name IN ('payment_method_selected','star_invoice_created') AND e.created_at BETWEEN $1 AND $2 GROUP BY e.user_id
+     ), paid_users AS (
+       SELECT DISTINCT p.user_id FROM payments p JOIN started_users s ON s.user_id = p.user_id AND s.occurred_at <= p.paid_at
+       WHERE p.payment_status = 'completed' AND p.paid_at BETWEEN $1 AND $2
+     ) SELECT
+       (SELECT COUNT(*) FROM limit_users)::int AS reached_limit,
+       (SELECT COUNT(*) FROM tariff_users)::int AS opened_tariffs,
+       (SELECT COUNT(*) FROM started_users)::int AS started_payment,
+       (SELECT COUNT(*) FROM paid_users)::int AS paid`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
+  );
+  const monetization = monetizationRes.rows[0] || {};
+
+  const legacyFunnel = [
     { stage: 'Открыли бота', count: totalUsers },
     { stage: 'Искали треки', count: searchedUsers },
     { stage: 'Скачивали', count: downloadedUsers },
@@ -3859,17 +3891,31 @@ export async function getExcelAnalyticsData(startDate, endDate) {
     { stage: 'Оплатили', count: paidUsers }
   ];
 
+  const funnelCounts = [monetization.reached_limit, monetization.opened_tariffs, monetization.started_payment, monetization.paid];
+  const funnelLabels = ['Достигли лимита', 'Открыли тарифы', 'Начали оплату', 'Успешно оплатили'];
+  const funnel = legacyFunnel.slice(3).map((row, index) => ({
+    ...row,
+    stage: funnelLabels[index],
+    count: Number(funnelCounts[index] || 0)
+  }));
+  const usage = [
+    { metric: 'Active users', count: null },
+    { metric: 'Search users', count: searchedUsers },
+    { metric: 'Direct-link users', count: null },
+    { metric: 'Successful download users', count: downloadedUsers }
+  ];
+
   // 3. Tariffs (Plus, Pro, Unlimited) daily counts
   const tariffsRes = await query(
     `SELECT 
-       paid_at::date::text AS day,
+       (paid_at AT TIME ZONE 'Europe/Moscow')::date::text AS day,
        COUNT(*) FILTER (WHERE plan = 'plus')::int AS plus,
        COUNT(*) FILTER (WHERE plan = 'pro')::int AS pro,
        COUNT(*) FILTER (WHERE plan = 'unlim')::int AS unlim
      FROM payments
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
        AND NOT (user_id = ANY($3::bigint[]))
-     GROUP BY paid_at::date
+     GROUP BY (paid_at AT TIME ZONE 'Europe/Moscow')::date
      ORDER BY day ASC`,
     [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
@@ -3878,7 +3924,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   // 4. Payments list
   const paymentsRes = await query(
     `SELECT 
-       paid_at::date::text AS date,
+       (paid_at AT TIME ZONE 'Europe/Moscow')::date::text AS date,
        payment_method AS method,
        currency,
        CASE WHEN currency = 'RUB' THEN amount_minor / 100.0 ELSE amount_minor END AS amount,
@@ -3887,7 +3933,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
      FROM payments
      WHERE payment_status = 'completed' AND paid_at BETWEEN $1 AND $2
        AND NOT (user_id = ANY($3::bigint[]))
-     GROUP BY paid_at::date, payment_method, currency, amount_minor, plan
+     GROUP BY (paid_at AT TIME ZONE 'Europe/Moscow')::date, payment_method, currency, amount_minor, plan
      ORDER BY date DESC`,
     [mskStart, mskEnd, excludedAnalyticsUserIds]
   );
@@ -3899,7 +3945,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
        t.id::int AS id,
        t.campaign_name AS name,
        t.campaign_tag AS tag,
-       t.scheduled_at::date::text AS date,
+       (t.scheduled_at AT TIME ZONE 'Europe/Moscow')::date::text AS date,
        (
          SELECT COUNT(*) 
          FROM users u 
@@ -3975,7 +4021,22 @@ export async function getExcelAnalyticsData(startDate, endDate) {
      ORDER BY day ASC`,
     [startDate, endDate]
   );
-  const dailyStats = dailyStatsRes.rows;
+  const dailyStats = markActivityAvailability(dailyStatsRes.rows, activityCompleteFrom);
+  const activeUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events
+     WHERE event_origin = 'live' AND event_name <> 'session_started' AND created_at BETWEEN $1 AND $2
+       AND user_id IS NOT NULL AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
+  );
+  const directLinkUsersRes = await query(
+    `SELECT COUNT(DISTINCT user_id)::int AS count FROM analytics_events
+     WHERE event_name = 'track_download_requested' AND created_at BETWEEN $1 AND $2
+       AND COALESCE(event_data->>'source','') IN ('soundcloud','youtube','spotify')
+       AND user_id IS NOT NULL AND NOT (user_id = ANY($3::bigint[]))`,
+    [mskStart, mskEnd, excludedAnalyticsUserIds]
+  );
+  usage[0].count = activeUsersRes.rows[0]?.count || 0;
+  usage[2].count = directLinkUsersRes.rows[0]?.count || 0;
 
   // Read-only payment-loss analytics uses the same period and attribution contract
   // as the admin tab. Dynamic import avoids a module-initialization cycle because
@@ -3986,18 +4047,27 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   return {
     startDate,
     endDate,
+    requestedStartDate,
+    requestedEndDate,
+    period: {
+      ...period,
+      activityCompleteFrom,
+      activityDaysAvailable: dailyStats.filter(row => row.activity_available).length,
+      mauWindowComplete: dailyStats.filter(row => row.activity_available).length >= 30
+    },
     summary: {
       total_users: totalUsers,
       new_users: newUsers,
-      avg_dau: Math.round(dailyAgg.avg_dau),
-      avg_wau: Math.round(dailyAgg.avg_wau),
-      avg_mau: Math.round(dailyAgg.avg_mau),
-      total_downloads: dailyAgg.total_downloads,
+      avg_dau: averageAvailable(dailyStats, 'dau'),
+      avg_wau: averageAvailable(dailyStats, 'wau'),
+      avg_mau: averageAvailable(dailyStats, 'mau'),
+      total_downloads: dailyStats.reduce((sum, row) => sum + Number(row.downloads || 0), 0),
       revenue_rub: revenueRub,
       revenue_stars: revenueStars,
       payments_count: totalPayments
     },
     funnel,
+    usage,
     tariffs,
     payments: paymentsList,
     campaigns,

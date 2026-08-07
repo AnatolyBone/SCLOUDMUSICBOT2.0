@@ -90,6 +90,8 @@ import { createHash } from 'crypto';
 import { selectWeightedCampaign } from './promoCampaignService.js';
 import { AD_CAMPAIGN_MEDIA_BUCKET, downloadAdCampaignMedia } from './adCampaignMediaService.js';
 import { claimPromoSession, getPromoSessionId, releasePromoSession } from './promoSessionService.js';
+import { assertTempCapacity, removeTempArtifacts, startTempDirectoryJanitor } from './tempStorage.js';
+import { abortError, bindAbortSignal } from './abortableProcess.js';
 
 const promoUrlHash = url => createHash('sha256').update(String(url || '')).digest('hex');
 
@@ -119,6 +121,13 @@ const __dirname = path.dirname(__filename);
 // Папка для временных файлов (нужна для yt-dlp fallback)
 const TEMP_DIR = path.join(os.tmpdir(), 'sc-cache');
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+const TEMP_CACHE_MAX_BYTES = (Number(process.env.TEMP_CACHE_MAX_MB) || 1024) * 1024 * 1024;
+startTempDirectoryJanitor(TEMP_DIR, {
+  startupMaxAgeMs: 1,
+  maxAgeMs: Number(process.env.TEMP_CACHE_MAX_AGE_MS) || 30 * 60 * 1000,
+  maxBytes: TEMP_CACHE_MAX_BYTES
+});
+startTempDirectoryJanitor(THUMB_DIR, { startupMaxAgeMs: 1, maxAgeMs: 30 * 60 * 1000, maxBytes: 100 * 1024 * 1024 });
 
 const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 4;
 
@@ -131,6 +140,7 @@ async function ytdlSafe(url, flags = {}, options = {}) {
   try {
     return await ytdl(url, flags, options);
   } catch (err) {
+    if (options.signal?.aborted) throw abortError(options.signal);
     const errText = err.stderr || err.message || '';
     const isProxyErr = BOT_PROXY_ERR.some(p => errText.includes(p));
     
@@ -178,7 +188,8 @@ export const QUALITY_PRESETS = {
 /**
  * Скачивает трек через spotdl (для Spotify)
  */
-async function downloadWithSpotdl(url, quality = 'high') {
+async function downloadWithSpotdl(url, quality = 'high', signal = null) {
+  assertTempCapacity(TEMP_DIR, TEMP_CACHE_MAX_BYTES);
   const { spawn } = await import('child_process');
   const baseName = `spot_${Date.now()}`;
   const outputDir = path.join(TEMP_DIR, baseName);
@@ -218,7 +229,9 @@ async function downloadWithSpotdl(url, quality = 'high') {
 
     console.log(`[spotdl] Запуск: python3 ${args.join(' ')}`);
     
-    const proc = spawn('python3', args, { cwd: outputDir });
+    const processGroup = process.platform !== 'win32';
+    const proc = spawn('python3', args, { cwd: outputDir, detached: processGroup });
+    const unbindAbort = bindAbortSignal(proc, signal, { processGroup });
 
     let stderrOutput = '';
     proc.stderr.on('data', (data) => {
@@ -230,7 +243,9 @@ async function downloadWithSpotdl(url, quality = 'high') {
     });
 
     proc.on('close', (code) => {
+      unbindAbort();
       if (code !== 0) {
+        if (signal?.aborted) return reject(abortError(signal));
         console.error(`[spotdl] Процесс завершился с кодом ${code}. Stderr: ${redactSecretsInText(stderrOutput)}`);
         return reject(new Error(`spotdl exited with code ${code}`));
       }
@@ -254,6 +269,7 @@ async function downloadWithSpotdl(url, quality = 'high') {
     });
 
     proc.on('error', (err) => {
+      unbindAbort();
       reject(new Error(`spotdl spawn error: ${err.message}`));
     });
   });
@@ -262,7 +278,8 @@ async function downloadWithSpotdl(url, quality = 'high') {
 /**
  * Скачивает трек через yt-dlp + ffmpeg и возвращает путь к mp3 файлу
  */
-async function downloadWithYtdlpStream(url, quality = 'high') {
+async function downloadWithYtdlpStream(url, quality = 'high', signal = null) {
+  assertTempCapacity(TEMP_DIR, TEMP_CACHE_MAX_BYTES);
   const { spawn } = await import('child_process');
   
   return new Promise((resolve, reject) => {
@@ -270,7 +287,7 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
       ? url 
       : `ytsearch1:${url.replace(/^(ytsearch1:|ytmsearch1:)/, '')}`;
 
-    const baseName = `stream_${Date.now()}`;
+    const baseName = `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
 
     // Определяем битрейт
@@ -311,7 +328,9 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
     console.log(`[yt-dlp/file] Скачиваю: ${searchUrl.slice(0, 60)}...`);
     console.log(`[yt-dlp/file] Качество: ${bitrate}`);
     
-    const proc = spawn('python3', args);
+    const processGroup = process.platform !== 'win32';
+    const proc = spawn('python3', args, { detached: processGroup });
+    const unbindAbort = bindAbortSignal(proc, signal, { processGroup });
     
     let stderrOutput = '';
     
@@ -330,10 +349,12 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
     });
     
     proc.on('close', (code) => {
+      unbindAbort();
       if (code !== 0) {
         console.error(`[yt-dlp/file] Код выхода: ${code}`);
         console.error(`[yt-dlp/file] Stderr: ${redactSecretsInText(stderrOutput).slice(-500)}`);
-        return reject(new Error(`yt-dlp exited with code ${code}`));
+        removeTempArtifacts(TEMP_DIR, baseName);
+        return reject(signal?.aborted ? abortError(signal) : new Error(`yt-dlp exited with code ${code}`));
       }
       
       // Ищем созданный файл
@@ -342,6 +363,7 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
       if (files.length === 0) {
         console.error('[yt-dlp/file] Файл не создан!');
         console.error(`[yt-dlp/file] Содержимое TEMP_DIR: ${fs.readdirSync(TEMP_DIR).join(', ')}`);
+        removeTempArtifacts(TEMP_DIR, baseName);
         return reject(new Error('yt-dlp не создал файл'));
       }
       
@@ -359,6 +381,8 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
     });
     
     proc.on('error', (err) => {
+      unbindAbort();
+      removeTempArtifacts(TEMP_DIR, baseName);
       reject(new Error(`yt-dlp spawn error: ${err.message}`));
     });
   });
@@ -367,11 +391,12 @@ async function downloadWithYtdlpStream(url, quality = 'high') {
 /**
  * Скачивает трек через yt-dlp в файл (надёжный fallback)
  */
-async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
+async function downloadWithYtdlp(url, quality = 'high', useProxy = true, signal = null) {
+  assertTempCapacity(TEMP_DIR, TEMP_CACHE_MAX_BYTES);
   const { spawn } = await import('child_process');
   
   return new Promise((resolve, reject) => {
-    const baseName = `dl_${Date.now()}`;
+    const baseName = `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
     
     const bitrate = quality === 'high' ? '320K' : quality === 'medium' ? '192K' : '128K';
@@ -412,7 +437,9 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
     
     console.log(`[yt-dlp/fallback] Скачиваю (useProxy=${useProxy}): ${url.slice(0, 60)}...`);
     
-    const proc = spawn('python3', args);
+    const processGroup = process.platform !== 'win32';
+    const proc = spawn('python3', args, { detached: processGroup });
+    const unbindAbort = bindAbortSignal(proc, signal, { processGroup });
     
     let stderrOutput = '';
     
@@ -425,13 +452,19 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
     });
     
     proc.on('close', async (code) => {
+      unbindAbort();
       if (code !== 0) {
+        if (signal?.aborted) {
+          removeTempArtifacts(TEMP_DIR, baseName);
+          return reject(abortError(signal));
+        }
         if (useProxy && PROXY_URL) {
           const isProxyErr = BOT_PROXY_ERR.some(p => stderrOutput.includes(p));
           if (isProxyErr) {
             console.warn('[yt-dlp/fallback] Ошибка прокси при скачивании, пробуем БЕЗ прокси...');
+            removeTempArtifacts(TEMP_DIR, baseName);
             try {
-              const res = await downloadWithYtdlp(url, quality, false);
+              const res = await downloadWithYtdlp(url, quality, false, signal);
               resolve(res);
               return;
             } catch (retryErr) {
@@ -441,6 +474,7 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
           }
         }
         console.error(`[yt-dlp/fallback] Ошибка ${code}: ${redactSecretsInText(stderrOutput).slice(-500)}`);
+        removeTempArtifacts(TEMP_DIR, baseName);
         return reject(new Error(`yt-dlp exited with code ${code}`));
       }
       
@@ -451,6 +485,7 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
         console.error(`[yt-dlp/fallback] Файлы не найдены.`);
         console.error(`[yt-dlp/fallback] Stderr: ${redactSecretsInText(stderrOutput)}`);
         console.error(`[yt-dlp/fallback] TEMP_DIR содержит: ${fs.readdirSync(TEMP_DIR).slice(0, 10).join(', ')}`);
+        removeTempArtifacts(TEMP_DIR, baseName);
         return reject(new Error('Файл не найден после скачивания'));
       }
       
@@ -462,6 +497,8 @@ async function downloadWithYtdlp(url, quality = 'high', useProxy = true) {
     });
     
     proc.on('error', (err) => {
+      unbindAbort();
+      removeTempArtifacts(TEMP_DIR, baseName);
       reject(new Error(`spawn error: ${err.message}`));
     });
   });
@@ -561,7 +598,7 @@ function extractMetadataFromInfo(info) {
 }
 
 // Гарантирует наличие метаданных (если их нет, качает через ytdl)
-async function ensureTaskMetadata(task) {
+async function ensureTaskMetadata(task, signal = null) {
   let { metadata, cacheKey } = task;
   const url = task.url || task.originalUrl;
   
@@ -572,11 +609,11 @@ async function ensureTaskMetadata(task) {
     // Если это не ссылка на SoundCloud, не мучаем их API
     if (!url.includes('soundcloud.com')) {
         console.warn('[Worker] Не SoundCloud URL, используем ytdl для метаданных:', url);
-        const info = await ytdlSafe(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        const info = await ytdlSafe(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON }, { signal });
         metadata = extractMetadataFromInfo(info);
     } else {
         console.warn('[Worker] Metadata отсутствует или неполная, получаем через ytdl для SoundCloud:', url);
-        const info = await ytdlSafe(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON });
+        const info = await ytdlSafe(url, { 'dump-single-json': true, 'no-playlist': true, 'ignore-errors': true, ...YTDL_COMMON }, { signal });
         metadata = extractMetadataFromInfo(info);
     }
     
@@ -695,7 +732,7 @@ export async function downloadTrackForUser(url, userId, metadata = null) {
 //                             ГЛАВНЫЙ ПРОЦЕССОР ЗАГРУЗКИ (ИСПРАВЛЕННЫЙ)
 // =====================================================================================
 
-export async function trackDownloadProcessor(task) {
+export async function trackDownloadProcessor(task, signal = null) {
   const userId = parseInt(task.userId, 10);
   const source = task.source || 'soundcloud';
   const quality = task.quality || 'high';
@@ -779,7 +816,7 @@ export async function trackDownloadProcessor(task) {
         .replace(/[^\w:_-]/g, '');
     } else {
       // SoundCloud - старая логика
-      const ensured = await ensureTaskMetadata(task);
+      const ensured = await ensureTaskMetadata(task, signal);
       metadata = ensured.metadata;
       cacheKey = ensured.cacheKey;
       title = metadata.title;
@@ -844,6 +881,10 @@ export async function trackDownloadProcessor(task) {
     let spotifyBuffer = null; // Для хранения buffer'а из pipe-стриминга
     let finalFileId = null; // Может быть установлен для SoundCloud (быстрый путь)
 
+    // Fail closed before starting another download if stale cleanup could not
+    // bring the managed cache below its configured ceiling.
+    assertTempCapacity(TEMP_DIR, TEMP_CACHE_MAX_BYTES);
+
     // Скачиваем обложку заранее (нужна для отправки в хранилище)
     if (metadata.thumbnail) {
       thumbPath = await downloadThumbnail(metadata.thumbnail);
@@ -865,9 +906,14 @@ export async function trackDownloadProcessor(task) {
         // Скачиваем через scdl, но сохраняем во временный файл с конвертацией
         const { spawn } = await import('child_process');
         const rawStream = await scdl.default.download(fullUrl);
+        const abortRawStream = () => rawStream.destroy?.(abortError(signal));
+        if (signal?.aborted) abortRawStream();
+        else signal?.addEventListener('abort', abortRawStream, { once: true });
         
         // Генерируем имя временного файла
-        const outputPath = path.join(TEMP_DIR, `scdl_${Date.now()}.mp3`);
+        const outputPath = path.join(TEMP_DIR, `scdl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.mp3`);
+        // Register the path before ffmpeg starts so every failure path reaches finally cleanup.
+        tempFilePath = outputPath;
         
         // Конвертируем через FFmpeg (AAC/HLS → MP3)
         const FFMPEG_TIMEOUT = 30000; // 30 секунд
@@ -880,6 +926,7 @@ export async function trackDownloadProcessor(task) {
             '-y',                     // Перезаписать если есть
             outputPath
           ]);
+          const unbindAbort = bindAbortSignal(ffmpeg, signal);
           
           let hasError = false;
           let stderrData = '';
@@ -900,6 +947,7 @@ export async function trackDownloadProcessor(task) {
               hasError = true;
               clearTimeout(timeoutId);
               console.error(`[Worker/SoundCloud] SCDL Stream error: ${err.message}`);
+              ffmpeg.kill('SIGTERM');
               try {
                 ffmpeg.stdin.end(); // Корректно закрываем stdin
               } catch (e) {
@@ -955,17 +1003,21 @@ export async function trackDownloadProcessor(task) {
           });
           
           ffmpeg.on('close', (code) => {
+            unbindAbort();
+            signal?.removeEventListener('abort', abortRawStream);
             clearTimeout(timeoutId);
             if (hasError) return; // Уже обработана ошибка
             
             if (code === 0) {
               resolve();
             } else {
-              reject(new Error(`FFmpeg exited with code ${code}: ${stderrData.slice(-200)}`));
+              reject(signal?.aborted ? abortError(signal) : new Error(`FFmpeg exited with code ${code}: ${stderrData.slice(-200)}`));
             }
           });
           
           ffmpeg.on('error', (err) => {
+            unbindAbort();
+            signal?.removeEventListener('abort', abortRawStream);
             if (!hasError) {
               hasError = true;
               clearTimeout(timeoutId);
@@ -984,7 +1036,6 @@ export async function trackDownloadProcessor(task) {
           throw new Error('CONVERTED_FILE_TOO_SMALL');
         }
         
-        tempFilePath = outputPath;
         stream = fs.createReadStream(outputPath);
         
         // Отправляем в хранилище
@@ -1045,6 +1096,7 @@ export async function trackDownloadProcessor(task) {
         }
         
       } catch (scdlError) {
+        if (signal?.aborted) throw abortError(signal);
         // МЕДЛЕННЫЙ ПУТЬ: yt-dlp
         console.warn(`[Worker/SoundCloud] ⚠️ Быстрый метод не сработал: ${scdlError.message}`);
         console.log(`[Worker/SoundCloud] 🐢 Пробую yt-dlp...`);
@@ -1058,7 +1110,7 @@ export async function trackDownloadProcessor(task) {
         }
         
         try {
-          tempFilePath = await downloadWithYtdlp(fullUrl, quality);
+          tempFilePath = await downloadWithYtdlp(fullUrl, quality, true, signal);
           
           const fileStats = fs.statSync(tempFilePath);
           const fileSizeMB = fileStats.size / 1024 / 1024;
@@ -1133,7 +1185,7 @@ export async function trackDownloadProcessor(task) {
       
       try {
         // Пробуем быстрый стриминг (без записи на диск)
-        const result = await downloadSpotifyStream(searchQuery, { quality });
+        const result = await downloadSpotifyStream(searchQuery, { quality, signal });
         
         // Проверяем размер перед созданием стрима
         const fileSizeMB = result.size / 1024 / 1024;
@@ -1153,6 +1205,7 @@ export async function trackDownloadProcessor(task) {
         usedFallback = false;
         
       } catch (streamErr) {
+        if (signal?.aborted) throw abortError(signal);
         console.warn(`[Worker/Spotify] Stream не сработал: ${streamErr.message}`);
         
         // Fallback на файловый метод
@@ -1162,7 +1215,7 @@ export async function trackDownloadProcessor(task) {
           duration: roundedDuration
         };
         
-        const result = await downloadSpotifyTrack(trackInfo, { quality });
+        const result = await downloadSpotifyTrack(trackInfo, { quality, signal });
         tempFilePath = result.filePath;
         stream = fs.createReadStream(tempFilePath);
         usedFallback = true;
@@ -1183,10 +1236,11 @@ export async function trackDownloadProcessor(task) {
       console.log(`[Worker/${source}] Потоковое скачивание: ${searchUrl}`);
       
       try {
-        stream = await downloadWithYtdlpStream(searchUrl);
+        stream = await downloadWithYtdlpStream(searchUrl, quality, signal);
       } catch (streamErr) {
+        if (signal?.aborted) throw abortError(signal);
         console.warn(`[Worker] Stream ошибка (${streamErr.message}). Fallback на файл...`);
-        tempFilePath = await downloadWithYtdlp(searchUrl, quality);
+        tempFilePath = await downloadWithYtdlp(searchUrl, quality, true, signal);
         stream = fs.createReadStream(tempFilePath);
         usedFallback = true;
       }
@@ -1372,7 +1426,7 @@ export async function trackDownloadProcessor(task) {
           : fullUrl;
         
         console.log(`[Worker] Повторное скачивание через yt-dlp: ${searchQuery}`);
-        tempFilePath = await downloadWithYtdlp(searchQuery, quality);
+        tempFilePath = await downloadWithYtdlp(searchQuery, quality, true, signal);
         
         // 🔥 Проверка размера после скачивания
         const fileSize = fs.statSync(tempFilePath).size;

@@ -199,8 +199,8 @@
                   <span class="message-text">
                     <% if (msg.media_type === 'photo' && msg.file_id) { %>
                       <div class="mb-2">
-                        <a href="/support/file/<%= msg.file_id %>" target="_blank">
-                          <img src="/support/file/<%= msg.file_id %>" class="img-fluid rounded" style="max-height: 250px; cursor: zoom-in;" alt="Screenshot">
+                        <a href="/support/file/<%= msg.id %>" target="_blank">
+                          <img src="/support/file/<%= msg.id %>" class="img-fluid rounded support-image" style="max-height: 250px; cursor: zoom-in;" alt="Screenshot" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'text-danger small',textContent:'Изображение недоступно'}))">
                         </a>
                       </div>
                     <% } %>
@@ -234,16 +234,16 @@
               </div>
             <% } %>
 
-            <form action="/support/<%= activeUserId %>/send" method="POST" id="replyForm" class="d-flex gap-2">
+            <form action="/support/<%= activeUserId %>/send" method="POST" enctype="multipart/form-data" id="replyForm" class="d-flex gap-2 align-items-end">
               <textarea 
                 class="form-control" 
                 name="message" 
                 id="messageInput" 
                 rows="2" 
                 placeholder="Введите ваш ответ пользователю (Markdown поддерживается в боте)..."
-                required
                 autofocus
               ></textarea>
+              <div><input id="supportImage" class="form-control form-control-sm mb-1" type="file" name="image" accept="image/png,image/jpeg,image/webp"><img id="supportImagePreview" class="d-none rounded mb-1" style="max-height:80px" alt="Превью"><button type="button" id="removeSupportImage" class="btn btn-sm btn-outline-danger d-none">Удалить файл</button></div>
               <button type="submit" class="btn btn-primary d-flex align-items-center justify-content-center px-4">
                 <i class="bi bi-send-fill fs-5 me-1"></i> Отправить
               </button>
@@ -269,6 +269,9 @@
 
 <%- contentFor('scripts') %>
 <script>
+  const supportImage=document.getElementById('supportImage'), supportPreview=document.getElementById('supportImagePreview'), removeSupportImage=document.getElementById('removeSupportImage');
+  supportImage?.addEventListener('change',()=>{const f=supportImage.files[0];if(!f)return;supportPreview.src=URL.createObjectURL(f);supportPreview.classList.remove('d-none');removeSupportImage.classList.remove('d-none');});
+  removeSupportImage?.addEventListener('click',()=>{supportImage.value='';supportPreview.src='';supportPreview.classList.add('d-none');removeSupportImage.classList.add('d-none');});
   // Прокрутка чата вниз при загрузке
   const chatHistory = document.getElementById('chatHistory');
   if (chatHistory) {
@@ -370,10 +373,11 @@
       const imgDiv = document.createElement('div');
       imgDiv.className = 'mb-2';
       const a = document.createElement('a');
-      a.href = `/support/file/${msg.file_id}`;
+      a.href = `/support/file/${msg.id}`;
       a.target = '_blank';
       const img = document.createElement('img');
-      img.src = `/support/file/${msg.file_id}`;
+      img.src = `/support/file/${msg.id}`;
+      img.onerror = () => { const error=document.createElement('span'); error.className='text-danger small'; error.textContent='Изображение недоступно'; img.replaceWith(error); };
       img.className = 'img-fluid rounded';
       img.style.maxHeight = '250px';
       img.style.cursor = 'zoom-in';

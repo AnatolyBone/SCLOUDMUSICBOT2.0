@@ -16,6 +16,7 @@ async function processTask(task) {
   
   const { source, quality, metadata, userId, cacheKey } = task;
   
+  let tempFilePath = null;
   try {
     if (source === 'spotify') {
       const trackInfo = {
@@ -25,8 +26,6 @@ async function processTask(task) {
       };
       
       let fileId = null;
-      let tempFilePath = null;
-      
       // Пробуем pipe-стриминг (быстрый метод)
       try {
         const streamResult = await downloadSpotifyStream(
@@ -76,11 +75,6 @@ async function processTask(task) {
         
         fileId = sentMsg?.audio?.file_id;
         
-        // Удаляем временный файл
-        if (tempFilePath && fs.existsSync(tempFilePath)) {
-          fs.unlinkSync(tempFilePath);
-        }
-        
         console.log(`[Worker] ✅ Файл отправлен, file_id: ${fileId?.slice(0, 20)}...`);
       }
       
@@ -107,6 +101,12 @@ async function processTask(task) {
       error: err.message,
       cacheKey
     };
+  } finally {
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try { fs.unlinkSync(tempFilePath); } catch (cleanupError) {
+        console.warn(`[Worker] Не удалось удалить ${tempFilePath}: ${cleanupError.message}`);
+      }
+    }
   }
 }
 
@@ -165,4 +165,3 @@ process.on('SIGTERM', async () => {
 });
 
 main().catch(console.error);
-

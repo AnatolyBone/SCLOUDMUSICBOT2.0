@@ -244,8 +244,8 @@
         <div class="card-body">
           <div class="row g-3 align-items-end">
             <div class="col-xl-4 col-md-6">
-              <label class="form-label small fw-semibold mb-1" for="timeline-user-id">Telegram ID пользователя</label>
-              <input id="timeline-user-id" class="form-control form-control-sm" inputmode="numeric" value="<%= initialUserId %>" placeholder="Например, 123456789" required>
+              <label class="form-label small fw-semibold mb-1" for="timeline-user-id">Telegram ID или username</label>
+              <input id="timeline-user-id" class="form-control form-control-sm" value="<%= initialUserId %>" placeholder="123456789 или @username" required>
             </div>
             <div class="col-xl-2 col-md-3 col-6">
               <label class="form-label small text-muted mb-1" for="timeline-start">С даты</label>
@@ -385,7 +385,7 @@
     }
     return EVENT_DESCRIPTIONS[event.name] || `Системное событие категории «${TONE_LABELS[event.tone]||event.category||'Событие'}».`;
   }
-  function userPlan(user) { const active=user.premium_until&&new Date(user.premium_until)>new Date(); if(!active)return 'Free'; if(user.premium_limit===null)return 'Unlimited'; if(Number(user.premium_limit)===30)return 'Plus'; if(Number(user.premium_limit)===100)return 'Pro'; return `Тариф ${number(user.premium_limit)}`; }
+  function userPlan(user) { const active=user.premium_until&&new Date(user.premium_until)>new Date(); if(!active)return 'Free'; const code=user.tariff_code||(user.premium_limit===null?'unlimited':Number(user.premium_limit)>=100?'pro':'plus'); return ({plus:'Plus',pro:'Pro',unlimited:'Unlimited'})[code]||'Free'; }
 
   function renderTimeline(data, append=false) {
     timelineCursor=data.pagination.nextCursor;
@@ -415,7 +415,7 @@
   async function loadTimeline(append=false) {
     const userId=document.getElementById('timeline-user-id').value.trim(); alertBox('timeline-alert');
     try {
-      if(!/^\d{1,20}$/.test(userId)) throw new Error('Введите корректный user_id.');
+      if(!userId) throw new Error('Введите Telegram ID или username.');
       if(!append){ timelineCursor=null; timelineEvents=[]; document.getElementById('timeline-user-card').innerHTML=''; document.getElementById('timeline-results').innerHTML='<div class="text-center py-5"><div class="spinner-border text-primary" role="status"></div><div class="small text-muted mt-2">Собираем события…</div></div>'; }
       const p=new URLSearchParams({limit:document.getElementById('timeline-limit').value});
       const start=document.getElementById('timeline-start').value,end=document.getElementById('timeline-end').value;

@@ -217,8 +217,8 @@
                 </div>
                 <div class="col-6">
                   <label for="daily-unlim" class="form-label small text-muted">💎 Unlimited</label>
-                  <input type="number" class="form-control" id="daily-unlim" name="daily_limit_unlim" 
-                         value="<%= settings.daily_limit_unlim || '10000' %>" min="1" max="50000" required>
+                  <input type="number" class="form-control" id="daily-unlim" name="daily_limit_unlimited" 
+                         value="<%= settings.daily_limit_unlimited || settings.daily_limit_unlim || '10000' %>" min="1" max="50000" required>
                 </div>
               </div>
             </div>

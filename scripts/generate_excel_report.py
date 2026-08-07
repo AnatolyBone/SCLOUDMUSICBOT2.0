@@ -9,6 +9,7 @@ import xlsxwriter
 MSK = timezone(timedelta(hours=3))
 SHEET_DASHBOARD = 'Dashboard'
 SHEET_EXECUTIVE = 'Executive Summary'
+SHEET_USAGE = 'Использование'
 SHEET_FUNNEL = 'Воронка продаж'
 SHEET_TARIFFS = 'Тарифы'
 SHEET_PAYMENTS = 'Платежи'
@@ -44,18 +45,34 @@ def percentage_change(current, previous):
     return (current - previous) / abs(previous)
 
 
+def previous_day_percent_delta(current, previous):
+    """Day-over-day percentage; unavailable for missing values or a zero baseline."""
+    if current is None or previous is None:
+        return None
+    current_value = number(current)
+    previous_value = number(previous)
+    if previous_value == 0:
+        return None
+    return current_value / previous_value - 1
+
+
 def half_period_trend(rows, key):
-    values = [number(row.get(key)) for row in rows]
-    if len(values) < 2:
-        return 0
-    split = max(1, len(values) // 2)
-    previous = sum(values[:split]) / len(values[:split])
-    current_values = values[split:]
-    current = sum(current_values) / len(current_values) if current_values else previous
+    values = [number(row.get(key)) for row in rows if row.get(key) is not None]
+    if len(values) < 4:
+        return None
+    split = len(values) // 2
+    previous_values = values[:split]
+    current_values = values[-split:]
+    previous = sum(previous_values) / len(previous_values)
+    current = sum(current_values) / len(current_values)
+    if previous == 0 and current != 0:
+        return None
     return percentage_change(current, previous)
 
 
 def trend_status(change):
+    if change is None:
+        return 'Недостаточно данных', 'neutral'
     if change > 0.005:
         return '🟢 Рост', 'positive'
     if change < -0.005:
@@ -109,14 +126,21 @@ def main():
     summary = data.get('summary', {})
     daily_stats = data.get('daily_stats', [])
     funnel_data = data.get('funnel', [])
+    usage_data = data.get('usage', [])
     tariff_rows = data.get('tariffs', [])
     payments = data.get('payments', [])
     campaigns = data.get('campaigns', [])
     language_rows = data.get('languages', [])
     payment_loss = data.get('payment_loss', {})
+    report_note = data.get('report_note')
 
+    period = data.get('period', {})
     start_date = display_date(data.get('startDate'))
     end_date = display_date(data.get('endDate'))
+    requested_end_date = display_date(data.get('requestedEndDate'))
+    period_note = f'Фактические данные: {start_date} — {end_date}'
+    if period.get('isTruncated'):
+        period_note += f' · запрошено по {requested_end_date}'
     generated_at = datetime.now(MSK).strftime('%d.%m.%Y %H:%M MSK')
 
     workbook = xlsxwriter.Workbook(output_path)
@@ -239,6 +263,10 @@ def main():
     first_funnel_count = number(funnel_data[0].get('count')) if funnel_data else 0
     paid_funnel_count = number(funnel_data[-1].get('count')) if funnel_data else 0
     payment_conversion = paid_funnel_count / first_funnel_count if first_funnel_count else 0
+    dau_trend_text = f'{dau_trend:+.1%}' if dau_trend is not None else 'Недостаточно данных для сравнения'
+    activity_days = number(period.get('activityDaysAvailable'))
+    mau_note = (f'MAU рассчитан по {activity_days} дням доступной истории. '
+                + ('Полное 30-дневное окно накоплено.' if period.get('mauWindowComplete') else 'Полное 30-дневное окно ещё не накоплено.'))
 
     tariff_totals = {
         'Plus': sum(number(row.get('plus')) for row in tariff_rows),
@@ -275,8 +303,10 @@ def main():
     executive.set_column('C:I', 18)
     executive.set_row(1, 32)
     executive.write('B2', 'SCM Executive Summary', title_format)
-    executive.write('B3', f'{start_date} — {end_date}', section_title_format)
+    executive.write('B3', period_note, section_title_format)
     executive.write('B4', f'Generated: {generated_at}', subtitle_format)
+    if report_note:
+        executive.write('B5', report_note, subtitle_format)
     executive.insert_textbox('H2', '♫\nSCM', {
         'width': 110, 'height': 70, 'font': {'name': 'Segoe UI', 'size': 18, 'bold': True, 'color': '#FFFFFF'},
         'align': {'vertical': 'middle', 'horizontal': 'center'},
@@ -286,13 +316,14 @@ def main():
 
     summary_lines = [
         f'За выбранный период зарегистрировано {number(summary.get("new_users")):,} новых пользователей.',
-        f'Средний DAU составил {number(summary.get("avg_dau")):,}; динамика второй половины периода: {dau_trend:+.1%}.',
+        f'Средний DAU составил {number(summary.get("avg_dau")):,}; динамика второй половины периода: {dau_trend_text}.',
         f'Пользователи выполнили {number(summary.get("total_downloads")):,} скачиваний.',
         f'Конверсия от входа в воронку до оплаты: {payment_conversion:.2%} ({paid_funnel_count:,} оплативших).',
         f'Самый популярный тариф по количеству оплат — {popular_tariff}.',
         f'Основная платёжная валюта по количеству операций — {primary_source}.',
         f'Выручка: {number(summary.get("revenue_rub")):,.2f} ₽ и {number(summary.get("revenue_stars")):,} Stars.'
     ]
+    summary_lines.insert(2, mau_note)
     if best_campaign:
         summary_lines.append(
             f'Лучший CTR рассылки: {best_ctr:.2%} — {best_campaign.get("name") or "Без названия"}.'
@@ -306,7 +337,7 @@ def main():
 
     executive.write('B18', 'Навигация по отчёту', section_title_format)
     navigation = [
-        ('📈 Dashboard', SHEET_DASHBOARD), ('→ Воронка', SHEET_FUNNEL),
+        ('📈 Dashboard', SHEET_DASHBOARD), ('→ Использование', SHEET_USAGE), ('→ Воронка', SHEET_FUNNEL),
         ('→ Платежи', SHEET_PAYMENTS), ('→ Рассылки', SHEET_CAMPAIGNS),
         ('→ Языки', SHEET_LANGUAGES), ('→ Дневная статистика', SHEET_DAILY),
         ('→ Потери в оплате', SHEET_PAYMENT_LOSS)
@@ -325,12 +356,14 @@ def main():
     dashboard.set_zoom(85)
     dashboard.set_column('A:A', 3)
     dashboard.set_column('B:D', 21)
-    dashboard.set_column('E:E', 3)
+    dashboard.set_column('E:E', 18)
     dashboard.set_column('F:H', 18)
     dashboard.set_row(1, 32)
     dashboard.write('B2', 'SCM Analytics Report', title_format)
-    dashboard.write('B3', f'{start_date} — {end_date}', section_title_format)
+    dashboard.write('B3', period_note, section_title_format)
     dashboard.write('B4', f'Generated: {generated_at}', subtitle_format)
+    if report_note:
+        dashboard.write('B5', report_note, subtitle_format)
     dashboard.insert_textbox('H2', '♫\nSCM', {
         'width': 90, 'height': 65, 'font': {'name': 'Segoe UI', 'size': 16, 'bold': True, 'color': '#FFFFFF'},
         'align': {'vertical': 'middle', 'horizontal': 'center'},
@@ -338,13 +371,13 @@ def main():
     })
 
     dashboard_nav = [
-        ('Executive Summary', SHEET_EXECUTIVE), ('Воронка', SHEET_FUNNEL),
+        ('Executive Summary', SHEET_EXECUTIVE), ('Использование', SHEET_USAGE), ('Воронка', SHEET_FUNNEL),
         ('Платежи', SHEET_PAYMENTS), ('Рассылки', SHEET_CAMPAIGNS),
         ('Языки', SHEET_LANGUAGES), ('Дневная статистика', SHEET_DAILY),
         ('Потери в оплате', SHEET_PAYMENT_LOSS)
     ]
     for index, (label, sheet_name) in enumerate(dashboard_nav):
-        dashboard.write_url(5, 1 + index, f"internal:'{sheet_name}'!A1", nav_format, label)
+        dashboard.write_url(5 + index // 4, 1 + index % 4, f"internal:'{sheet_name}'!A1", nav_format, label)
 
     cards = [
         ('Всего пользователей', summary.get('total_users'), card_value_format),
@@ -373,7 +406,10 @@ def main():
     for index, (metric, change) in enumerate(trend_rows, start=9):
         status, status_key = trend_status(change)
         dashboard.write(f'F{index}', metric, cell_left)
-        dashboard.write_number(f'G{index}', change, percent_format)
+        if change is None:
+            dashboard.write(f'G{index}', 'н/д', cell_center)
+        else:
+            dashboard.write_number(f'G{index}', change, percent_format)
         dashboard.write(f'H{index}', status, status_formats[status_key])
     add_change_formatting(dashboard, f'G9:G{8 + len(trend_rows)}', positive_format, negative_format, neutral_format)
 
@@ -425,7 +461,36 @@ def main():
         dashboard.insert_chart('F35', revenue_chart)
 
     # ================================================================
-    # SHEET 3: Funnel
+    # SHEET 3: Usage (independent user behaviors, not a sequential funnel)
+    # ================================================================
+    usage = workbook.add_worksheet(SHEET_USAGE)
+    configure_sheet(usage, '#36B9CC')
+    write_back_link(usage, link_format)
+    usage.write('B2', 'Использование бота', section_title_format)
+    usage.write('B3', f'Независимые аудитории · {period_note}', subtitle_format)
+    usage.write_row('B5', ['Метрика', 'Уникальные пользователи'], header_format)
+    usage_labels = {
+        'Active users': 'Активные пользователи',
+        'Search users': 'Отправили поисковый запрос',
+        'Direct-link users': 'Отправили прямую ссылку',
+        'Successful download users': 'Скачали хотя бы один трек'
+    }
+    for index, row_data in enumerate(usage_data, start=6):
+        usage.write(f'B{index}', usage_labels.get(row_data.get('metric'), row_data.get('metric') or '—'), cell_left)
+        raw_count = row_data.get('count')
+        if raw_count is None:
+            usage.write(f'C{index}', 'н/д', cell_center)
+        else:
+            usage.write_number(f'C{index}', number(raw_count), integer_format)
+    if usage_data:
+        usage.autofilter(f'B5:C{len(usage_data) + 5}')
+    usage.freeze_panes(5, 1)
+    safe_autofit(usage)
+    usage.set_column('B:B', 38)
+    usage.set_column('C:C', 24)
+
+    # ================================================================
+    # SHEET 4: Funnel
     # ================================================================
     funnel = workbook.add_worksheet(SHEET_FUNNEL)
     configure_sheet(funnel, '#4E73DF')
@@ -514,11 +579,19 @@ def main():
     if payments:
         payment_sheet.autofilter(f'B5:G{payment_last_row}')
     payment_sheet.freeze_panes(5, 1)
+    rub_total = sum(
+        number(row.get('amount')) * number(row.get('count'), 1)
+        for row in payments if row.get('currency') == 'RUB'
+    )
+    stars_total = sum(
+        number(row.get('amount')) * number(row.get('count'), 1)
+        for row in payments if row.get('currency') == 'XTR'
+    )
     payment_sheet.write_row('I5', ['Валюта', 'Общая выручка'], header_format)
     payment_sheet.write('I6', 'Российский рубль (RUB)', cell_left)
-    payment_sheet.write_formula('J6', f'=SUMIF(D6:D{payment_last_row},"RUB",E6:E{payment_last_row})', currency_format)
+    payment_sheet.write_formula('J6', f'=SUMPRODUCT((D6:D{payment_last_row}="RUB")*E6:E{payment_last_row}*G6:G{payment_last_row})', currency_format, rub_total)
     payment_sheet.write('I7', 'Telegram Stars (XTR)', cell_left)
-    payment_sheet.write_formula('J7', f'=SUMIF(D6:D{payment_last_row},"XTR",E6:E{payment_last_row})', stars_format)
+    payment_sheet.write_formula('J7', f'=SUMPRODUCT((D6:D{payment_last_row}="XTR")*E6:E{payment_last_row}*G6:G{payment_last_row})', stars_format, stars_total)
     safe_autofit(payment_sheet)
     payment_sheet.set_column('C:C', 22)
 
@@ -600,28 +673,52 @@ def main():
         'Дата', 'DAU', 'Δ DAU', 'WAU', 'MAU', 'Регистрации', 'Скачивания', 'Лимиты',
         'Выручка RUB', 'Δ RUB', 'Выручка Stars', 'Δ Stars'
     ], header_format)
+    daily.merge_range('M2:N3', mau_note, summary_text_format)
     for index, row_data in enumerate(daily_stats, start=2):
         daily.write(f'A{index}', display_date(row_data.get('day')), cell_center)
-        daily.write_number(f'B{index}', number(row_data.get('dau')), integer_format)
-        if index == 2:
-            daily.write_number(f'C{index}', 0, percent_format)
+        activity_available = row_data.get('activity_available', row_data.get('dau') is not None)
+        if activity_available:
+            daily.write_number(f'B{index}', number(row_data.get('dau')), integer_format)
+            daily.write_number(f'D{index}', number(row_data.get('wau')), integer_format)
+            daily.write_number(f'E{index}', number(row_data.get('mau')), integer_format)
         else:
-            daily.write_formula(f'C{index}', f'=IFERROR(B{index}/B{index - 1}-1,0)', percent_format)
-        daily.write_number(f'D{index}', number(row_data.get('wau')), integer_format)
-        daily.write_number(f'E{index}', number(row_data.get('mau')), integer_format)
+            for column in ('B', 'D', 'E'):
+                daily.write(f'{column}{index}', 'Нет данных', cell_center)
+        previous_row = daily_stats[index - 3] if index > 2 else None
+        previous_activity_available = previous_row and previous_row.get(
+            'activity_available', previous_row.get('dau') is not None
+        )
+        dau_delta = previous_day_percent_delta(
+            row_data.get('dau'), previous_row.get('dau') if previous_activity_available else None
+        )
+        if dau_delta is None or not activity_available:
+            daily.write(f'C{index}', 'н/д', cell_center)
+        else:
+            daily.write_formula(
+                f'C{index}',
+                f'=IF(OR(NOT(ISNUMBER(B{index - 1})),B{index - 1}=0),"",B{index}/B{index - 1}-1)',
+                percent_format,
+                dau_delta
+            )
         daily.write_number(f'F{index}', number(row_data.get('registrations')), integer_format)
         daily.write_number(f'G{index}', number(row_data.get('downloads')), integer_format)
         daily.write_number(f'H{index}', number(row_data.get('limits')), integer_format)
         daily.write_number(f'I{index}', number(row_data.get('revenue_rub')), currency_format)
-        if index == 2:
-            daily.write_number(f'J{index}', 0, percent_format)
+        rub_delta = previous_day_percent_delta(
+            row_data.get('revenue_rub'), previous_row.get('revenue_rub') if previous_row else None
+        )
+        if rub_delta is None:
+            daily.write(f'J{index}', 'н/д', cell_center)
         else:
-            daily.write_formula(f'J{index}', f'=IFERROR(I{index}/I{index - 1}-1,0)', percent_format)
+            daily.write_formula(f'J{index}', f'=IF(I{index - 1}=0,"",I{index}/I{index - 1}-1)', percent_format, rub_delta)
         daily.write_number(f'K{index}', number(row_data.get('revenue_stars')), stars_format)
-        if index == 2:
-            daily.write_number(f'L{index}', 0, percent_format)
+        stars_delta = previous_day_percent_delta(
+            row_data.get('revenue_stars'), previous_row.get('revenue_stars') if previous_row else None
+        )
+        if stars_delta is None:
+            daily.write(f'L{index}', 'н/д', cell_center)
         else:
-            daily.write_formula(f'L{index}', f'=IFERROR(K{index}/K{index - 1}-1,0)', percent_format)
+            daily.write_formula(f'L{index}', f'=IF(K{index - 1}=0,"",K{index}/K{index - 1}-1)', percent_format, stars_delta)
     daily_last_row = max(2, len(daily_stats) + 1)
     if daily_stats:
         daily.autofilter(f'A1:L{daily_last_row}')

@@ -181,10 +181,8 @@ class AnalyticsService {
           // Вычисляем текущий тарифный план пользователя
           const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
           if (isPremium) {
-            const limit = user.premium_limit;
-            if (limit === null) userPlan = 'Unlimited';
-            else if (limit >= 100) userPlan = 'Pro';
-            else userPlan = 'Plus';
+            const code = user.tariff_code || (user.premium_limit === null ? 'unlimited' : Number(user.premium_limit) >= 100 ? 'pro' : 'plus');
+            userPlan = ({ unlimited: 'Unlimited', pro: 'Pro', plus: 'Plus' })[code] || 'Plus';
           } else {
             userPlan = 'Free';
           }
