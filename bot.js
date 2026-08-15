@@ -39,6 +39,13 @@ import { claimDownloadRequest, getDownloadCorrelationId, logDownloadFlow } from 
 import { buildLimitUpsell, buildUpgradeOffer } from './services/limitUpsellService.js';
 import { acquireInvoiceRequest, releaseInvoiceRequest } from './services/paymentInvoiceGuard.js';
 import { notifyAdminAboutConfirmedStarsPayment } from './services/starsPaymentNotificationService.js';
+import {
+    installTelegramApiResilience,
+    isExpectedTelegramTransientError,
+    isTelegramRateLimitError
+} from './services/telegramApiResilience.js';
+import { createKeyedTaskQueue } from './services/keyedTaskQueue.js';
+import { createInlineQueryHandler } from './services/inlineQueryHandler.js';
 
 // --- Глобальные переменные и хелперы ---
 const playlistSessions = new Map();
@@ -316,47 +323,9 @@ if (process.env.TELEGRAM_TEST_ENV === 'true') {
 }
 export const bot = new Telegraf(BOT_TOKEN, telegrafOptions);
 
-// --- Telegram API Rate Limiting (предотвращает 429 ошибки при массовой отправке) ---
-const lastSentTimes = new Map();
-const userQueues = new Map();
-
-function rateLimitRequest(chatId, taskFn) {
-    const id = Number(chatId);
-    if (isNaN(id) || id < 0) {
-        return taskFn();
-    }
-    
-    if (!userQueues.has(id)) {
-        userQueues.set(id, Promise.resolve());
-    }
-    
-    const currentChain = userQueues.get(id);
-    
-    const nextChain = currentChain.then(async () => {
-        const lastSent = lastSentTimes.get(id) || 0;
-        const now = Date.now();
-        const delay = 1200 - (now - lastSent); // Гарантируем задержку 1.2 сек между отправками одному юзеру
-        if (delay > 0) {
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-        const result = await taskFn();
-        lastSentTimes.set(id, Date.now());
-        return result;
-    });
-    
-    userQueues.set(id, nextChain.catch(() => {}));
-    return nextChain;
-}
-
-const originalSendAudio = bot.telegram.sendAudio.bind(bot.telegram);
-bot.telegram.sendAudio = async function(chatId, ...args) {
-    return rateLimitRequest(chatId, () => originalSendAudio(chatId, ...args));
-};
-
-const originalSendMessage = bot.telegram.sendMessage.bind(bot.telegram);
-bot.telegram.sendMessage = async function(chatId, ...args) {
-    return rateLimitRequest(chatId, () => originalSendMessage(chatId, ...args));
-};
+// User-facing send methods share one per-chat queue and bounded 429 retry.
+// Negative channel IDs keep their previous throughput and only gain retry_after handling.
+installTelegramApiResilience(bot.telegram);
 
 // --- Безопасный ответ на callback-запросы (предотвращает краш из-за таймаутов Telegram) ---
 bot.use(async (ctx, next) => {
@@ -426,6 +395,16 @@ registerSpotifyCallbacks(bot);
 // ЗАМЕНИ СТАРЫЙ БЛОК bot.catch НА ЭТОТ В ФАЙЛЕ bot.js
 
 bot.catch(async (err, ctx) => {
+    // Expected Telegram transport limits are operational warnings, not bot failures.
+    if (isExpectedTelegramTransientError(err)) {
+        console.warn('[Telegram] Transient error suppressed by global handler', {
+            userId: ctx.from?.id,
+            updateId: ctx.update?.update_id,
+            rateLimited: isTelegramRateLimitError(err)
+        });
+        return;
+    }
+
     console.error(`🔴 [Telegraf Catch] Ошибка для update ${ctx.update?.update_id}:`, err.message);
 
     // 403 — юзер заблокировал бота. Тихо помечаем неактивным, не алертим админа.
@@ -1915,59 +1894,30 @@ bot.action('admin_karaoke_refresh', async (ctx) => {
     }
 });
 
-const inlineQueries = new Map(); // userId -> currentQueryId
-
-bot.on('inline_query', async (ctx) => {
-    const query = ctx.inlineQuery.query;
-    const userId = ctx.from?.id;
-    const queryText = query ? query.trim() : '';
-
-    if (queryText.length < 3) {
-        return await ctx.answerInlineQuery([], { 
-            switch_pm_text: 'Введите не менее 3 символов для поиска...', 
-            switch_pm_parameter: 'start' 
-        });
-    }
-
-    const currentQueryId = ctx.inlineQuery.id;
-    if (userId) {
-        inlineQueries.set(userId, currentQueryId);
-    }
-
-    // Дебаунс 350 мс
-    await new Promise(r => setTimeout(r, 350));
-
-    // Проверяем, не ввёл ли пользователь новый символ за это время
-    if (userId && inlineQueries.get(userId) !== currentQueryId) {
-        return;
-    }
-
-    try {
-        // Трекаем начало поиска
-        if (userId) {
-            const { analyticsService } = await import('./services/analyticsService.js');
-            await analyticsService.trackEventSafe(userId, 'track_search_started', 'search', {
-                query: query.slice(0, 100),
-                source: 'inline_query'
-            }, ctx);
-        }
-        const results = await performInlineSearch(query, ctx.from.id);
-        await ctx.answerInlineQuery(results, { cache_time: 60 });
-        // Трекаем результат поиска
-        if (userId) {
-            const { analyticsService } = await import('./services/analyticsService.js');
-            const eventName = results.length > 0 ? 'track_search_success' : 'track_search_failed';
-            await analyticsService.trackEventSafe(userId, eventName, 'search', {
-                query: query.slice(0, 100),
-                results_count: results.length,
-                source: 'inline_query'
-            }, ctx);
-        }
-    } catch (error) {
-        console.error('[Inline Query] Глобальная ошибка:', error);
-        await ctx.answerInlineQuery([]);
+const handleInlineQuery = createInlineQueryHandler({
+    performSearch: performInlineSearch,
+    liveSearchTimeoutMs: parseInt(process.env.INLINE_SEARCH_TIMEOUT_MS, 10) || 3500,
+    onSearchStarted: async ({ ctx, query, userId }) => {
+        if (!userId) return;
+        const { analyticsService } = await import('./services/analyticsService.js');
+        await analyticsService.trackEventSafe(userId, 'track_search_started', 'search', {
+            query: query.slice(0, 100),
+            source: 'inline_query'
+        }, ctx);
+    },
+    onSearchCompleted: async ({ ctx, query, userId, results }) => {
+        if (!userId) return;
+        const { analyticsService } = await import('./services/analyticsService.js');
+        const eventName = results.length > 0 ? 'track_search_success' : 'track_search_failed';
+        await analyticsService.trackEventSafe(userId, eventName, 'search', {
+            query: query.slice(0, 100),
+            results_count: results.length,
+            source: 'inline_query'
+        }, ctx);
     }
 });
+
+bot.on('inline_query', handleInlineQuery);
 
 // --- Логика обработки плейлистов ---
 async function getPlaylistLimitForUser(userId) {
@@ -2570,7 +2520,17 @@ async function handleSoundCloudUrl(ctx, url) {
         }
     }
 }
-const handleMediaForShazam = async (ctx) => {
+async function handleShazamDeliveryError(error, ctx, phase) {
+    if (!isExpectedTelegramTransientError(error)) return false;
+    console.warn('[Shazam] Telegram delivery failed', {
+        userId: ctx.from?.id,
+        phase,
+        rateLimited: isTelegramRateLimitError(error)
+    });
+    return true;
+}
+
+const processMediaForShazam = async (ctx) => {
     const message = ctx.message;
 
     // 🛑 ФИКС: Если сообщение отправлено через этого же бота (результат поиска), игнорируем его
@@ -2592,12 +2552,39 @@ const handleMediaForShazam = async (ctx) => {
     let statusMsg;
     try {
         statusMsg = await ctx.reply('👂 Слушаю...');
-        const fileLink = await ctx.telegram.getFileLink(fileId);
-        
-        const result = await identifyTrack(fileLink.href);
-        
-        await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+    } catch (error) {
+        if (await handleShazamDeliveryError(error, ctx, 'status')) return;
+        throw error;
+    }
 
+    let fileLink;
+    try {
+        fileLink = await ctx.telegram.getFileLink(fileId);
+    } catch (error) {
+        if (await handleShazamDeliveryError(error, ctx, 'getFileLink')) return;
+        throw error;
+    }
+
+    let result;
+    try {
+        result = await identifyTrack(fileLink.href);
+    } catch (error) {
+        console.error('[Shazam] Recognition failed:', error);
+        await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+        try {
+            await ctx.reply('⚠️ Произошла ошибка при распознавании файла.');
+        } catch (deliveryError) {
+            if (await handleShazamDeliveryError(deliveryError, ctx, 'recognition-error')) return;
+            throw deliveryError;
+        }
+        return;
+    }
+
+    await ctx.deleteMessage(statusMsg.message_id).catch(error => {
+        console.warn('[Shazam] Failed to delete status message:', error.message);
+    });
+
+    try {
         if (result) {
             const query = `${result.artist} - ${result.title}`;
             
@@ -2642,11 +2629,17 @@ const handleMediaForShazam = async (ctx) => {
             await ctx.reply('🤷‍♂️ Не удалось распознать.');
         }
 
-    } catch (e) {
-        console.error('[Shazam] Error:', e);
-        if (statusMsg) await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
-        await ctx.reply('⚠️ Произошла ошибка при обработке файла.');
+    } catch (error) {
+        if (await handleShazamDeliveryError(error, ctx, 'result')) return;
+        throw error;
     }
+};
+
+const shazamUserQueue = createKeyedTaskQueue();
+const handleMediaForShazam = ctx => {
+    const userId = ctx.from?.id;
+    if (userId === undefined || userId === null) return processMediaForShazam(ctx);
+    return shazamUserQueue.run(userId, () => processMediaForShazam(ctx));
 };
 
 // Подключаем обработчик ко всем медиа-типам

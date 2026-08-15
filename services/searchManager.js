@@ -54,13 +54,13 @@ function log(level, message) {
 /**
  * Живой поиск на SoundCloud через yt-dlp
  */
-async function searchLiveOnSoundCloud(query) {
+async function searchLiveOnSoundCloud(query, timeoutMs = SEARCH_TIMEOUT_MS) {
     log('INFO', `Выполняю живой поиск для: "${query}"`);
     
     try {
         // Создаем Promise с таймаутом
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('SEARCH_TIMEOUT')), SEARCH_TIMEOUT_MS)
+            setTimeout(() => reject(new Error('SEARCH_TIMEOUT')), timeoutMs)
         );
         
         // Запускаем поиск через yt-dlp
@@ -92,7 +92,7 @@ async function searchLiveOnSoundCloud(query) {
         }));
     } catch (error) {
         if (error.message === 'SEARCH_TIMEOUT') {
-            log('WARN', `Таймаут поиска (${SEARCH_TIMEOUT_MS}мс) для "${query}"`);
+            log('WARN', `Таймаут поиска (${timeoutMs}мс) для "${query}"`);
         } else {
             log('ERROR', `Ошибка живого поиска для "${query}": ${error.stderr || error.message}`);
         }
@@ -137,7 +137,9 @@ async function searchInCache(query) {
 /**
  * Гибридный поиск: сначала кэш, потом живой поиск
  */
-export async function performInlineSearch(query, userId) {
+export async function performInlineSearch(query, userId, options = {}) {
+    const liveTimeoutMs = Number(options.liveTimeoutMs) || SEARCH_TIMEOUT_MS;
+    const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
     // Санитизация
     query = sanitizeQuery(query);
     
@@ -159,9 +161,12 @@ export async function performInlineSearch(query, userId) {
         results = cachedTracks;
         foundInCache = true;
     } else {
+        // Inline handler can invalidate a request while Redis/DB is being checked.
+        // Avoid starting an expensive yt-dlp process for an already superseded query.
+        if (!isCurrent()) return [];
         // --- 2. Живой поиск ---
         log('INFO', `Кэш пуст, переключаюсь на живой поиск`);
-        results = await searchLiveOnSoundCloud(query);
+        results = await searchLiveOnSoundCloud(query, liveTimeoutMs);
         foundInCache = false;
     }
     
