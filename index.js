@@ -112,7 +112,7 @@ import {
   WEBHOOK_PATH, STORAGE_CHANNEL_ID, BROADCAST_STORAGE_ID
 } from './config.js';
 import { loadTexts, setText, getEditableTexts } from './config/texts.js';
-import { downloadQueue, initializeDownloadManager } from './services/downloadManager.js';
+import { downloadQueue, initializeDownloadManager, applyDownloadWorkerSettings } from './services/downloadManager.js';
 import { runAnalyticsSmokeTest } from './services/analyticsSmokeTest.js';
 import { generateExcelReport } from './services/excelReportService.js';
 import { formatSettingForLog, sanitizeLogValue } from './services/logSanitizer.js';
@@ -771,14 +771,17 @@ app.post('/admin/queue/clear/:source', requireAuth, (req, res) => {
   }
 });
 app.get('/settings', requireAuth, (req, res) => {
+  const queueStats = downloadQueue.getStatsBySource();
   res.render('settings', {
     title: 'Настройки',
     page: 'settings',
     settings: getAllSettings(),
     success: req.query.success,
+    error: req.query.error,
     maintenanceMode: isMaintenanceMode(),
-    queueWaiting: downloadQueue?.waiting || 0,
-    queueActive: downloadQueue?.active || 0
+    queueWaiting: downloadQueue?.size || 0,
+    queueActive: downloadQueue?.active || 0,
+    queueStats
   });
 });
 
@@ -793,6 +796,28 @@ app.post('/settings/update', requireAuth, async (req, res) => {
   try {
     console.log('[Settings/Update] Получены данные:', JSON.stringify(sanitizeLogValue(req.body), null, 2));
     
+    const workerKeys = ['download_workers_total', 'download_workers_spotify', 'download_workers_soundcloud', 'download_workers_youtube'];
+    if (workerKeys.some(key => Object.prototype.hasOwnProperty.call(req.body, key))) {
+      const current = getAllSettings();
+      const candidate = Object.fromEntries(workerKeys.map(key => [key, req.body[key] ?? current[key]]));
+      const total = Number(candidate.download_workers_total);
+      const sourceValues = workerKeys.slice(1).map(key => Number(candidate[key]));
+      if (!Number.isInteger(total) || total < 1 || sourceValues.some(value => !Number.isInteger(value) || value < 0)) {
+        return res.redirect('/settings?error=' + encodeURIComponent('Воркеры должны быть целыми неотрицательными числами, общий лимит — не меньше 1.'));
+      }
+      if (sourceValues.reduce((sum, value) => sum + value, 0) > total) {
+        return res.redirect('/settings?error=' + encodeURIComponent('Сумма воркеров источников не может превышать общий лимит.'));
+      }
+      const stats = downloadQueue.getStatsBySource();
+      const sourceNames = ['spotify', 'soundcloud', 'youtube'];
+      const blockedSource = sourceNames.find((source, index) =>
+        sourceValues[index] === 0 && stats[source].waiting > 0 && String(req.body[`use_${source}`] ?? current[`use_${source}`]) !== 'false'
+      );
+      if (blockedSource) {
+        return res.redirect('/settings?error=' + encodeURIComponent(`Нельзя оставить очередь ${blockedSource} без воркера: сначала отключите сервис или дождитесь завершения очереди.`));
+      }
+    }
+
     // Лимиты являются настройками продукта; пользователей массово не перезаписываем.
     for (const [key, value] of Object.entries(req.body)) {
       console.log(`[Settings/Update] Сохраняю: ${key} = ${formatSettingForLog(key, value)}`);
@@ -800,6 +825,7 @@ app.post('/settings/update', requireAuth, async (req, res) => {
     }
     
     await loadSettings(); // Обновляем кеш
+    applyDownloadWorkerSettings(getAllSettings());
     const settingsVersion = await redisService.incr('settings:version');
     await redisService.publish('settings:invalidate', settingsVersion || Date.now());
     console.log('[Settings/Update] ✅ Настройки сохранены и кеш обновлён');

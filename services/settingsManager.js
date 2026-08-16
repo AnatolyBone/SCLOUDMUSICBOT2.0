@@ -4,9 +4,21 @@ import { getAppSettings } from '../db.js';
 import { sanitizeLogValue } from './logSanitizer.js';
 
 let settingsCache = {};
+const settingsListeners = new Set();
+
+function notifySettingsListeners() {
+  for (const listener of settingsListeners) {
+    try { listener(settingsCache); }
+    catch (error) { console.error('[Settings] Listener failed:', error.message); }
+  }
+}
 
 // Дефолтные значения на случай, если в БД пусто
 const DEFAULTS = {
+  download_workers_total: '3',
+  download_workers_spotify: '1',
+  download_workers_soundcloud: '2',
+  download_workers_youtube: '0',
   xtr_rub_rate: '2.00',
   daily_limit_free: '3',
   daily_limit_plus: '30',
@@ -54,10 +66,12 @@ export async function loadSettings() {
   try {
     const dbSettings = await getAppSettings();
     settingsCache = { ...DEFAULTS, ...dbSettings };
+    notifySettingsListeners();
     console.log('[Settings] Настройки успешно загружены:', sanitizeLogValue(settingsCache));
   } catch (e) {
     console.error('[Settings] Не удалось загрузить настройки, использую дефолтные:', e.message);
     settingsCache = DEFAULTS;
+    notifySettingsListeners();
   }
 }
 
@@ -75,4 +89,10 @@ export function getSetting(key) {
  */
 export function getAllSettings() {
   return settingsCache;
+}
+
+export function onSettingsChange(listener) {
+  if (typeof listener !== 'function') throw new TypeError('Settings listener must be a function');
+  settingsListeners.add(listener);
+  return () => settingsListeners.delete(listener);
 }

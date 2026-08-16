@@ -204,7 +204,7 @@ async function processTask(task) {
       userId,
       statusMessageId: task.statusMessageId, // Передаём для удаления
       source: task.source || 'spotify',
-      spotifyId: task.metadata?.spotifyId || null
+      spotifyId: task.metadata?.spotifyTrackId || task.metadata?.spotifyId || null
     };
 
   } catch (err) {

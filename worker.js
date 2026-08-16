@@ -22,7 +22,9 @@ async function processTask(task) {
       const trackInfo = {
         title: metadata.title,
         artist: metadata.uploader,
-        duration: metadata.duration
+        duration: metadata.duration,
+        spotifyTrackId: metadata.spotifyTrackId || metadata.spotifyId,
+        isrc: metadata.isrc || null
       };
       
       let fileId = null;
@@ -30,7 +32,7 @@ async function processTask(task) {
       try {
         const streamResult = await downloadSpotifyStream(
           `${trackInfo.artist} ${trackInfo.title}`,
-          { quality }
+          { quality, metadata: trackInfo }
         );
         
         const fileSizeMB = streamResult.size / 1024 / 1024;

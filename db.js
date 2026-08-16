@@ -11,6 +11,7 @@ import { SUPPORTED_LANGUAGES } from './config/languages.js';
 import { countUndeliverableRecipients } from './services/broadcastAudienceRules.js';
 import { toFiniteNumber } from './services/revenueNumber.js';
 import { averageAvailable, markActivityAvailability, resolveReportPeriod } from './services/analyticsReportSemantics.js';
+import { isSpotifyCacheRowMatch } from './services/spotifyPolicy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -871,6 +872,13 @@ export async function cacheTrack({
       ON CONFLICT (url) DO UPDATE SET
         file_id = EXCLUDED.file_id,
         title = EXCLUDED.title,
+        artist = EXCLUDED.artist,
+        duration = EXCLUDED.duration,
+        thumbnail = EXCLUDED.thumbnail,
+        source = EXCLUDED.source,
+        quality = EXCLUDED.quality,
+        spotify_id = EXCLUDED.spotify_id,
+        isrc = EXCLUDED.isrc,
         cached_at = NOW()
     `;
     
@@ -915,31 +923,48 @@ export async function cacheTrack({
  */
 export async function findCachedTrack(key, options = {}) {
   const { source, quality } = options;
+  const requestedSpotifyId = key.match(/^spotify:([a-zA-Z0-9]+):(?:low|medium|high)$/)?.[1]
+    || key.match(/spotify\.com\/(?:intl-[^/]+\/)?track\/([a-zA-Z0-9]+)/)?.[1];
   
   try {
     // 1. Прямой поиск по ключу (Быстрый SQL)
-    const exactSql = `SELECT * FROM track_cache WHERE url = $1 LIMIT 1`;
-    const { rows: exactRows } = await query(exactSql, [key]);
+    const exactConditions = ['url = $1'];
+    const exactValues = [key];
+    if (source) {
+      exactValues.push(source);
+      exactConditions.push(`source = $${exactValues.length}`);
+    }
+    if (quality) {
+      exactValues.push(quality);
+      exactConditions.push(`quality = $${exactValues.length}`);
+    }
+    const exactSql = `SELECT * FROM track_cache WHERE ${exactConditions.join(' AND ')} LIMIT 1`;
+    const { rows: exactRows } = await query(exactSql, exactValues);
 
     if (exactRows.length > 0) {
       const data = exactRows[0];
       console.log(`[✓ Cache HIT] ${data.title} (прямое совпадение)`);
-      return { fileId: data.file_id, ...data };
+      if (!requestedSpotifyId || isSpotifyCacheRowMatch(data, requestedSpotifyId, quality)) {
+        return { fileId: data.file_id, ...data };
+      }
     }
 
     // 2. Поиск по Spotify ID (Быстрый SQL)
-    if (key.includes('spotify.com/track/')) {
-      const spotifyId = key.match(/track\/([a-zA-Z0-9]+)/)?.[1];
+    const spotifyId = requestedSpotifyId;
+    const isDirectSpotifyLookup = Boolean(spotifyId) && (source === 'spotify' || key.startsWith('spotify:') || key.includes('spotify.com/'));
+    if (isDirectSpotifyLookup) {
       if (spotifyId && quality) {
-        const spotSql = `SELECT * FROM track_cache WHERE spotify_id = $1 AND quality = $2 LIMIT 1`;
+        const spotSql = `SELECT * FROM track_cache WHERE spotify_id = $1 AND quality = $2 AND source = 'spotify' LIMIT 1`;
         const { rows: spotRows } = await query(spotSql, [spotifyId, quality]);
 
-        if (spotRows.length > 0) {
+        if (spotRows.length > 0 && isSpotifyCacheRowMatch(spotRows[0], spotifyId, quality)) {
           const spotifyData = spotRows[0];
           console.log(`[✓ Cache HIT] ${spotifyData.title} (spotify_id + quality)`);
           return { fileId: spotifyData.file_id, ...spotifyData };
         }
       }
+      // A direct Spotify URL must never fall through to fuzzy/general matching.
+      return null;
     }
 
     // 3. Нечёткий поиск 
@@ -3057,7 +3082,8 @@ export async function runPreflightFixesMigration() {
       '009_schema_contract_reconciliation.sql',
       '010_broadcast_launch_safety.sql',
       '011_user_activity_bigint.sql',
-      '012_user_insights_indexes.sql'
+      '012_user_insights_indexes.sql',
+      '015_download_worker_settings.sql'
     ];
     for (const migrationFile of migrationFiles) {
       const migrationPath = path.join(__dirname, 'migrations', migrationFile);

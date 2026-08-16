@@ -8,6 +8,7 @@ import { getConfiguredFreeDownloadLimit, getDownloadQueuePriority, getRemainingD
 import { getDownloadCorrelationId, logDownloadFlow } from './downloadFlowService.js';
 import { getUserLanguage } from './i18nService.js';
 import { buildLimitUpsell } from './limitUpsellService.js';
+import { hasSpotifyUnlimitedAccess, getSpotifyQualityForUser } from './spotifyPolicy.js';
 
 function getLimitUpsell(user) {
   return buildLimitUpsell({
@@ -111,7 +112,9 @@ async function getSpotifyTrackInfo(url) {
           duration: Math.round(track.duration_ms / 1000),
           thumbnail: track.album?.images?.[0]?.url,
           searchQuery: `${track.artists[0]?.name} - ${track.name}`,
-          originalUrl: url
+          originalUrl: track.external_urls?.spotify || url,
+          spotifyTrackId: track.id || parsed.id,
+          isrc: track.external_ids?.isrc || null
         }]
       };
       
@@ -129,12 +132,14 @@ async function getSpotifyTrackInfo(url) {
           duration: Math.round(track.duration_ms / 1000),
           thumbnail: album.images?.[0]?.url,
           searchQuery: `${track.artists[0]?.name} - ${track.name}`,
-          originalUrl: track.external_urls?.spotify || url
+          originalUrl: track.external_urls?.spotify || url,
+          spotifyTrackId: track.id,
+          isrc: track.external_ids?.isrc || null
         }))
       };
       
     } else if (parsed.type === 'playlist') {
-      const playlist = await spotifyApi(`/playlists/${parsed.id}?fields=name,description,images,tracks.items(track(name,artists,duration_ms,album(images),external_urls))`);
+      const playlist = await spotifyApi(`/playlists/${parsed.id}?fields=name,description,images,tracks.items(track(id,name,artists,duration_ms,album(images),external_urls,external_ids))`);
       return {
         type: 'playlist',
         title: playlist.name,
@@ -148,7 +153,9 @@ async function getSpotifyTrackInfo(url) {
             duration: Math.round(item.track.duration_ms / 1000),
             thumbnail: item.track.album?.images?.[0]?.url,
             searchQuery: `${item.track.artists[0]?.name} - ${item.track.name}`,
-            originalUrl: item.track.external_urls?.spotify || url
+            originalUrl: item.track.external_urls?.spotify || url,
+            spotifyTrackId: item.track.id,
+            isrc: item.track.external_ids?.isrc || null
           }))
       };
     }
@@ -215,6 +222,42 @@ function generateQualityMenu(sessionId) {
     ],
     [Markup.button.callback('❌ Отмена', `sp_cancel:${sessionId}`)]
   ]);
+}
+
+function spotifyUpgradeMenu() {
+  return Markup.inlineKeyboard([[Markup.button.callback('💎 Тарифы', 'open_tariffs_limit')]]);
+}
+
+function createSpotifyTask(session, track, quality, user, statusMessageId) {
+  return {
+    userId: session.userId,
+    source: 'spotify',
+    url: `${track.artist} - ${track.title}`,
+    originalUrl: track.originalUrl,
+    spotifyTrackId: track.spotifyTrackId,
+    spotifyId: track.spotifyTrackId,
+    quality,
+    metadata: {
+      title: track.title,
+      uploader: track.artist,
+      duration: track.duration,
+      thumbnail: track.thumbnail,
+      spotifyTrackId: track.spotifyTrackId,
+      spotifyId: track.spotifyTrackId,
+      isrc: track.isrc || null
+    },
+    priority: getDownloadQueuePriority(user),
+    correlationId: session.correlationId,
+    statusMessageId
+  };
+}
+
+async function canUseSpotifyCollection(ctx, session) {
+  if (session?.type === 'track') return true;
+  const user = await getUser(session.userId);
+  if (hasSpotifyUnlimitedAccess(user, session.userId, ADMIN_ID)) return true;
+  await ctx.answerCbQuery('Плейлисты Spotify доступны только на Unlimited', { show_alert: true });
+  return false;
 }
 
 /**
@@ -297,6 +340,15 @@ export async function handleSpotifyUrl(ctx, url) {
         return await ctx.reply(payload.text, payload.extra);
       }
     }
+
+    const accessUser = await getUser(ctx.from.id);
+    const parsedSpotify = parseSpotifyUrl(url);
+    if (parsedSpotify && parsedSpotify.type !== 'track' && !hasSpotifyUnlimitedAccess(accessUser, ctx.from.id, ADMIN_ID)) {
+      return await ctx.reply(
+        '📂 Скачивание плейлистов Spotify доступно на тарифе Unlimited.',
+        spotifyUpgradeMenu()
+      );
+    }
     
     statusMessage = await ctx.reply('🔍 Получаю информацию из Spotify...');
     
@@ -310,14 +362,23 @@ export async function handleSpotifyUrl(ctx, url) {
     }
     
     // Проверяем лимиты
-    const user = await getUser(ctx.from.id);
+    const user = accessUser;
     const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
+    const hasUnlimited = hasSpotifyUnlimitedAccess(user, ctx.from.id, ADMIN_ID);
     
     if (remainingLimit <= 0) {
       const payload = getLimitUpsell(user);
       return await ctx.telegram.editMessageText(
         ctx.chat.id, statusMessage.message_id, undefined,
         payload.text, payload.extra
+      );
+    }
+
+    if (data.type !== 'track' && !hasUnlimited) {
+      return await ctx.telegram.editMessageText(
+        ctx.chat.id, statusMessage.message_id, undefined,
+        '📂 Скачивание плейлистов Spotify доступно на тарифе Unlimited.',
+        spotifyUpgradeMenu()
       );
     }
     
@@ -342,6 +403,19 @@ export async function handleSpotifyUrl(ctx, url) {
     if (data.type === 'track') {
       const track = data.tracks[0];
       session.selectedTracks.add(0);
+
+      if (!hasUnlimited) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, statusMessage.message_id, undefined,
+          `🎵 <b>${track.title}</b>\n👤 ${track.artist}\n⏱ ${formatDuration(track.duration)}\n\n` +
+          '🎵 Базовое качество: 128 kbps\n💎 192/320 kbps — на тарифе Unlimited.\n\n⏳ Добавляю в очередь…',
+          { parse_mode: 'HTML', ...spotifyUpgradeMenu() }
+        );
+        downloadQueue.add(createSpotifyTask(session, track, 'low', user, statusMessage.message_id))
+          .catch(err => console.error('[Spotify] Queue error:', err.message));
+        spotifySessions.delete(sessionId);
+        return;
+      }
       
       await ctx.telegram.editMessageText(
         ctx.chat.id, statusMessage.message_id, undefined,
@@ -429,6 +503,7 @@ export function registerSpotifyCallbacks(bot) {
     if (!session) {
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    if (!await canUseSpotifyCollection(ctx, session)) return;
     
     // Выбираем все треки
     session.selectedTracks = new Set(session.tracks.map(t => t.index));
@@ -455,6 +530,7 @@ export function registerSpotifyCallbacks(bot) {
     if (!session) {
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    if (!await canUseSpotifyCollection(ctx, session)) return;
     
     // Выбираем первые 10
     const first10 = session.tracks.slice(0, 10);
@@ -482,6 +558,7 @@ export function registerSpotifyCallbacks(bot) {
     if (!session) {
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    if (!await canUseSpotifyCollection(ctx, session)) return;
     
     await ctx.answerCbQuery();
     
@@ -508,6 +585,7 @@ export function registerSpotifyCallbacks(bot) {
     if (!session) {
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    if (!await canUseSpotifyCollection(ctx, session)) return;
     
     if (!session.selectedTracks) {
       session.selectedTracks = new Set();
@@ -542,6 +620,7 @@ export function registerSpotifyCallbacks(bot) {
     if (!session) {
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    if (!await canUseSpotifyCollection(ctx, session)) return;
     
     // Выбираем все треки
     session.selectedTracks = new Set(session.tracks.map(t => t.index));
@@ -568,6 +647,7 @@ export function registerSpotifyCallbacks(bot) {
     if (!session) {
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    if (!await canUseSpotifyCollection(ctx, session)) return;
     
     session.selectedTracks = new Set();
     
@@ -592,6 +672,7 @@ export function registerSpotifyCallbacks(bot) {
     if (!session) {
       return ctx.answerCbQuery('❌ Сессия истекла', { show_alert: true });
     }
+    if (!await canUseSpotifyCollection(ctx, session)) return;
     
     if (!session.selectedTracks || session.selectedTracks.size === 0) {
       return ctx.answerCbQuery('Выберите хотя бы один трек', { show_alert: true });
@@ -614,7 +695,7 @@ export function registerSpotifyCallbacks(bot) {
   bot.action(/^sp_quality:(.+):(low|medium|high)$/, async (ctx) => {
     console.log(`[Spotify/Callback] Выбор качества: ${ctx.callbackQuery.data}`);
     const sessionId = ctx.match[1];
-    const quality = ctx.match[2];
+    let quality = ctx.match[2];
     const session = spotifySessions.get(sessionId);
     
     if (!session) {
@@ -623,8 +704,6 @@ export function registerSpotifyCallbacks(bot) {
     }
     
     console.log(`[Spotify/Callback] Сессия найдена, треков: ${session.tracks.length}, выбрано: ${session.selectedTracks?.size || 0}`);
-    
-    await ctx.answerCbQuery(`Качество: ${QUALITY_PRESETS[quality].label}`);
     
     // Получаем выбранные треки
     const selectedIndices = Array.from(session.selectedTracks || []);
@@ -637,6 +716,12 @@ export function registerSpotifyCallbacks(bot) {
     // Проверяем лимиты
     const user = await getUser(session.userId);
     const isAdmin = Number(session.userId) === Number(ADMIN_ID);
+    const hasUnlimited = hasSpotifyUnlimitedAccess(user, session.userId, ADMIN_ID);
+    if (session.type !== 'track' && !hasUnlimited) {
+      return ctx.answerCbQuery('Плейлисты Spotify доступны только на Unlimited', { show_alert: true });
+    }
+    quality = getSpotifyQualityForUser(user, quality, session.userId, ADMIN_ID);
+    await ctx.answerCbQuery(`Качество: ${QUALITY_PRESETS[quality].label}`);
     const remainingLimit = isAdmin ? Infinity : getRemainingDownloads(user);
     
     if (remainingLimit <= 0) {
@@ -665,23 +750,7 @@ export function registerSpotifyCallbacks(bot) {
     const statusMessageId = ctx.callbackQuery?.message?.message_id;
     
     for (const track of tracksToProcess) {
-      const task = {
-        userId: session.userId,
-        source: 'spotify',
-        url: `${track.artist} - ${track.title}`,
-        originalUrl: track.originalUrl,
-        quality: quality,
-        metadata: {
-          title: track.title,
-          uploader: track.artist,
-          duration: track.duration,
-          thumbnail: track.thumbnail
-        },
-        priority: getDownloadQueuePriority(user),
-        correlationId: session.correlationId,
-        // Передаем statusMessageId для всех треков, чтобы удалить сообщение после обработки
-        statusMessageId: statusMessageId
-      };
+      const task = createSpotifyTask(session, track, quality, user, statusMessageId);
       
       console.log(`[Spotify] Добавляю в очередь: "${track.artist} - ${track.title}" (${quality})`);
       try {

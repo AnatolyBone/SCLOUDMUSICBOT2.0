@@ -9,8 +9,41 @@ import { PassThrough } from 'stream';
 import ffmpegPath from 'ffmpeg-static';
 import { removeTempArtifacts, startTempDirectoryJanitor } from './tempStorage.js';
 import { abortError, bindAbortSignal, terminateChildProcess } from './abortableProcess.js';
+import { selectSpotifyYouTubeCandidate } from './spotifyMatcher.js';
+export { scoreSpotifyYouTubeCandidate, selectSpotifyYouTubeCandidate } from './spotifyMatcher.js';
 
 const TEMP_DIR = path.join(os.tmpdir(), 'spotify-dl');
+
+async function resolveSpotifyYouTubeCandidate(track, signal) {
+  if (!track?.title || !(track.artist || track.uploader) || !track.duration) {
+    throw new Error('SPOTIFY_METADATA_REQUIRED');
+  }
+  const query = `${track.artist || track.uploader} - ${track.title}`;
+  const args = ['-m', 'yt_dlp', `ytsearch5:${query}`, '--dump-single-json', '--flat-playlist', '--no-warnings'];
+  if (WRITABLE_COOKIES_PATH && fs.existsSync(WRITABLE_COOKIES_PATH)) args.push('--cookies', WRITABLE_COOKIES_PATH);
+
+  const payload = await new Promise((resolve, reject) => {
+    const processGroup = process.platform !== 'win32';
+    const proc = spawn('python3', args, { env: { ...process.env, PYTHONUNBUFFERED: '1' }, detached: processGroup });
+    const unbindAbort = bindAbortSignal(proc, signal, { processGroup });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    proc.on('error', error => { unbindAbort(); reject(error); });
+    proc.on('close', code => {
+      unbindAbort();
+      if (signal?.aborted) return reject(abortError(signal));
+      if (code !== 0) return reject(new Error(`SPOTIFY_SEARCH_FAILED: ${stderr.slice(-200)}`));
+      try { resolve(JSON.parse(stdout)); } catch { reject(new Error('SPOTIFY_SEARCH_INVALID_RESPONSE')); }
+    });
+  });
+  const candidate = selectSpotifyYouTubeCandidate(track, payload.entries || []);
+  if (!candidate) throw new Error('SPOTIFY_MATCH_NOT_FOUND');
+  const candidateUrl = candidate.webpage_url || candidate.url;
+  if (!candidateUrl) throw new Error('SPOTIFY_MATCH_URL_MISSING');
+  return candidateUrl.startsWith('http') ? candidateUrl : `https://www.youtube.com/watch?v=${candidateUrl}`;
+}
 
 // Логика определения пути к кукам:
 // 1. Сначала ищем в секретах Render (/etc/secrets/cookies.txt)
@@ -60,6 +93,7 @@ startTempDirectoryJanitor(TEMP_DIR, {
  */
 export async function downloadSpotifyAsStream(searchQuery, options = {}) {
   const { quality = 'medium', signal = null } = options;
+  const sourceUrl = await resolveSpotifyYouTubeCandidate(options.metadata, signal);
   
   const bitrate = {
     'high': '320k',
@@ -73,7 +107,7 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
     // yt-dlp → stdout
     const ytdlpArgs = [
       '-m', 'yt_dlp',
-      `ytsearch1:${searchQuery}`,
+      sourceUrl,
       '-f', 'bestaudio/best',
       '-o', '-',  // ✅ Вывод в stdout
       '--no-playlist',
@@ -211,6 +245,7 @@ export async function downloadSpotifyAsStream(searchQuery, options = {}) {
 }
 export async function downloadSpotifyStream(searchQuery, options = {}) {
   const { quality = 'medium', signal = null } = options;
+  const sourceUrl = await resolveSpotifyYouTubeCandidate(options.metadata, signal);
   
   const bitrate = {
     'high': '320k',
@@ -224,7 +259,7 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
     // Шаг 1: yt-dlp скачивает и выводит в stdout
     const ytdlpArgs = [
       '-m', 'yt_dlp',
-      `ytsearch1:${searchQuery}`,
+      sourceUrl,
       '-f', 'bestaudio/best',
       '-o', '-',  // Вывод в stdout!
       '--no-playlist',
@@ -343,6 +378,7 @@ export async function downloadSpotifyStream(searchQuery, options = {}) {
  */
 export async function downloadFromYouTube(searchQuery, options = {}) {
   const { quality = 'high', metadata = {}, signal = null } = options;
+  const sourceUrl = await resolveSpotifyYouTubeCandidate(metadata, signal);
   
   const baseName = `spotify_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const outputPath = path.join(TEMP_DIR, `${baseName}.mp3`);
@@ -364,7 +400,7 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
       '-m', 'yt_dlp',
       
       // Поиск на YouTube
-      `ytsearch1:${searchQuery}`,
+      sourceUrl,
       
       // Формат: пробуем разные варианты
       '-f', 'bestaudio/best',
@@ -515,6 +551,7 @@ export async function downloadFromYouTube(searchQuery, options = {}) {
  */
 export async function downloadFromYouTubeFallback(searchQuery, options = {}) {
   const { quality = 'medium', signal = null } = options;
+  const sourceUrl = await resolveSpotifyYouTubeCandidate(options.metadata, signal);
   
   const baseName = `spotify_fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const outputTemplate = path.join(TEMP_DIR, `${baseName}.%(ext)s`);
@@ -524,7 +561,7 @@ export async function downloadFromYouTubeFallback(searchQuery, options = {}) {
   return new Promise((resolve, reject) => {
     const args = [
       '-m', 'yt_dlp',
-      `ytsearch1:${searchQuery}`,
+      sourceUrl,
       
       // Без указания формата - yt-dlp сам выберет лучший
       '-x',
@@ -605,7 +642,7 @@ export async function downloadSpotifyTrack(trackInfo, options = {}) {
   
   // Метод 2: Fallback без указания формата
   try {
-    return await downloadFromYouTubeFallback(searchQuery, options);
+    return await downloadFromYouTubeFallback(searchQuery, { ...options, metadata: trackInfo });
   } catch (err) {
     if (options.signal?.aborted) throw abortError(options.signal);
     console.warn(`[SpotifyDL] Метод 2 не сработал: ${err.message}`);
@@ -614,7 +651,7 @@ export async function downloadSpotifyTrack(trackInfo, options = {}) {
   // Метод 3: Поиск только по названию
   try {
     console.log(`[SpotifyDL] Метод 3: только название...`);
-    return await downloadFromYouTube(trackInfo.title, options);
+    return await downloadFromYouTube(trackInfo.title, { ...options, metadata: trackInfo });
   } catch (err) {
     console.error(`[SpotifyDL] Все методы провалились`);
     throw new Error(`Не удалось скачать: ${trackInfo.title}`);

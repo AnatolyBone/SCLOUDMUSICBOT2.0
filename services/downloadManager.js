@@ -76,7 +76,8 @@ import { T } from '../config/texts.js';
 import { TaskQueue } from '../lib/TaskQueue.js';
 import * as db from '../db.js';
 import { taskBroker } from './taskBroker.js';
-import { getSetting } from './settingsManager.js';
+import { getSetting, onSettingsChange } from './settingsManager.js';
+import { buildSpotifyCacheKey } from './spotifyPolicy.js';
 import {
   getConfiguredFreeDownloadLimit,
   getDownloadQueuePriority,
@@ -129,7 +130,6 @@ startTempDirectoryJanitor(TEMP_DIR, {
 });
 startTempDirectoryJanitor(THUMB_DIR, { startupMaxAgeMs: 1, maxAgeMs: 30 * 60 * 1000, maxBytes: 100 * 1024 * 1024 });
 
-const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) || 4;
 
 const BOT_PROXY_ERR = [
   'Unable to connect to proxy', 'ProxyError',
@@ -753,7 +753,8 @@ export async function trackDownloadProcessor(task, signal = null) {
   // ============ ГИБРИДНАЯ АРХИТЕКТУРА ============
   // Spotify/YouTube → делегируем внешнему воркеру (HuggingFace)
   // Пропускаем делегирование, если это fallback после ошибки воркера
-  if (USE_HYBRID_WORKER && (source === 'spotify' || source === 'youtube') && !task.skipWorker) {
+  // Spotify stays local because its strict metadata/candidate validation is authoritative here.
+  if (USE_HYBRID_WORKER && source === 'youtube' && !task.skipWorker) {
     const hasWorker = await taskBroker.hasActiveWorker();
     
     if (hasWorker) {
@@ -761,10 +762,13 @@ export async function trackDownloadProcessor(task, signal = null) {
       const artist = task.metadata?.uploader || 'Unknown';
       
       // Формируем cacheKey с качеством
-      const cacheKey = `${source}:${title}:${artist}:${quality}`
-        .toLowerCase()
-        .replace(/\s+/g, '_')
-        .replace(/[^\w:_-]/g, '');
+      const cacheKey = source === 'spotify'
+        ? buildSpotifyCacheKey(task.spotifyTrackId || task.metadata?.spotifyTrackId, quality)
+        : `${source}:${title}:${artist}:${quality}`
+          .toLowerCase()
+          .replace(/\s+/g, '_')
+          .replace(/[^\w:_-]/g, '');
+      if (!cacheKey) throw new Error('SPOTIFY_TRACK_ID_REQUIRED');
       
       console.log(`[Master] 📤 Делегирую воркеру: "${title}" (${quality})`);
       
@@ -810,10 +814,16 @@ export async function trackDownloadProcessor(task, signal = null) {
       
       // ✅ Кэш с учётом качества
       const qualitySuffix = quality || 'medium';
-      cacheKey = `${source}:${title}:${uploader}:${qualitySuffix}`
-        .toLowerCase()
-        .replace(/\s+/g, '_')
-        .replace(/[^\w:_-]/g, '');
+      if (source === 'spotify') {
+        const spotifyTrackId = task.spotifyTrackId || metadata.spotifyTrackId;
+        cacheKey = buildSpotifyCacheKey(spotifyTrackId, qualitySuffix);
+        if (!cacheKey) throw new Error('SPOTIFY_TRACK_ID_REQUIRED');
+      } else {
+        cacheKey = `${source}:${title}:${uploader}:${qualitySuffix}`
+          .toLowerCase()
+          .replace(/\s+/g, '_')
+          .replace(/[^\w:_-]/g, '');
+      }
     } else {
       // SoundCloud - старая логика
       const ensured = await ensureTaskMetadata(task, signal);
@@ -831,7 +841,7 @@ export async function trackDownloadProcessor(task, signal = null) {
 
     // 3. Проверка КЭША
     let cached = await db.findCachedTrack(cacheKey, { source, quality });
-    if (!cached && task.originalUrl) {
+    if (!cached && task.originalUrl && source !== 'spotify') {
       cached = await db.findCachedTrack(task.originalUrl, { source, quality });
     }
     
@@ -1185,7 +1195,7 @@ export async function trackDownloadProcessor(task, signal = null) {
       
       try {
         // Пробуем быстрый стриминг (без записи на диск)
-        const result = await downloadSpotifyStream(searchQuery, { quality, signal });
+        const result = await downloadSpotifyStream(searchQuery, { quality, signal, metadata });
         
         // Проверяем размер перед созданием стрима
         const fileSizeMB = result.size / 1024 / 1024;
@@ -1212,7 +1222,9 @@ export async function trackDownloadProcessor(task, signal = null) {
         const trackInfo = {
           title,
           artist: uploader,
-          duration: roundedDuration
+          duration: roundedDuration,
+          spotifyTrackId: task.spotifyTrackId || metadata.spotifyTrackId,
+          isrc: metadata.isrc || null
         };
         
         const result = await downloadSpotifyTrack(trackInfo, { quality, signal });
@@ -1358,10 +1370,9 @@ export async function trackDownloadProcessor(task, signal = null) {
         thumbnail: metadata.thumbnail,
         source,
         quality,
-        spotifyId: source === 'spotify' && task.originalUrl?.match(/track\/([a-zA-Z0-9]+)/)?.[1] || null,
-        aliases: source === 'spotify' 
-          ? (task.originalUrl ? [`${task.originalUrl}:${quality}`] : [])
-          : urlAliases
+        spotifyId: source === 'spotify' ? (task.spotifyTrackId || metadata.spotifyTrackId) : null,
+        isrc: source === 'spotify' ? (metadata.isrc || null) : null,
+        aliases: source === 'spotify' ? [] : urlAliases
       });
       
       console.log(`✅ [Cache] Трек "${title}" (${quality}) сохранён (key: ${cacheKey}).`);
@@ -1563,11 +1574,38 @@ export async function trackDownloadProcessor(task, signal = null) {
 // =====================================================================================
 
 export const downloadQueue = new TaskQueue({
-  maxConcurrent: MAX_CONCURRENT_DOWNLOADS,
+  maxConcurrent: Number(getSetting('download_workers_total')) || 3,
+  sourceLimits: {
+    spotify: Number(getSetting('download_workers_spotify')),
+    soundcloud: Number(getSetting('download_workers_soundcloud')),
+    youtube: Number(getSetting('download_workers_youtube'))
+  },
   taskProcessor: trackDownloadProcessor
 });
 
-console.log(`[DownloadManager] Очередь (threads=${MAX_CONCURRENT_DOWNLOADS})`);
+export function applyDownloadWorkerSettings(settings = {}) {
+  const total = Number(settings.download_workers_total ?? getSetting('download_workers_total'));
+  const limits = {
+    spotify: Number(settings.download_workers_spotify ?? getSetting('download_workers_spotify')),
+    soundcloud: Number(settings.download_workers_soundcloud ?? getSetting('download_workers_soundcloud')),
+    youtube: Number(settings.download_workers_youtube ?? getSetting('download_workers_youtube'))
+  };
+  if (!Number.isInteger(total) || total < 1 || Object.values(limits).some(value => !Number.isInteger(value) || value < 0)) {
+    throw new Error('Некорректные значения воркеров скачивания');
+  }
+  if (Object.values(limits).reduce((sum, value) => sum + value, 0) > total) {
+    throw new Error('Сумма воркеров источников не может превышать общий лимит');
+  }
+  downloadQueue.setMaxConcurrent(total);
+  downloadQueue.setSourceLimits(limits);
+}
+
+onSettingsChange(settings => {
+  try { applyDownloadWorkerSettings(settings); }
+  catch (error) { console.error('[DownloadManager] Worker settings rejected:', error.message); }
+});
+
+console.log(`[DownloadManager] Очередь (threads=${downloadQueue.maxConcurrent})`);
 
 // =====================================================================================
 //                                 ФУНКЦИЯ ENQUEUE

@@ -11,6 +11,12 @@
     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
   </div>
 <% } %>
+<% if (locals.error) { %>
+  <div class="alert alert-danger alert-dismissible fade show">
+    <i class="bi bi-exclamation-triangle me-2"></i><%= locals.error %>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+  </div>
+<% } %>
 
 <div class="row g-4">
   <!-- Режим обслуживания -->
@@ -64,43 +70,35 @@
     </div>
   </div>
 
-  <!-- Гибридная архитектура (воркер) -->
+  <!-- Воркеры скачивания -->
   <div class="col-lg-6">
     <div class="card shadow-sm">
       <div class="card-header fw-semibold bg-light">
-        <i class="bi bi-server me-2"></i>Гибридная архитектура
+        <i class="bi bi-cpu me-2"></i>Воркеры скачивания
       </div>
       <div class="card-body">
-        <p class="text-muted small mb-3">
-          Когда включено — задачи Spotify/YouTube делегируются внешнему воркеру (HuggingFace/VPS). 
-          Когда выключено — все задачи обрабатываются локально на Render.
-        </p>
-        <form action="/settings/update" method="POST" id="hybridWorkerForm" 
-              onsubmit="document.getElementById('useHybridWorkerValue').value = document.getElementById('useHybridWorker').checked ? 'true' : 'false';">
-          <input type="hidden" id="useHybridWorkerValue" name="use_hybrid_worker" value="<%= settings.use_hybrid_worker || 'false' %>">
-          <div class="d-flex align-items-center gap-3">
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="useHybridWorker"
-                     <%= settings.use_hybrid_worker === 'true' ? 'checked' : '' %> 
-                     onchange="document.getElementById('hybridWorkerForm').submit()" 
-                     style="width: 3rem; height: 1.5rem;">
-              <label class="form-check-label fw-semibold" for="useHybridWorker">
-                <%= settings.use_hybrid_worker === 'true' ? '🟢 Включено (воркер)' : '🔴 Выключено (локально)' %>
-              </label>
+        <form action="/settings/update" method="POST">
+          <div class="mb-3">
+            <label class="form-label fw-semibold" for="workersTotal">Всего доступно</label>
+            <input class="form-control" id="workersTotal" name="download_workers_total" type="number" min="1" step="1" required value="<%= settings.download_workers_total || '3' %>">
+          </div>
+          <% const workerSources = [
+            ['spotify', 'Spotify', '1'],
+            ['soundcloud', 'SoundCloud', '2'],
+            ['youtube', 'YouTube', '0']
+          ]; %>
+          <% workerSources.forEach(([source, label, fallback]) => { const sourceStats = (locals.queueStats && locals.queueStats[source]) || { active: 0, waiting: 0 }; %>
+            <div class="row align-items-center g-2 mb-2">
+              <label class="col-4 col-form-label" for="workers-<%= source %>"><%= label %></label>
+              <div class="col-3">
+                <input class="form-control" id="workers-<%= source %>" name="download_workers_<%= source %>" type="number" min="0" step="1" required value="<%= settings['download_workers_' + source] ?? fallback %>">
+              </div>
+              <div class="col-5 small text-muted"><%= sourceStats.active %> работает / <%= sourceStats.waiting %> ждёт</div>
             </div>
-          </div>
+          <% }); %>
+          <div class="form-text mb-3">Сумма квот источников не должна превышать общий лимит. Изменения применяются без перезапуска.</div>
+          <button type="submit" class="btn btn-primary">Сохранить воркеры</button>
         </form>
-        <% if (settings.use_hybrid_worker === 'true') { %>
-          <div class="alert alert-info mt-3 mb-0 small">
-            <i class="bi bi-info-circle me-1"></i>
-            <strong>Воркер активен:</strong> Spotify/YouTube задачи будут делегироваться внешнему воркеру.
-          </div>
-        <% } else { %>
-          <div class="alert alert-warning mt-3 mb-0 small">
-            <i class="bi bi-exclamation-triangle me-1"></i>
-            <strong>Локальная обработка:</strong> Все задачи обрабатываются на Render (может быть медленнее).
-          </div>
-        <% } %>
       </div>
     </div>
   </div>
