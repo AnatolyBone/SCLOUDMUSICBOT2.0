@@ -15,6 +15,7 @@ import os from 'os';
 import mime from 'mime-types';
 import { checkAndSendExpirationNotifications, notifyExpiringTodayHourly } from './services/notifier.js';
 import { loadSettings,getAllSettings,getSetting} from './services/settingsManager.js';
+import { buildUserTariffPresentation } from './services/userTariffPresentation.js';
 import {
   pool,
   query,
@@ -1225,10 +1226,14 @@ app.get('/user/:id', requireAuth, async (req, res) => {
         }
         
         // Передаем все данные в шаблон для отрисовки
+        const tariffLimits = { free:Number(getSetting('daily_limit_free'))||3, plus:Number(getSetting('daily_limit_plus'))||30, pro:Number(getSetting('daily_limit_pro'))||100, unlimited:Number(getSetting('daily_limit_unlimited')||getSetting('daily_limit_unlim'))||10000 };
+        const tariffPresentation = buildUserTariffPresentation(userProfile, tariffLimits);
         res.render('user-profile', {
             title: `Профиль: ${userProfile.first_name || userId}`,
             page: 'users',
             userProfile,
+            tariffLimits,
+            tariffPresentation,
             downloads,
             actions,
             referrer,

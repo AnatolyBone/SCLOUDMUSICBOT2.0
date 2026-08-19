@@ -32,23 +32,20 @@
   const profileSource = safeReferrer ? 'Реферал' : (u.referral_source ? escapeHtml(u.referral_source) : 'Organic');
   const paymentActions = safeActions.filter(item => /payment|stars|invoice/i.test(String(item.action_type || '')));
   const subscriptionActions = safeActions.filter(item => /tariff|subscription|premium|gift|grant/i.test(String(item.action_type || '')));
-  const freeLimit = parseInt(getSetting('daily_limit_free') || '3', 10);
-  const plusLimit = parseInt(getSetting('daily_limit_plus') || '30', 10);
-  const proLimit = parseInt(getSetting('daily_limit_pro') || '100', 10);
-  const unlimitedLimit = parseInt(getSetting('daily_limit_unlimited') || getSetting('daily_limit_unlim') || '10000', 10);
+  const freeLimit = tariffLimits.free;
+  const plusLimit = tariffLimits.plus;
+  const proLimit = tariffLimits.pro;
+  const unlimitedLimit = tariffLimits.unlimited;
   const premiumUntil = u.premium_until ? new Date(u.premium_until) : null;
-  const premiumActive = Boolean(premiumUntil && !Number.isNaN(premiumUntil.getTime()) && premiumUntil > new Date());
-  const activeTariff = premiumActive ? (u.tariff_code || (u.premium_limit === null ? 'unlimited' : Number(u.premium_limit) >= 100 ? 'pro' : 'plus')) : 'free';
-  const unlimited = activeTariff === 'unlimited';
-  let planName = 'Free';
-  let planClass = 'text-bg-secondary';
+  const { activeTariff, effectiveLimit: currentLimit, unlimited, premiumActive, planName, planClass, expiredPremium } = tariffPresentation;
+  /*
   if (unlimited) { planName = 'Unlimited'; planClass = 'text-bg-primary'; }
   else if (activeTariff === 'plus') { planName = 'Plus'; planClass = 'text-bg-info'; }
   else if (activeTariff === 'pro') { planName = 'Pro'; planClass = 'text-bg-warning'; }
   else if (premiumActive && Number(u.premium_limit) > freeLimit) { planName = `Тариф ${u.premium_limit}`; planClass = 'text-bg-primary'; }
   const expiredPremium = Boolean(!premiumActive && premiumUntil && (u.premium_limit === null || Number(u.premium_limit) > freeLimit));
   const tariffLimits = { free: freeLimit, plus: plusLimit, pro: proLimit, unlimited: unlimitedLimit };
-  const currentLimit = u.daily_limit_override ?? (unlimited ? null : tariffLimits[activeTariff]);
+  */
   const downloadsToday = Number(u.downloads_today || 0);
   const limitPercent = unlimited ? 0 : Math.min(100, Math.round(downloadsToday / Math.max(currentLimit, 1) * 100));
   const progressClass = limitPercent >= 100 ? 'bg-danger' : limitPercent > 75 ? 'bg-warning' : 'bg-success';

@@ -197,6 +197,7 @@ export async function setTariffAdmin(userId, limit, days, { mode = 'set', opType
     sql = `
       UPDATE users
       SET premium_limit = $2,
+          tariff_code = 'free',
           premium_until = NULL,
           notified_about_expiration = FALSE,
           notified_exp_3d = FALSE,
@@ -210,6 +211,7 @@ export async function setTariffAdmin(userId, limit, days, { mode = 'set', opType
     sql = `
       UPDATE users
       SET premium_limit = $2,
+          tariff_code = CASE WHEN $2 IS NULL THEN 'unlimited' WHEN $2 >= 100 THEN 'pro' ELSE 'plus' END,
           premium_until = CASE
             WHEN $4 = 'extend' THEN
               (CASE
@@ -277,6 +279,7 @@ export async function resetExpiredPremiumIfNeeded(userId) {
     UPDATE users
     SET
       premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+      tariff_code = 'free',
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -306,6 +309,7 @@ export async function resetExpiredPremiumsBulk() {
     UPDATE users
     SET
       premium_limit = COALESCE((SELECT value::int FROM app_settings WHERE key = 'daily_limit_free'), 3),
+      tariff_code = 'free',
       premium_until = NULL,
       notified_about_expiration = FALSE,
       notified_exp_3d = FALSE,
@@ -3083,7 +3087,8 @@ export async function runPreflightFixesMigration() {
       '010_broadcast_launch_safety.sql',
       '011_user_activity_bigint.sql',
       '012_user_insights_indexes.sql',
-      '015_download_worker_settings.sql'
+      '015_download_worker_settings.sql',
+      '016_tariff_code_consistency.sql'
     ];
     for (const migrationFile of migrationFiles) {
       const migrationPath = path.join(__dirname, 'migrations', migrationFile);

@@ -1,4 +1,5 @@
 import { toFiniteNumber } from './revenueNumber.js';
+import { getActiveTariffCode } from './downloadLimitCore.js';
 
 const MOSCOW_TIME_ZONE = 'Europe/Moscow';
 const RETENTION_DAYS = Object.freeze([1, 7, 30, 90]);
@@ -264,7 +265,7 @@ export async function getUserTimeline(userIdValue, options = {}, queryFn = null)
   const pageRows = eventResult.rows.slice(0, limit);
   const events = pageRows.map(presentTimelineEvent);
   return {
-    user: { ...user, id: String(user.id), acquisitionCategory: classifyAcquisitionSource(user) },
+    user: { ...user, id: String(user.id), active_tariff_code: getActiveTariffCode(user), acquisitionCategory: classifyAcquisitionSource(user) },
     events,
     summary: { eventCount: events.length },
     pagination: {

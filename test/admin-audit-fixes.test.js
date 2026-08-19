@@ -56,7 +56,7 @@ test('bot guard and user card resolve the same current limit without reading num
   const botLimit=getEffectiveDownloadLimit(user,limits); const cardLimit=getEffectiveDownloadLimit(user,limits);
   assert.equal(botLimit,40); assert.equal(cardLimit,botLimit);
   const profile=await readFile(new URL('../views/user-profile.ejs',import.meta.url),'utf8');
-  assert.match(profile,/tariffLimits\[activeTariff\]/); assert.doesNotMatch(profile,/premiumActive \? Number\(u\.premium_limit/);
+  assert.match(profile,/tariffPresentation/); assert.doesNotMatch(profile,/premiumActive \? Number\(u\.premium_limit/);
 });
 
 test('bot limit diagnostics identify tariff settings and never claim premium_limit is the source', async () => {

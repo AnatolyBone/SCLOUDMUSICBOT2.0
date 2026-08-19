@@ -4,6 +4,7 @@ import { query } from '../db.js';
 import redisService from './redisClient.js';
 import { randomUUID } from 'crypto';
 import { getDownloadFinalDeduplicationKey } from './downloadFlowService.js';
+import { getActiveTariffCode } from './downloadLimitCore.js';
 
 export const PRICING_OPEN_REASONS = Object.freeze([
   'daily_limit',
@@ -181,7 +182,7 @@ class AnalyticsService {
           // Вычисляем текущий тарифный план пользователя
           const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
           if (isPremium) {
-            const code = user.tariff_code || (user.premium_limit === null ? 'unlimited' : Number(user.premium_limit) >= 100 ? 'pro' : 'plus');
+            const code = getActiveTariffCode(user);
             userPlan = ({ unlimited: 'Unlimited', pro: 'Pro', plus: 'Plus' })[code] || 'Plus';
           } else {
             userPlan = 'Free';

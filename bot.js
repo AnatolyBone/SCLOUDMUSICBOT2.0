@@ -15,6 +15,7 @@ import { handleYouTubeUrl, handleYouTubeQualitySelection } from './services/yout
 import { checkAndSendPromos, downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
 import { identifyTrack } from './services/shazamService.js';
+import { rejectOversizedShazamMedia, getShazamFileLinkOrReply, handleTelegramShazamFileTooBig } from './services/shazamMediaGuard.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
 import { t as i18n, getUserLanguage, normalizeLanguageCode, getUserLanguageSegment } from './services/i18nService.js';
@@ -2521,6 +2522,7 @@ async function handleSoundCloudUrl(ctx, url) {
     }
 }
 async function handleShazamDeliveryError(error, ctx, phase) {
+    if (await handleTelegramShazamFileTooBig(error, ctx)) return true;
     if (!isExpectedTelegramTransientError(error)) return false;
     console.warn('[Shazam] Telegram delivery failed', {
         userId: ctx.from?.id,
@@ -2539,15 +2541,16 @@ const processMediaForShazam = async (ctx) => {
     }
 
     let fileId = null;
+    let media = null;
 
-    if (message.voice) fileId = message.voice.file_id;
-    else if (message.video_note) fileId = message.video_note.file_id;
-    else if (message.audio) fileId = message.audio.file_id;
-    else if (message.video) fileId = message.video.file_id;
+    if (message.voice) media = message.voice;
+    else if (message.video_note) media = message.video_note;
+    else if (message.audio) media = message.audio;
+    else if (message.video) media = message.video;
+    fileId = media?.file_id || null;
 
     if (!fileId) return;
-
-    const isVoiceOrNote = !!(message.voice || message.video_note);
+    if (await rejectOversizedShazamMedia(ctx, media)) return;
 
     let statusMsg;
     try {
@@ -2559,7 +2562,11 @@ const processMediaForShazam = async (ctx) => {
 
     let fileLink;
     try {
-        fileLink = await ctx.telegram.getFileLink(fileId);
+        fileLink = await getShazamFileLinkOrReply(ctx, media);
+        if (!fileLink) {
+            await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+            return;
+        }
     } catch (error) {
         if (await handleShazamDeliveryError(error, ctx, 'getFileLink')) return;
         throw error;
