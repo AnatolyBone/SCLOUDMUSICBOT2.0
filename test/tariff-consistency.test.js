@@ -37,10 +37,13 @@ test('all subscription write paths synchronize tariff_code',async()=>{
  assert.match(db,/tariff_code = CASE WHEN \$2 IS NULL THEN 'unlimited'/);
  assert.ok((db.match(/tariff_code = 'free'/g)||[]).length>=3);
  assert.match(guard,/BEFORE INSERT OR UPDATE OF premium_limit,premium_until/);
- assert.match(guard,/CREATE OR REPLACE FUNCTION public\.process_stars_payment/);
- assert.match(guard,/CREATE OR REPLACE FUNCTION public\.process_manual_payment/);
- assert.match(guard,/process_stars_payment_legacy_016/);
- assert.match(guard,/process_manual_payment_legacy_016/);
+ assert.match(guard,/UPDATE public\.users SET tariff_code=CASE/);
+ assert.doesNotMatch(guard,/ALTER FUNCTION public\.process_stars_payment/);
+ assert.doesNotMatch(guard,/ALTER FUNCTION public\.process_manual_payment/);
+ assert.doesNotMatch(guard,/CREATE OR REPLACE FUNCTION public\.process_stars_payment/);
+ assert.doesNotMatch(guard,/CREATE OR REPLACE FUNCTION public\.process_manual_payment/);
+ assert.doesNotMatch(guard,/process_stars_payment_legacy_016/);
+ assert.doesNotMatch(guard,/process_manual_payment_legacy_016/);
  assert.doesNotMatch(guard,/daily_limit_override/);
  assert.match(dbRunner,/runPreflightFixesMigration[\s\S]*016_tariff_code_consistency\.sql/);
 });
