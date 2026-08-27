@@ -14,8 +14,15 @@ import { handleSpotifyUrl, handleQualitySelection as handleSpotifyQuality, regis
 import { handleYouTubeUrl, handleYouTubeQualitySelection } from './services/youtubeManager.js';
 import { checkAndSendPromos, downloadQueue, enqueue } from './services/downloadManager.js';
 import execYoutubeDl from 'youtube-dl-exec';
-import { identifyTrack } from './services/shazamService.js';
+import { recognizeTrack } from './services/shazamService.js';
 import { rejectOversizedShazamMedia, getShazamFileLinkOrReply, handleTelegramShazamFileTooBig } from './services/shazamMediaGuard.js';
+import {
+    getShazamSource,
+    normalizeShazamText,
+    parseShazamInlineResultId,
+    tagShazamInlineResults,
+    trackShazamEvent
+} from './services/shazamAnalyticsService.js';
 import { handleReferralCommand, processNewUserReferral } from './services/referralManager.js';
 import { isShuttingDown, isMaintenanceMode, setMaintenanceMode } from './services/appState.js';
 import { t as i18n, getUserLanguage, normalizeLanguageCode, getUserLanguageSegment } from './services/i18nService.js';
@@ -1895,8 +1902,19 @@ bot.action('admin_karaoke_refresh', async (ctx) => {
     }
 });
 
+const shazamInlineContexts = new Map(); // userId -> recognized request awaiting inline selection
+
 const handleInlineQuery = createInlineQueryHandler({
-    performSearch: performInlineSearch,
+    performSearch: async (query, userId, options) => {
+        let results = await performInlineSearch(query, userId, options);
+        const shazamContext = shazamInlineContexts.get(userId);
+        if (shazamContext && shazamContext.query === query.trim() && Date.now() - shazamContext.createdAt < 10 * 60 * 1000) {
+            results = tagShazamInlineResults(results, shazamContext);
+        } else if (shazamContext && Date.now() - shazamContext.createdAt >= 10 * 60 * 1000) {
+            shazamInlineContexts.delete(userId);
+        }
+        return results;
+    },
     liveSearchTimeoutMs: parseInt(process.env.INLINE_SEARCH_TIMEOUT_MS, 10) || 3500,
     onSearchStarted: async ({ ctx, query, userId }) => {
         if (!userId) return;
@@ -1919,6 +1937,18 @@ const handleInlineQuery = createInlineQueryHandler({
 });
 
 bot.on('inline_query', handleInlineQuery);
+
+bot.on('chosen_inline_result', async (ctx) => {
+    const attribution = parseShazamInlineResultId(ctx.chosenInlineResult?.result_id);
+    if (!attribution) return;
+    const analyticsCtx = {
+        ...ctx,
+        message: { [attribution.source]: {} },
+        update: { ...ctx.update, update_id: attribution.updateId }
+    };
+    await trackShazamEvent(analyticsCtx, 'shazam_delivered');
+    shazamInlineContexts.delete(ctx.from?.id);
+});
 
 // --- Логика обработки плейлистов ---
 async function getPlaylistLimitForUser(userId) {
@@ -2551,6 +2581,7 @@ const processMediaForShazam = async (ctx) => {
 
     if (!fileId) return;
     if (await rejectOversizedShazamMedia(ctx, media)) return;
+    const shazamSource = getShazamSource(message);
 
     let statusMsg;
     try {
@@ -2560,23 +2591,28 @@ const processMediaForShazam = async (ctx) => {
         throw error;
     }
 
+    if (shazamSource) await trackShazamEvent(ctx, 'shazam_request');
+
     let fileLink;
     try {
         fileLink = await getShazamFileLinkOrReply(ctx, media);
         if (!fileLink) {
+            if (shazamSource) await trackShazamEvent(ctx, 'shazam_not_recognized', { reason: 'media_too_large' });
             await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
             return;
         }
     } catch (error) {
+        if (shazamSource) await trackShazamEvent(ctx, 'shazam_not_recognized', { reason: 'download_failed' });
         if (await handleShazamDeliveryError(error, ctx, 'getFileLink')) return;
         throw error;
     }
 
-    let result;
+    let recognition;
     try {
-        result = await identifyTrack(fileLink.href);
+        recognition = await recognizeTrack(fileLink.href);
     } catch (error) {
         console.error('[Shazam] Recognition failed:', error);
+        if (shazamSource) await trackShazamEvent(ctx, 'shazam_not_recognized', { reason: 'recognizer_error' });
         await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
         try {
             await ctx.reply('⚠️ Произошла ошибка при распознавании файла.');
@@ -2586,6 +2622,7 @@ const processMediaForShazam = async (ctx) => {
         }
         return;
     }
+    const result = recognition.ok ? recognition.track : null;
 
     await ctx.deleteMessage(statusMsg.message_id).catch(error => {
         console.warn('[Shazam] Failed to delete status message:', error.message);
@@ -2593,6 +2630,14 @@ const processMediaForShazam = async (ctx) => {
 
     try {
         if (result) {
+            if (shazamSource) {
+                await trackShazamEvent(ctx, 'shazam_recognized', {
+                    artist: normalizeShazamText(result.artist),
+                    title: normalizeShazamText(result.title),
+                    ...(result.externalId ? { external_id: String(result.externalId).slice(0, 100) } : {}),
+                    latency_ms: recognition.latencyMs
+                });
+            }
             const query = `${result.artist} - ${result.title}`;
             
             // Ищем в кэше
@@ -2605,17 +2650,28 @@ const processMediaForShazam = async (ctx) => {
             const buttons = [];
 
             if (cachedCount > 0) {
+                if (shazamSource) await trackShazamEvent(ctx, 'shazam_track_found');
                 text += `\n\n📂 Нашел вариантов: <b>${cachedCount}</b>.`;
                 text += `\n👇 Нажми кнопку, чтобы выбрать нужную версию:`;
                 
                 // Кнопка открывает встроенный поиск с результатами из кэша
                 buttons.push([Markup.button.switchToCurrentChat(`📂 Показать варианты (${cachedCount})`, query)]);
             } else {
+                if (shazamSource) await trackShazamEvent(ctx, 'shazam_track_not_found');
                 text += `\n\n🤷‍♂️ В кэше пока нет.`;
                 text += `\n👇 Нажми, чтобы найти в SoundCloud:`;
                 
                 // Кнопка открывает встроенный поиск по глобальной базе (SoundCloud)
                 buttons.push([Markup.button.switchToCurrentChat(`🔎 Искать в SoundCloud`, query)]);
+            }
+
+            if (shazamSource) {
+                shazamInlineContexts.set(ctx.from.id, {
+                    query: query.trim(),
+                    updateId: ctx.update.update_id,
+                    source: shazamSource,
+                    createdAt: Date.now()
+                });
             }
 
             // Отправляем красивый ответ
@@ -2633,6 +2689,12 @@ const processMediaForShazam = async (ctx) => {
             }
 
         } else {
+            if (shazamSource) {
+                await trackShazamEvent(ctx, 'shazam_not_recognized', {
+                    reason: recognition.reason || 'other',
+                    latency_ms: recognition.latencyMs
+                });
+            }
             await ctx.reply('🤷‍♂️ Не удалось распознать.');
         }
 

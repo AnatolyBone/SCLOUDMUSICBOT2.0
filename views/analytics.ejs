@@ -122,7 +122,7 @@
       <!-- Блок 3: Восстановление пропусков -->
       <div class="col-md-3">
         <h6 class="fw-semibold text-success mb-2"><i class="bi bi-tools me-1"></i>Инструменты</h6>
-        <p class="text-muted small mb-2">Заполнить дыры за последние 7 дней.</p>
+        <p class="text-muted small mb-2">Достроить дни от MAX(day)+1 до вчера (автолимит 90 дней).</p>
         <button type="button" id="btn-backfill" class="btn btn-sm btn-success w-100">
           <i class="bi bi-arrow-repeat"></i> Восстановить пропущенные
         </button>
@@ -209,6 +209,24 @@
 <div class="tab-content" id="analyticsTabsContent">
   <!-- Вкладка 1: Дашборд активности -->
   <div class="tab-pane fade show active" id="dashboard-pane" role="tabpanel" aria-labelledby="dashboard-tab">
+    <div class="card shadow-sm border-0 mb-4">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h5 class="h6 fw-bold mb-0"><i class="bi bi-music-note-beamed me-2 text-primary"></i>Shazam</h5>
+        <span class="text-muted small">Telemetry с <%= new Date(shazam.availableFrom + 'T00:00:00Z').toLocaleDateString('ru-RU', { timeZone: 'UTC' }) %></span>
+      </div>
+      <div class="card-body">
+        <% if (!shazam.available) { %>
+          <div class="text-muted">Нет данных — выбранный период раньше начала сбора Shazam telemetry.</div>
+        <% } else { %>
+          <div class="row g-3">
+            <div class="col-6 col-lg-3"><div class="small text-muted">Shazam users</div><div class="h4 mb-0"><%= shazam.summary.users %></div></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Shazam requests</div><div class="h4 mb-0"><%= shazam.summary.requests %></div></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Recognition success</div><div class="h4 mb-0"><%= shazam.conversions.request_to_recognized == null ? '—' : (shazam.conversions.request_to_recognized * 100).toFixed(1) + '%' %></div></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Delivered tracks</div><div class="h4 mb-0"><%= shazam.summary.delivered %></div></div>
+          </div>
+        <% } %>
+      </div>
+    </div>
     
     <%# Summary Cards %>
     <div class="row g-3 mb-4">

@@ -4172,6 +4172,15 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   usage[0].count = activeUsersRes.rows[0]?.count || 0;
   usage[2].count = directLinkUsersRes.rows[0]?.count || 0;
 
+  const { getShazamAnalyticsData } = await import('./services/shazamReportService.js');
+  const shazam = await getShazamAnalyticsData({
+    query,
+    startDate,
+    endDate,
+    excludedUserIds: excludedAnalyticsUserIds
+  });
+  usage.splice(3, 0, { metric: 'Shazam users', count: shazam.summary?.users ?? null });
+
   // Read-only payment-loss analytics uses the same period and attribution contract
   // as the admin tab. Dynamic import avoids a module-initialization cycle because
   // the service itself uses this module's parameterized query helper.
@@ -4207,6 +4216,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
     campaigns,
     languages,
     daily_stats: dailyStats,
+    shazam,
     payment_loss: paymentLoss
   };
 }

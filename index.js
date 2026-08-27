@@ -179,7 +179,7 @@ async function startApp() {
     }), 15_000);
     settingsRefreshTimer.unref?.();
     
-    // Запуск фоновой проверки/восстановления агрегации за последние 7 дней
+    // Восстановление от MAX(day)+1 до вчера с защитным лимитом.
     backfillMissingDays().catch(e => console.error('[Startup/Backfill] Ошибка:', e.message));
 
     await initializeDownloadManager();
@@ -198,7 +198,7 @@ async function startApp() {
     if (process.env.NODE_ENV === 'production' && !forcePolling) {
       const fullBase = WEBHOOK_URL.endsWith('/') ? WEBHOOK_URL.slice(0, -1) : WEBHOOK_URL;
       const fullWebhookUrl = fullBase + WEBHOOK_PATH;
-      const allowedUpdates = ['message', 'callback_query', 'inline_query', 'pre_checkout_query'];
+      const allowedUpdates = ['message', 'callback_query', 'inline_query', 'chosen_inline_result', 'pre_checkout_query'];
       
       // Retry-логика для вебхука
       for (let i = 0; i < 3; i++) {
@@ -254,7 +254,7 @@ async function startApp() {
       console.log('[App] Запуск бота в режиме long-polling...');
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       bot.launch({
-        allowedUpdates: ['message', 'callback_query', 'inline_query', 'pre_checkout_query']
+        allowedUpdates: ['message', 'callback_query', 'inline_query', 'chosen_inline_result', 'pre_checkout_query']
       });
     }
     
@@ -2193,6 +2193,7 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
   try {
     const { query } = await import('./db.js');
     const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+    const { getShazamAnalyticsData } = await import('./services/shazamReportService.js');
     const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
     
     // 1. Детальная статистика по дням
@@ -2331,6 +2332,12 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
 
     const { getAIRecommendationsData } = await import('./db.js');
     const growthData = await getAIRecommendationsData();
+    const shazam = await getShazamAnalyticsData({
+      query,
+      startDate,
+      endDate,
+      excludedUserIds: excludedAnalyticsUserIds
+    });
 
     res.render('analytics', {
       layout: 'layout',
@@ -2355,6 +2362,7 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
       churnedAfterLimit,
       lastAggregation,
       growthData,
+      shazam,
       unreadSupportCount: res.locals.unreadSupportCount || 0
     });
   } catch (error) {
