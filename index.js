@@ -116,6 +116,7 @@ import { downloadQueue, initializeDownloadManager } from './services/downloadMan
 import { runAnalyticsSmokeTest } from './services/analyticsSmokeTest.js';
 import { generateExcelReport } from './services/excelReportService.js';
 import { formatSettingForLog, sanitizeLogValue } from './services/logSanitizer.js';
+import { shiftAnalyticsDay } from './services/analyticsBackfillService.js';
 import { runSystemSelfTest } from './services/systemSelfTest.js';
 import { mapBroadcastTaskToForm } from './services/broadcastFormMapper.js';
 import {
@@ -302,27 +303,32 @@ async function startApp() {
       }
     }, 24 * 3600 * 1000);
 
-    // Ежедневная агрегация аналитики в 00:05 по МСК
-    // Проверяем каждую минуту, не наступило ли 00:05 МСК
+    // Ежедневная агрегация после 00:05 МСК. Catch-up условие позволяет
+    // выполнить её после рестарта или простоя процесса в точную минуту запуска.
     let lastAggregationDate = null;
+    let lastAggregationAttemptAt = 0;
+    const aggregationRetryMs = 5 * 60 * 1000;
     setInterval(async () => {
       try {
         const nowMsk = new Date().toLocaleString('en-CA', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
         const todayMsk = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
         const [hh, mm] = nowMsk.split(':').map(Number);
-        // Запускаем в 00:05 МСК, один раз в сутки
-        if (hh === 0 && mm === 5 && lastAggregationDate !== todayMsk) {
-          lastAggregationDate = todayMsk;
-          // Агрегируем вчерашний день
-          const yesterday = new Date();
-          yesterday.setDate(yesterday.getDate() - 1);
-          const yStr = yesterday.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
-          console.log(`[Cron] Запуск агрегации аналитики за ${yStr}...`);
-          await aggregateDailyStats(yStr);
-          console.log(`[Cron] Агрегация аналитики за ${yStr} завершена.`);
+        const afterScheduledTime = hh > 0 || (hh === 0 && mm >= 5);
+        const targetDay = shiftAnalyticsDay(todayMsk, -1);
+        const retryReady = Date.now() - lastAggregationAttemptAt >= aggregationRetryMs;
+        if (afterScheduledTime && lastAggregationDate !== targetDay && retryReady) {
+          lastAggregationAttemptAt = Date.now();
+          console.log(`[Cron] Запуск агрегации аналитики за ${targetDay}...`);
+          const result = await aggregateDailyStats(targetDay);
+          if (result?.status === 'aggregated') {
+            lastAggregationDate = targetDay;
+            console.log(`[Cron] Агрегация аналитики за ${targetDay} завершена.`);
+          } else {
+            console.warn(`[Cron] Агрегация за ${targetDay} не завершена (${result?.status || 'unknown'}); повтор через 5 минут.`);
+          }
         }
       } catch (e) {
-        console.error('[Cron] Ошибка агрегации аналитики:', e.message);
+        console.error(`[Cron] Ошибка агрегации аналитики; повтор не ранее чем через 5 минут: ${e.message}`);
       }
     }, 60 * 1000); // каждую минуту
 

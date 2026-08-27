@@ -6,7 +6,16 @@ export function resolveReportPeriod(requestedStartDate, requestedEndDate, availa
     ? availableEndDate
     : requestedEndDate;
   if (actualEndDate < requestedStartDate) throw new Error('No aggregated data in requested period');
-  return { requestedStartDate, requestedEndDate, startDate: requestedStartDate, endDate: actualEndDate, isTruncated: actualEndDate !== requestedEndDate };
+  const isTruncated = actualEndDate !== requestedEndDate;
+  return {
+    requestedStartDate,
+    requestedEndDate,
+    startDate: requestedStartDate,
+    endDate: actualEndDate,
+    isTruncated,
+    truncationReason: isTruncated ? 'analytics_daily_missing_after_end' : null,
+    analyticsDailyMissingAfter: isTruncated ? actualEndDate : null
+  };
 }
 
 export function markActivityAvailability(rows, completeFrom) {

@@ -26,3 +26,7 @@ test('Excel report includes trend formatting for core business metrics', () => {
     assert.ok(source.includes(metric), `missing metric presentation: ${metric}`);
   }
 });
+
+test('Excel report explicitly warns when analytics_daily truncates the requested period', () => {
+  assert.match(source, /ВНИМАНИЕ: данные после \{end_date\} отсутствуют в analytics_daily/);
+});
