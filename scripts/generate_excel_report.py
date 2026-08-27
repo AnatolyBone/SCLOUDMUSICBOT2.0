@@ -140,7 +140,7 @@ def main():
     requested_end_date = display_date(data.get('requestedEndDate'))
     period_note = f'Фактические данные: {start_date} — {end_date}'
     if period.get('isTruncated'):
-        period_note += f' · запрошено по {requested_end_date}'
+        period_note += f' · ВНИМАНИЕ: данные после {end_date} отсутствуют в analytics_daily (запрошено по {requested_end_date})'
     generated_at = datetime.now(MSK).strftime('%d.%m.%Y %H:%M MSK')
 
     workbook = xlsxwriter.Workbook(output_path)

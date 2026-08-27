@@ -12,6 +12,14 @@ import { countUndeliverableRecipients } from './services/broadcastAudienceRules.
 import { toFiniteNumber } from './services/revenueNumber.js';
 import { averageAvailable, markActivityAvailability, resolveReportPeriod } from './services/analyticsReportSemantics.js';
 import { isSpotifyCacheRowMatch } from './services/spotifyPolicy.js';
+import {
+  analyticsDayRange,
+  MANUAL_BACKFILL_MAX_DAYS,
+  planStartupAnalyticsBackfill,
+  selectAnalyticsBackfillCandidates,
+  STARTUP_BACKFILL_MAX_DAYS,
+  shiftAnalyticsDay
+} from './services/analyticsBackfillService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3381,7 +3389,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     if (!lockRes.rows[0].locked) {
       console.log(`[Analytics/Aggregate] Пропуск: Агрегация за день ${day} уже выполняется другим процессом.`);
       await client.query('ROLLBACK');
-      return;
+      return { day, status: 'locked' };
     }
 
     console.log(`[Analytics/Aggregate] Запуск агрегации за день (Europe/Moscow): ${day}`);
@@ -3603,6 +3611,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
 
     await client.query('COMMIT');
     console.log(`[Analytics/Aggregate] Успешно завершено за день ${day}.`);
+    return { day, status: 'aggregated' };
   } catch (e) {
     if (client) {
       try {
@@ -3618,25 +3627,119 @@ export async function aggregateDailyStats(targetDayStr = null) {
   }
 }
 
-export async function backfillMissingDays() {
-  const today = new Date();
-  console.log('[Analytics/Backfill] Проверка пропущенных дней агрегации за последние 7 суток...');
-  for (let i = 1; i <= 7; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const dateStr = d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
-    
+export async function inspectAnalyticsBackfillRange(startDate, endDate, { maxDays = MANUAL_BACKFILL_MAX_DAYS } = {}) {
+  const dates = analyticsDayRange(startDate, endDate, maxDays);
+  const rangeStart = `${dates[0]}T00:00:00+03:00`;
+  const rangeEnd = `${dates[dates.length - 1]}T23:59:59.999+03:00`;
+  const { rows } = await query(
+    `WITH requested_days AS (
+       SELECT generate_series($1::date, $2::date, interval '1 day')::date AS day
+     ), event_counts AS (
+       SELECT (created_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM analytics_events WHERE created_at BETWEEN $3 AND $4 GROUP BY 1
+     ), download_counts AS (
+       SELECT (downloaded_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM downloads_log WHERE downloaded_at BETWEEN $3 AND $4 GROUP BY 1
+     ), payment_counts AS (
+       SELECT (paid_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM payments WHERE paid_at BETWEEN $3 AND $4 GROUP BY 1
+     ), registration_counts AS (
+       SELECT (created_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM users WHERE created_at BETWEEN $3 AND $4 GROUP BY 1
+     )
+     SELECT d.day::text AS day, (a.day IS NOT NULL) AS aggregated,
+            COALESCE(e.count, 0)::bigint AS analytics_events,
+            COALESCE(dl.count, 0)::bigint AS downloads,
+            COALESCE(p.count, 0)::bigint AS payments,
+            COALESCE(r.count, 0)::bigint AS registrations
+     FROM requested_days d
+     LEFT JOIN analytics_daily a ON a.day = d.day
+     LEFT JOIN event_counts e ON e.day = d.day
+     LEFT JOIN download_counts dl ON dl.day = d.day
+     LEFT JOIN payment_counts p ON p.day = d.day
+     LEFT JOIN registration_counts r ON r.day = d.day
+     ORDER BY d.day`,
+    [dates[0], dates[dates.length - 1], rangeStart, rangeEnd]
+  );
+
+  return {
+    startDate: dates[0],
+    endDate: dates[dates.length - 1],
+    totalDays: dates.length,
+    days: rows.map(row => ({
+      ...row,
+      analytics_events: Number(row.analytics_events || 0),
+      downloads: Number(row.downloads || 0),
+      payments: Number(row.payments || 0),
+      registrations: Number(row.registrations || 0)
+    }))
+  };
+}
+
+export async function backfillAnalyticsRange(startDate, endDate, {
+  maxDays = MANUAL_BACKFILL_MAX_DAYS,
+  skipExisting = true,
+  dryRun = false
+} = {}) {
+  const inspection = await inspectAnalyticsBackfillRange(startDate, endDate, { maxDays });
+  const candidates = selectAnalyticsBackfillCandidates(inspection.days, skipExisting);
+  const maxBeforeRes = await query('SELECT MAX(day)::text AS max_day FROM analytics_daily');
+  const maxDayBefore = maxBeforeRes.rows[0]?.max_day || null;
+
+  console.log(`[Analytics/Backfill] Диапазон ${inspection.startDate}..${inspection.endDate}: ${inspection.totalDays} дн., к восстановлению ${candidates.length}, MAX(day) до запуска: ${maxDayBefore || 'NULL'}.`);
+  if (dryRun) {
+    console.log('[Analytics/Backfill] Dry-run: изменения в БД не выполняются.');
+    return { ...inspection, dryRun: true, candidates: candidates.map(day => day.day), restored: [], failed: [], maxDayBefore, maxDayAfter: maxDayBefore };
+  }
+
+  const restored = [];
+  const failed = [];
+  for (const candidate of candidates) {
+    console.log(`[Analytics/Backfill] Агрегация ${candidate.day}...`);
     try {
-      const { rows } = await query('SELECT 1 FROM analytics_daily WHERE day = $1', [dateStr]);
-      if (rows.length === 0) {
-        console.log(`[Startup/Backfill] Обнаружен пропущенный день: ${dateStr}. Запуск агрегации...`);
-        await aggregateDailyStats(dateStr);
+      const result = await aggregateDailyStats(candidate.day);
+      if (result?.status === 'locked') {
+        failed.push({ day: candidate.day, error: 'locked by another process' });
+        console.warn(`[Analytics/Backfill] ${candidate.day}: пропущено, дата обрабатывается другим процессом.`);
+      } else {
+        restored.push(candidate.day);
+        console.log(`[Analytics/Backfill] ${candidate.day}: успешно.`);
       }
-    } catch (e) {
-      console.error(`[Startup/Backfill] Ошибка проверки/агрегации за ${dateStr}:`, e.message);
+    } catch (error) {
+      failed.push({ day: candidate.day, error: error.message });
+      console.error(`[Analytics/Backfill] ${candidate.day}: ошибка: ${error.message}`);
     }
   }
-  console.log('[Analytics/Backfill] Проверка завершена.');
+
+  const maxAfterRes = await query('SELECT MAX(day)::text AS max_day FROM analytics_daily');
+  const maxDayAfter = maxAfterRes.rows[0]?.max_day || null;
+  console.log(`[Analytics/Backfill] Завершено: восстановлено ${restored.length}/${candidates.length}, ошибок ${failed.length}, MAX(day) после запуска: ${maxDayAfter || 'NULL'}.`);
+  return { ...inspection, dryRun: false, candidates: candidates.map(day => day.day), restored, failed, maxDayBefore, maxDayAfter };
+}
+
+export async function backfillMissingDays({ maxDays = STARTUP_BACKFILL_MAX_DAYS } = {}) {
+  const todayMsk = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  const yesterdayMsk = shiftAnalyticsDay(todayMsk, -1);
+  const maxRes = await query('SELECT MAX(day)::text AS max_day FROM analytics_daily');
+  const maxDayBefore = maxRes.rows[0]?.max_day || null;
+  const plan = planStartupAnalyticsBackfill(maxDayBefore, yesterdayMsk, maxDays);
+
+  console.log(`[Startup/Backfill] MAX(day) до проверки: ${maxDayBefore || 'NULL'}; последний завершённый день: ${yesterdayMsk}.`);
+  if (plan.status === 'empty') {
+    console.warn('[Startup/Backfill] analytics_daily пуста: автоматическая начальная дата не определяется. Используйте ручной dry-run с явным диапазоном.');
+    return { ...plan, restored: [], failed: [], maxDayAfter: maxDayBefore };
+  }
+  if (plan.status === 'current') {
+    console.log('[Startup/Backfill] Пропущенных дней после MAX(day) нет.');
+    return { ...plan, restored: [], failed: [], maxDayAfter: maxDayBefore };
+  }
+  if (plan.status === 'limit_exceeded') {
+    console.error(`[Startup/Backfill] Требуется восстановить ${plan.totalDays} дн., что превышает безопасный автоматический предел ${maxDays}. Автоматические изменения не выполнены; используйте ручной backfill диапазонами.`);
+    return { ...plan, restored: [], failed: [], maxDayAfter: maxDayBefore };
+  }
+
+  console.log(`[Startup/Backfill] Найдено ${plan.totalDays} дн. для восстановления: ${plan.startDate}..${plan.endDate}.`);
+  return backfillAnalyticsRange(plan.startDate, plan.endDate, { maxDays, skipExisting: true, dryRun: false });
 }
 
 export async function getLanguageDistribution() {
