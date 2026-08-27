@@ -19,10 +19,10 @@
 </div>
 
 <% if ((locals.creativeStats || []).length) { %>
-<div class="card mb-4"><div class="card-header"><strong>CTR по креативам</strong></div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Вариант</th><th>Медиа</th><th>Показы</th><th>Уникальные</th><th>Клики</th><th>CTR</th></tr></thead><tbody><% creativeStats.forEach(row=>{ %><tr><td><code><%= row.creative_variant %></code></td><td><%= row.has_media ? 'Да' : 'Нет' %></td><td><%= row.impressions %></td><td><%= row.unique_impressions %></td><td><%= row.clicks %></td><td><%= row.ctr.toFixed(1) %>%</td></tr><% }) %></tbody></table></div></div>
+<div class="card mb-4"><div class="card-header"><strong>Эффективность креативов</strong></div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Вариант</th><th>Медиа</th><th>Показы</th><th>Уник. показы</th><th>Frequency</th><th>Клики всего</th><th>Уник. клики</th><th>CTR</th><th>Unique CTR</th></tr></thead><tbody><% creativeStats.forEach(row=>{ %><tr><td><code><%= row.creative_variant %></code></td><td><%= row.has_media ? 'Да' : 'Нет' %></td><td><%= row.impressions %></td><td><%= row.unique_impressions %></td><td><%= row.unique_impressions ? row.frequency.toFixed(2) : '—' %></td><td><%= row.clicks_total %></td><td><%= row.unique_clicks %></td><td><%= row.impressions ? row.ctr.toFixed(1)+'%' : '—' %></td><td><%= row.unique_impressions ? row.unique_ctr.toFixed(1)+'%' : '—' %></td></tr><% }) %></tbody></table></div><div class="card-footer small text-muted">legacy означает только клики, которые нельзя однозначно связать с показом по campaign/user/message.</div></div>
 <% } %>
 <% if ((locals.triggerStats || []).length) { %>
-<div class="card mb-4"><div class="card-header"><strong>CTR по типу запуска</strong></div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Тип</th><th>Показы</th><th>Клики</th><th>CTR</th></tr></thead><tbody><% triggerStats.forEach(row=>{ %><tr><td><code><%= row.trigger_type %></code></td><td><%= row.impressions %></td><td><%= row.clicks %></td><td><%= row.unique_impressions ? row.ctr.toFixed(1)+'%' : '—' %></td></tr><% }) %></tbody></table></div></div>
+<div class="card mb-4"><div class="card-header"><strong>Эффективность по триггеру</strong></div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Тип</th><th>Скачиваний при показе</th><th>Показы</th><th>Уник. показы</th><th>Клики всего</th><th>Уник. клики</th><th>CTR</th><th>Unique CTR</th></tr></thead><tbody><% triggerStats.forEach(row=>{ %><tr><td><code><%= row.trigger_type %></code></td><td><%= row.trigger_value || '—' %></td><td><%= row.impressions %></td><td><%= row.unique_impressions %></td><td><%= row.clicks_total %></td><td><%= row.unique_clicks %></td><td><%= row.impressions ? row.ctr.toFixed(1)+'%' : '—' %></td><td><%= row.unique_impressions ? row.unique_ctr.toFixed(1)+'%' : '—' %></td></tr><% }) %></tbody></table></div></div>
 <% } %>
 
 <% function dt(value) { return value ? new Date(value).toISOString().slice(0,16) : ''; } %>
@@ -154,10 +154,10 @@
     <div class="card-body">
       <div class="table-responsive mb-4">
         <table class="table table-sm table-bordered text-center align-middle mb-0">
-          <thead><tr><th>Период</th><th>Показы</th><th>Уникальные</th><th>Клики</th><th>Уник. клики</th><th>CTR</th></tr></thead>
+          <thead><tr><th>Период</th><th>Показы</th><th>Уник. показы</th><th>Frequency</th><th>Клики всего</th><th>Уник. клики</th><th>CTR</th><th>Unique CTR</th></tr></thead>
           <tbody>
             <% for (const p of [{k:'24h',n:'24 часа'},{k:'7d',n:'7 дней'},{k:'30d',n:'30 дней'},{k:'total',n:'Всё время'}]) { %>
-              <tr><td><%= p.n %></td><td><%= metric(c,'impressions_'+p.k) %></td><td><%= metric(c,'unique_impressions_'+p.k) %></td><td><%= metric(c,'clicks_'+p.k) %></td><td><%= metric(c,'unique_clicks_'+p.k) %></td><td><%= metric(c,'ctr_'+p.k).toFixed(1) %>%</td></tr>
+              <tr><td><%= p.n %></td><td><%= metric(c,'impressions_'+p.k) %></td><td><%= metric(c,'unique_impressions_'+p.k) %></td><td><%= metric(c,'unique_impressions_'+p.k) ? metric(c,'frequency_'+p.k).toFixed(2) : '—' %></td><td><%= metric(c,'clicks_total_'+p.k) %></td><td><%= metric(c,'unique_clicks_'+p.k) %></td><td><%= metric(c,'impressions_'+p.k) ? metric(c,'ctr_'+p.k).toFixed(1)+'%' : '—' %></td><td><%= metric(c,'unique_impressions_'+p.k) ? metric(c,'unique_ctr_'+p.k).toFixed(1)+'%' : '—' %></td></tr>
             <% } %>
           </tbody>
         </table>

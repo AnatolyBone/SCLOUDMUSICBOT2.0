@@ -12,6 +12,7 @@ import { countUndeliverableRecipients } from './services/broadcastAudienceRules.
 import { toFiniteNumber } from './services/revenueNumber.js';
 import { averageAvailable, markActivityAvailability, resolveReportPeriod } from './services/analyticsReportSemantics.js';
 import { isSpotifyCacheRowMatch } from './services/spotifyPolicy.js';
+import { addPromoRates } from './services/promoAnalyticsService.js';
 import {
   analyticsDayRange,
   MANUAL_BACKFILL_MAX_DAYS,
@@ -2948,8 +2949,41 @@ export async function recordPromoImpression({ campaignId, userId, promoKey, mess
 }
 
 export async function recordPromoClick({ campaignId, userId, promoKey, messageId, placement, urlHash }) {
-  const { rows } = await query(`SELECT record_ad_campaign_click($1,$2,$3,$4,$5,$6) recorded`, [campaignId,userId,promoKey,messageId,placement,urlHash]);
-  return rows[0]?.recorded === true;
+  const client = await pool.connect();
+  const clickDeduplicationKey = `yandex_promo_clicked:${campaignId}:${userId}:${messageId}`;
+  const impressionDeduplicationKey = `yandex_promo_shown:${campaignId}:${userId}:${messageId}`;
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT record_ad_campaign_click($1,$2,$3,$4,$5,$6) recorded`, [campaignId,userId,promoKey,messageId,placement,urlHash]);
+    const recorded = rows[0]?.recorded === true;
+    const enriched = await client.query(`
+      WITH impression AS (
+        SELECT id,event_data
+        FROM analytics_events
+        WHERE deduplication_key=$1 AND event_name='yandex_promo_shown'
+        LIMIT 1
+      )
+      UPDATE analytics_events click
+      SET event_data=click.event_data || jsonb_build_object(
+        'impression_id',impression.id,
+        'creative_variant',impression.event_data->>'creative_variant',
+        'has_media',COALESCE((impression.event_data->>'has_media')::boolean,false),
+        'media_type',impression.event_data->>'media_type',
+        'trigger_type',impression.event_data->>'trigger_type',
+        'trigger_download_count',impression.event_data->'trigger_download_count'
+      )
+      FROM impression
+      WHERE click.deduplication_key=$2 AND click.event_name='yandex_promo_clicked'
+      RETURNING click.id`, [impressionDeduplicationKey,clickDeduplicationKey]);
+    if (recorded && enriched.rowCount !== 1) throw new Error('Recorded promo click could not be linked to its impression');
+    await client.query('COMMIT');
+    return recorded;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function markCustomPromoShown(userId, campaignId) {
@@ -2964,44 +2998,132 @@ export async function markCustomPromoShown(userId, campaignId) {
   return res.rowCount > 0;
 }
 
+const PROMO_ATTRIBUTED_EVENTS_CTE = `
+  WITH promo_bounds AS (
+    SELECT CASE $1::text
+      WHEN '24h' THEN NOW()-INTERVAL '24 hours'
+      WHEN '7d' THEN NOW()-INTERVAL '7 days'
+      WHEN '30d' THEN NOW()-INTERVAL '30 days'
+      WHEN 'today' THEN date_trunc('day',NOW())
+      ELSE NULL::timestamptz
+    END from_at,NOW() to_at
+  ), promo_source_events AS (
+    SELECT id,user_id,event_name,created_at,event_data,
+      COALESCE(campaign_id,CASE WHEN event_data->>'campaign_id' ~ '^[0-9]+$' THEN (event_data->>'campaign_id')::integer END) campaign_id,
+      event_data->>'message_id' message_id
+    FROM analytics_events
+    WHERE event_name IN('yandex_promo_shown','yandex_promo_clicked')
+  ), promo_impressions AS (
+    SELECT * FROM promo_source_events WHERE event_name='yandex_promo_shown'
+  ), promo_period_events AS (
+    SELECT e.* FROM promo_source_events e CROSS JOIN promo_bounds b
+    WHERE (b.from_at IS NULL OR e.created_at>=b.from_at) AND e.created_at<b.to_at
+  ), promo_attributed_events AS (
+    SELECT e.id,e.user_id,e.event_name,e.created_at,e.campaign_id,
+      COALESCE(NULLIF(e.event_data->>'creative_variant',''),'legacy') creative_variant,
+      CASE WHEN e.event_data->>'has_media' IN('true','false') THEN (e.event_data->>'has_media')::boolean ELSE false END has_media,
+      e.event_data->>'media_type' media_type,
+      COALESCE(NULLIF(e.event_data->>'trigger_type',''),'legacy') trigger_type,
+      e.event_data->>'trigger_download_count' trigger_value,
+      e.id impression_id
+    FROM promo_period_events e WHERE e.event_name='yandex_promo_shown'
+    UNION ALL
+    SELECT e.id,e.user_id,e.event_name,e.created_at,e.campaign_id,
+      COALESCE(NULLIF(e.event_data->>'creative_variant',''),NULLIF(i.event_data->>'creative_variant',''),'legacy') creative_variant,
+      CASE
+        WHEN e.event_data->>'has_media' IN('true','false') THEN (e.event_data->>'has_media')::boolean
+        WHEN i.event_data->>'has_media' IN('true','false') THEN (i.event_data->>'has_media')::boolean
+        ELSE false
+      END has_media,
+      COALESCE(e.event_data->>'media_type',i.event_data->>'media_type') media_type,
+      COALESCE(NULLIF(e.event_data->>'trigger_type',''),NULLIF(i.event_data->>'trigger_type',''),'legacy') trigger_type,
+      COALESCE(e.event_data->>'trigger_download_count',i.event_data->>'trigger_download_count') trigger_value,
+      COALESCE(CASE WHEN e.event_data->>'impression_id' ~ '^[0-9]+$' THEN (e.event_data->>'impression_id')::bigint END,i.id) impression_id
+    FROM promo_period_events e
+    LEFT JOIN LATERAL (
+      SELECT candidate.id,candidate.event_data
+      FROM promo_impressions candidate
+      WHERE candidate.user_id=e.user_id AND candidate.campaign_id=e.campaign_id
+        AND e.message_id IS NOT NULL AND candidate.message_id=e.message_id
+        AND candidate.created_at<=e.created_at
+      ORDER BY candidate.created_at DESC,candidate.id DESC LIMIT 1
+    ) i ON true
+    WHERE e.event_name='yandex_promo_clicked'
+  )`;
+
+async function getPromoCampaignStatsForPeriod(period) {
+  const { rows } = await query(`${PROMO_ATTRIBUTED_EVENTS_CTE}
+    , promo_per_user AS (
+      SELECT campaign_id,user_id,
+        count(*) FILTER(WHERE event_name='yandex_promo_shown') shown,
+        count(*) FILTER(WHERE event_name='yandex_promo_clicked') clicked,
+        max(created_at) FILTER(WHERE event_name='yandex_promo_shown') last_show,
+        max(created_at) FILTER(WHERE event_name='yandex_promo_clicked') last_click
+      FROM promo_attributed_events WHERE campaign_id IS NOT NULL GROUP BY campaign_id,user_id
+    )
+    SELECT campaign_id,sum(shown)::bigint impressions,
+      count(*) FILTER(WHERE shown>0)::bigint unique_impressions,
+      sum(clicked)::bigint clicks,
+      count(*) FILTER(WHERE clicked>0)::bigint unique_clicks,
+      count(*) FILTER(WHERE shown>1)::bigint repeat_impressions,
+      max(last_show) last_shown_at,max(last_click) last_clicked_at
+    FROM promo_per_user GROUP BY campaign_id`, [period]);
+  return rows.map(row => addPromoRates(row));
+}
+
 export async function getPromoStats() {
-  const { rows } = await query(`SELECT p.period_key,s.* FROM (VALUES('24h',NOW()-INTERVAL '24 hours'),('7d',NOW()-INTERVAL '7 days'),('30d',NOW()-INTERVAL '30 days'),('total',NULL::timestamptz)) p(period_key,from_at) CROSS JOIN LATERAL get_ad_campaign_stats(p.from_at,NOW()) s`);
+  const periods = ['24h','7d','30d','total'];
+  const periodRows = await Promise.all(periods.map(getPromoCampaignStatsForPeriod));
   const result = {};
-  for (const row of rows) {
-    const target = result[row.campaign_id] ||= {};
-    for (const key of ['impressions','unique_impressions','clicks','unique_clicks','ctr']) target[`${key}_${row.period_key}`] = Number(row[key] || 0);
-    if (row.period_key === 'total') Object.assign(target,{repeat_users:Number(row.repeat_impressions||0),avg_impressions:Number(row.average_impressions_per_user||0),last_shown_at:row.last_shown_at,last_clicked_at:row.last_clicked_at});
+  for (let index=0;index<periods.length;index+=1) {
+    for (const row of periodRows[index]) {
+      const target = result[row.campaign_id] ||= {};
+      for (const key of ['impressions','unique_impressions','clicks','clicks_total','unique_clicks','ctr','unique_ctr','frequency']) target[`${key}_${periods[index]}`] = Number(row[key] || 0);
+      if (periods[index] === 'total') Object.assign(target,{repeat_users:Number(row.repeat_impressions||0),avg_impressions:Number(row.frequency||0),last_shown_at:row.last_shown_at,last_clicked_at:row.last_clicked_at});
+    }
   }
   return result;
 }
 
 export async function getPromoCreativeStats() {
-  const { rows } = await query('SELECT * FROM get_ad_campaign_creative_stats(NULL,NOW()) ORDER BY has_media DESC,creative_variant');
-  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0)}));
+  const { rows } = await query(`${PROMO_ATTRIBUTED_EVENTS_CTE}
+    SELECT has_media,creative_variant,
+      count(*) FILTER(WHERE event_name='yandex_promo_shown') impressions,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_shown') unique_impressions,
+      count(*) FILTER(WHERE event_name='yandex_promo_clicked') clicks,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_clicked') unique_clicks
+    FROM promo_attributed_events GROUP BY has_media,creative_variant ORDER BY has_media DESC,creative_variant`, ['total']);
+  return rows.map(addPromoRates);
 }
 
 export async function getPromoTriggerStats() {
-  const {rows}=await query('SELECT * FROM get_ad_campaign_trigger_stats(NULL,NOW()) ORDER BY trigger_type');
-  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0)}));
+  const {rows}=await query(`${PROMO_ATTRIBUTED_EVENTS_CTE}
+    SELECT trigger_type,trigger_value,
+      count(*) FILTER(WHERE event_name='yandex_promo_shown') impressions,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_shown') unique_impressions,
+      count(*) FILTER(WHERE event_name='yandex_promo_clicked') clicks,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_clicked') unique_clicks
+    FROM promo_attributed_events GROUP BY trigger_type,trigger_value ORDER BY trigger_type,trigger_value`, ['total']);
+  return rows.map(addPromoRates);
 }
 
 export async function getDashboardPromoCampaignStats({period='30d',includeArchived=false}={}) {
-  const periods={today:`date_trunc('day',NOW())`,'7d':`NOW()-INTERVAL '7 days'`,'30d':`NOW()-INTERVAL '30 days'`,all:'NULL::timestamptz'};
-  const fromSql=periods[period]||periods['30d'];
-  const {rows}=await query(`WITH stats AS(SELECT * FROM get_ad_campaign_stats(${fromSql},NOW())), legacy AS(
+  const selectedPeriod = ['today','7d','30d','all'].includes(period) ? period : '30d';
+  const [statRows,{rows}] = await Promise.all([getPromoCampaignStatsForPeriod(selectedPeriod),query(`WITH legacy AS(
     SELECT c.id campaign_id,COUNT(u.id)::bigint legacy_impressions FROM ad_campaigns c LEFT JOIN users u ON
       (c.promo_key='balance300' AND COALESCE(u.yandex_promo_shown,false)=true OR c.promo_key='music' AND COALESCE(u.yandex_music_promo_shown,false)=true)
       AND NOT EXISTS(SELECT 1 FROM analytics_events e WHERE e.user_id=u.id AND e.event_name='yandex_promo_shown' AND COALESCE(e.campaign_id::text,e.event_data->>'campaign_id')=c.id::text)
     WHERE c.promo_key IN('balance300','music') GROUP BY c.id
   ) SELECT c.id campaign_id,c.promo_key,c.name,c.is_active,c.is_archived,
-    COALESCE(s.impressions,0)::bigint impressions,COALESCE(s.unique_impressions,0)::bigint unique_impressions,
-    COALESCE(s.clicks,0)::bigint clicks,COALESCE(s.unique_clicks,0)::bigint unique_clicks,COALESCE(s.ctr,0)::numeric ctr,
     COALESCE(l.legacy_impressions,0)::bigint legacy_impressions
-    FROM ad_campaigns c LEFT JOIN stats s ON s.campaign_id=c.id LEFT JOIN legacy l ON l.campaign_id=c.id
+    FROM ad_campaigns c LEFT JOIN legacy l ON l.campaign_id=c.id
     WHERE c.deleted_at IS NULL AND ($1::boolean OR c.is_archived=false)
-      AND (c.is_active=true OR COALESCE(s.impressions,0)>0 OR COALESCE(l.legacy_impressions,0)>0)
-    ORDER BY c.is_active DESC,c.id`,[Boolean(includeArchived)]);
-  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0),legacy_impressions:Number(row.legacy_impressions||0)}));
+    ORDER BY c.is_active DESC,c.id`,[Boolean(includeArchived)])]);
+  const statsByCampaign = new Map(statRows.map(row => [Number(row.campaign_id),row]));
+  return rows.map(row => {
+    const stats = statsByCampaign.get(Number(row.campaign_id)) || addPromoRates();
+    return {...row,...stats,campaign_id:Number(row.campaign_id),legacy_impressions:Number(row.legacy_impressions||0)};
+  }).filter(row => row.is_active || row.impressions > 0 || row.clicks_total > 0 || row.legacy_impressions > 0);
 }
 
 export async function getCustomPromoProgressForUser(userId) {

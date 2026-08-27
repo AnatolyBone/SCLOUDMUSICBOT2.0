@@ -319,7 +319,7 @@
       </div>
       <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
-          <thead><tr><th>Кампания</th><th>Статус</th><th class="text-end">Показы</th><th class="text-end">Уникальные</th><th class="text-end">Клики</th><th class="text-end">Уник. клики</th><th class="text-end">CTR</th></tr></thead>
+          <thead><tr><th>Кампания</th><th>Статус</th><th class="text-end">Показы</th><th class="text-end">Уникальные</th><th class="text-end">Frequency</th><th class="text-end">Клики всего</th><th class="text-end">Уник. клики</th><th class="text-end">CTR</th><th class="text-end">Unique CTR</th></tr></thead>
           <tbody>
             <% (locals.promoStats || []).forEach(c=>{ %>
               <tr>
@@ -327,12 +327,14 @@
                 <td><span class="badge <%= c.is_archived?'bg-secondary':(c.is_active?'bg-success':'bg-warning text-dark') %>"><%= c.is_archived?'Архив':(c.is_active?'Активна':'Выключена') %></span></td>
                 <td class="text-end"><%= formatNumber(c.impressions) %><% if(c.legacy_impressions){ %><div class="small text-muted">+<%= formatNumber(c.legacy_impressions) %> исторических</div><% } %></td>
                 <td class="text-end"><%= formatNumber(c.unique_impressions) %></td>
-                <td class="text-end"><%= formatNumber(c.clicks) %></td>
+                <td class="text-end"><%= c.unique_impressions ? c.frequency.toFixed(2) : '—' %></td>
+                <td class="text-end"><%= formatNumber(c.clicks_total) %></td>
                 <td class="text-end"><%= formatNumber(c.unique_clicks) %></td>
-                <td class="text-end fw-semibold"><%= c.unique_impressions ? c.ctr.toFixed(1)+'%' : '—' %></td>
+                <td class="text-end fw-semibold"><%= c.impressions ? c.ctr.toFixed(1)+'%' : '—' %></td>
+                <td class="text-end"><%= c.unique_impressions ? c.unique_ctr.toFixed(1)+'%' : '—' %></td>
               </tr>
             <% }) %>
-            <% if(!(locals.promoStats || []).length){ %><tr><td colspan="7" class="text-center text-muted py-4">За выбранный период кампаний с показами нет.</td></tr><% } %>
+            <% if(!(locals.promoStats || []).length){ %><tr><td colspan="9" class="text-center text-muted py-4">За выбранный период кампаний с показами нет.</td></tr><% } %>
           </tbody>
         </table>
       </div>
