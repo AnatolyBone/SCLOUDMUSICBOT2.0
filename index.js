@@ -156,13 +156,18 @@ const __dirname = path.dirname(__filename);
 async function startApp() {
   console.log('[App] Запуск приложения...');
   const forcePolling = process.env.FORCE_POLLING === '1';
+  const skipStartupMigrations = process.env.SKIP_STARTUP_MIGRATIONS === '1';
 
   try {
     setupExpress();
-    await runSupportSystemMigration();
-    await runAnalyticsSystemMigration();
-    await runMultilangSystemMigration();
-    await runPreflightFixesMigration();
+    if (skipStartupMigrations) {
+      console.log('[DB] Startup migrations skipped by SKIP_STARTUP_MIGRATIONS=1.');
+    } else {
+      await runSupportSystemMigration();
+      await runAnalyticsSystemMigration();
+      await runMultilangSystemMigration();
+      await runPreflightFixesMigration();
+    }
     await checkSchemaPreflight({ throwOnMissing: true });
 
     // Историческая миграция лимитов (удалена, чтобы настройки пользователя не перезаписывались при старте)
