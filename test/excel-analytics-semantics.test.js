@@ -4,7 +4,8 @@ import { averageAvailable, comparableHalfTrend, markActivityAvailability, previo
 
 test('report endDate is the last actually included aggregate date', () => {
   assert.deepEqual(resolveReportPeriod('2026-07-06', '2026-08-05', '2026-08-02'), {
-    requestedStartDate:'2026-07-06', requestedEndDate:'2026-08-05', startDate:'2026-07-06', endDate:'2026-08-02', isTruncated:true
+    requestedStartDate:'2026-07-06', requestedEndDate:'2026-08-05', startDate:'2026-07-06', endDate:'2026-08-02', isTruncated:true,
+    truncationReason:'analytics_daily_missing_after_end', analyticsDailyMissingAfter:'2026-08-02'
   });
 });
 

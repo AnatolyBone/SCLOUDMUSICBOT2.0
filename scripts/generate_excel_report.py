@@ -17,6 +17,7 @@ SHEET_CAMPAIGNS = 'Рассылки'
 SHEET_LANGUAGES = 'Языки'
 SHEET_DAILY = 'Дневная статистика'
 SHEET_PAYMENT_LOSS = 'Потери в оплате'
+SHEET_SHAZAM = 'Shazam'
 
 
 def number(value, default=0):
@@ -132,6 +133,7 @@ def main():
     campaigns = data.get('campaigns', [])
     language_rows = data.get('languages', [])
     payment_loss = data.get('payment_loss', {})
+    shazam = data.get('shazam', {})
     report_note = data.get('report_note')
 
     period = data.get('period', {})
@@ -140,7 +142,7 @@ def main():
     requested_end_date = display_date(data.get('requestedEndDate'))
     period_note = f'Фактические данные: {start_date} — {end_date}'
     if period.get('isTruncated'):
-        period_note += f' · запрошено по {requested_end_date}'
+        period_note += f' · ВНИМАНИЕ: данные после {end_date} отсутствуют в analytics_daily (запрошено по {requested_end_date})'
     generated_at = datetime.now(MSK).strftime('%d.%m.%Y %H:%M MSK')
 
     workbook = xlsxwriter.Workbook(output_path)
@@ -340,7 +342,7 @@ def main():
         ('📈 Dashboard', SHEET_DASHBOARD), ('→ Использование', SHEET_USAGE), ('→ Воронка', SHEET_FUNNEL),
         ('→ Платежи', SHEET_PAYMENTS), ('→ Рассылки', SHEET_CAMPAIGNS),
         ('→ Языки', SHEET_LANGUAGES), ('→ Дневная статистика', SHEET_DAILY),
-        ('→ Потери в оплате', SHEET_PAYMENT_LOSS)
+        ('→ Потери в оплате', SHEET_PAYMENT_LOSS), ('→ Shazam', SHEET_SHAZAM)
     ]
     for index, (label, sheet_name) in enumerate(navigation):
         row = 19 + index // 3
@@ -358,6 +360,7 @@ def main():
     dashboard.set_column('B:D', 21)
     dashboard.set_column('E:E', 18)
     dashboard.set_column('F:H', 18)
+    dashboard.set_column('I:I', 18)
     dashboard.set_row(1, 32)
     dashboard.write('B2', 'SCM Analytics Report', title_format)
     dashboard.write('B3', period_note, section_title_format)
@@ -374,7 +377,7 @@ def main():
         ('Executive Summary', SHEET_EXECUTIVE), ('Использование', SHEET_USAGE), ('Воронка', SHEET_FUNNEL),
         ('Платежи', SHEET_PAYMENTS), ('Рассылки', SHEET_CAMPAIGNS),
         ('Языки', SHEET_LANGUAGES), ('Дневная статистика', SHEET_DAILY),
-        ('Потери в оплате', SHEET_PAYMENT_LOSS)
+        ('Потери в оплате', SHEET_PAYMENT_LOSS), ('Shazam', SHEET_SHAZAM)
     ]
     for index, (label, sheet_name) in enumerate(dashboard_nav):
         dashboard.write_url(5 + index // 4, 1 + index % 4, f"internal:'{sheet_name}'!A1", nav_format, label)
@@ -412,6 +415,23 @@ def main():
             dashboard.write_number(f'G{index}', change, percent_format)
         dashboard.write(f'H{index}', status, status_formats[status_key])
     add_change_formatting(dashboard, f'G9:G{8 + len(trend_rows)}', positive_format, negative_format, neutral_format)
+
+    shazam_summary = shazam.get('summary') or {}
+    shazam_conversions = shazam.get('conversions') or {}
+    dashboard.write_row('F15', ['Shazam users', 'Shazam requests', 'Recognition success', 'Delivered'], header_format)
+    if shazam.get('available'):
+        dashboard.write_number('F16', number(shazam_summary.get('users')), integer_format)
+        dashboard.write_number('G16', number(shazam_summary.get('requests')), integer_format)
+        recognition_rate = shazam_conversions.get('request_to_recognized')
+        if recognition_rate is None:
+            dashboard.write('H16', '—', cell_center)
+        else:
+            dashboard.write_number('H16', number(recognition_rate), percent_format)
+        dashboard.write_number('I16', number(shazam_summary.get('delivered')), integer_format)
+    else:
+        for column in range(5, 9):
+            dashboard.write(15, column, 'Нет данных', cell_center)
+    dashboard.write('F17', f'Telemetry с {display_date(shazam.get("availableFrom"))}', subtitle_format)
 
     num_daily_rows = len(daily_stats)
     if num_daily_rows:
@@ -735,7 +755,79 @@ def main():
     daily.set_column('L:L', 12)
 
     # ================================================================
-    # SHEET 9: Payment loss analytics
+    # SHEET 9: Shazam analytics
+    # ================================================================
+    shazam_sheet = workbook.add_worksheet(SHEET_SHAZAM)
+    configure_sheet(shazam_sheet, '#6F42C1')
+    write_back_link(shazam_sheet, link_format)
+    shazam_sheet.write('B2', 'Shazam analytics', title_format)
+    shazam_sheet.write('B3', f'Telemetry available since: {display_date(shazam.get("availableFrom"))}', section_title_format)
+    shazam_sheet.write('B4', period_note, subtitle_format)
+
+    if not shazam.get('available'):
+        shazam_sheet.merge_range('B6:H8', 'Нет данных — выбранный период раньше начала сбора Shazam telemetry.', summary_text_format)
+    else:
+        metrics = [
+            ('Уникальные пользователи', 'users'), ('Запросы', 'requests'),
+            ('Распознано', 'recognized'), ('Не распознано', 'not_recognized'),
+            ('Распознано, но не найдено', 'not_found'), ('Найдено в базе', 'found'),
+            ('Выдано пользователю', 'delivered')
+        ]
+        shazam_sheet.write_row('B6', ['Показатель', 'Значение'], header_format)
+        for row_index, (label, key) in enumerate(metrics, start=7):
+            shazam_sheet.write(f'B{row_index}', label, cell_left)
+            shazam_sheet.write_number(f'C{row_index}', number(shazam_summary.get(key)), integer_format)
+
+        shazam_sheet.write('E6', 'Конверсии', section_title_format)
+        shazam_sheet.write_row('E7', ['Этап', 'Конверсия'], header_format)
+        conversion_labels = [
+            ('Запрос → распознано', 'request_to_recognized'),
+            ('Распознано → найдено', 'recognized_to_found'),
+            ('Найдено → выдано', 'found_to_delivered'),
+            ('Запрос → выдано', 'request_to_delivered')
+        ]
+        for row_index, (label, key) in enumerate(conversion_labels, start=8):
+            shazam_sheet.write(f'E{row_index}', label, cell_left)
+            value = shazam_conversions.get(key)
+            if value is None:
+                shazam_sheet.write(f'F{row_index}', '—', cell_center)
+            else:
+                shazam_sheet.write_number(f'F{row_index}', number(value), percent_format)
+
+        shazam_sheet.write('B16', 'По типу входа', section_title_format)
+        shazam_sheet.write_row('B17', ['Источник', 'Пользователи', 'Запросы', 'Распознано', 'Успех'], header_format)
+        for row_index, row_data in enumerate(shazam.get('bySource', []), start=18):
+            shazam_sheet.write(f'B{row_index}', row_data.get('source') or 'other', cell_left)
+            for column, key in zip(['C', 'D', 'E'], ['users', 'requests', 'recognized']):
+                shazam_sheet.write_number(f'{column}{row_index}', number(row_data.get(key)), integer_format)
+            success_rate = row_data.get('success_rate')
+            shazam_sheet.write(f'F{row_index}', '—', cell_center) if success_rate is None else shazam_sheet.write_number(f'F{row_index}', number(success_rate), percent_format)
+
+        reason_start = max(23, 19 + len(shazam.get('bySource', [])))
+        shazam_sheet.write(reason_start, 1, 'Причины неуспеха', section_title_format)
+        shazam_sheet.write_row(reason_start + 1, 1, ['Причина', 'Количество', 'Доля'], header_format)
+        for row_index, row_data in enumerate(shazam.get('reasons', []), start=reason_start + 2):
+            shazam_sheet.write(row_index, 1, row_data.get('reason') or 'other', cell_left)
+            shazam_sheet.write_number(row_index, 2, number(row_data.get('count')), integer_format)
+            share = row_data.get('share')
+            shazam_sheet.write(row_index, 3, '—', cell_center) if share is None else shazam_sheet.write_number(row_index, 3, number(share), percent_format)
+
+        daily_start = reason_start + max(8, len(shazam.get('reasons', [])) + 5)
+        shazam_sheet.write(daily_start, 1, 'Дневная динамика', section_title_format)
+        shazam_sheet.write_row(daily_start + 1, 1, ['Дата', 'Users', 'Requests', 'Recognized', 'Found', 'Delivered'], header_format)
+        for row_index, row_data in enumerate(shazam.get('daily', []), start=daily_start + 2):
+            shazam_sheet.write(row_index, 1, display_date(row_data.get('day')), cell_center)
+            for column, key in enumerate(['users', 'requests', 'recognized', 'found', 'delivered'], start=2):
+                if not row_data.get('available'):
+                    shazam_sheet.write(row_index, column, 'Нет данных', cell_center)
+                else:
+                    shazam_sheet.write_number(row_index, column, number(row_data.get(key)), integer_format)
+    shazam_sheet.freeze_panes(5, 1)
+    safe_autofit(shazam_sheet)
+    shazam_sheet.set_column('B:B', 30)
+
+    # ================================================================
+    # SHEET 10: Payment loss analytics
     # ================================================================
     payment_loss_sheet = workbook.add_worksheet(SHEET_PAYMENT_LOSS)
     configure_sheet(payment_loss_sheet, '#B54708')

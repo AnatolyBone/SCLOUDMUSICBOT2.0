@@ -117,6 +117,7 @@ import { downloadQueue, initializeDownloadManager, applyDownloadWorkerSettings }
 import { runAnalyticsSmokeTest } from './services/analyticsSmokeTest.js';
 import { generateExcelReport } from './services/excelReportService.js';
 import { formatSettingForLog, sanitizeLogValue } from './services/logSanitizer.js';
+import { shiftAnalyticsDay } from './services/analyticsBackfillService.js';
 import { runSystemSelfTest } from './services/systemSelfTest.js';
 import { mapBroadcastTaskToForm } from './services/broadcastFormMapper.js';
 import {
@@ -155,13 +156,18 @@ const __dirname = path.dirname(__filename);
 async function startApp() {
   console.log('[App] Запуск приложения...');
   const forcePolling = process.env.FORCE_POLLING === '1';
+  const skipStartupMigrations = process.env.SKIP_STARTUP_MIGRATIONS === '1';
 
   try {
     setupExpress();
-    await runSupportSystemMigration();
-    await runAnalyticsSystemMigration();
-    await runMultilangSystemMigration();
-    await runPreflightFixesMigration();
+    if (skipStartupMigrations) {
+      console.log('[DB] Startup migrations skipped by SKIP_STARTUP_MIGRATIONS=1.');
+    } else {
+      await runSupportSystemMigration();
+      await runAnalyticsSystemMigration();
+      await runMultilangSystemMigration();
+      await runPreflightFixesMigration();
+    }
     await checkSchemaPreflight({ throwOnMissing: true });
 
     // Историческая миграция лимитов (удалена, чтобы настройки пользователя не перезаписывались при старте)
@@ -178,7 +184,7 @@ async function startApp() {
     }), 15_000);
     settingsRefreshTimer.unref?.();
     
-    // Запуск фоновой проверки/восстановления агрегации за последние 7 дней
+    // Восстановление от MAX(day)+1 до вчера с защитным лимитом.
     backfillMissingDays().catch(e => console.error('[Startup/Backfill] Ошибка:', e.message));
 
     await initializeDownloadManager();
@@ -197,7 +203,7 @@ async function startApp() {
     if (process.env.NODE_ENV === 'production' && !forcePolling) {
       const fullBase = WEBHOOK_URL.endsWith('/') ? WEBHOOK_URL.slice(0, -1) : WEBHOOK_URL;
       const fullWebhookUrl = fullBase + WEBHOOK_PATH;
-      const allowedUpdates = ['message', 'callback_query', 'inline_query', 'pre_checkout_query'];
+      const allowedUpdates = ['message', 'callback_query', 'inline_query', 'chosen_inline_result', 'pre_checkout_query'];
       
       // Retry-логика для вебхука
       for (let i = 0; i < 3; i++) {
@@ -253,7 +259,7 @@ async function startApp() {
       console.log('[App] Запуск бота в режиме long-polling...');
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       bot.launch({
-        allowedUpdates: ['message', 'callback_query', 'inline_query', 'pre_checkout_query']
+        allowedUpdates: ['message', 'callback_query', 'inline_query', 'chosen_inline_result', 'pre_checkout_query']
       });
     }
     
@@ -303,27 +309,32 @@ async function startApp() {
       }
     }, 24 * 3600 * 1000);
 
-    // Ежедневная агрегация аналитики в 00:05 по МСК
-    // Проверяем каждую минуту, не наступило ли 00:05 МСК
+    // Ежедневная агрегация после 00:05 МСК. Catch-up условие позволяет
+    // выполнить её после рестарта или простоя процесса в точную минуту запуска.
     let lastAggregationDate = null;
+    let lastAggregationAttemptAt = 0;
+    const aggregationRetryMs = 5 * 60 * 1000;
     setInterval(async () => {
       try {
         const nowMsk = new Date().toLocaleString('en-CA', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', hour12: false });
         const todayMsk = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
         const [hh, mm] = nowMsk.split(':').map(Number);
-        // Запускаем в 00:05 МСК, один раз в сутки
-        if (hh === 0 && mm === 5 && lastAggregationDate !== todayMsk) {
-          lastAggregationDate = todayMsk;
-          // Агрегируем вчерашний день
-          const yesterday = new Date();
-          yesterday.setDate(yesterday.getDate() - 1);
-          const yStr = yesterday.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
-          console.log(`[Cron] Запуск агрегации аналитики за ${yStr}...`);
-          await aggregateDailyStats(yStr);
-          console.log(`[Cron] Агрегация аналитики за ${yStr} завершена.`);
+        const afterScheduledTime = hh > 0 || (hh === 0 && mm >= 5);
+        const targetDay = shiftAnalyticsDay(todayMsk, -1);
+        const retryReady = Date.now() - lastAggregationAttemptAt >= aggregationRetryMs;
+        if (afterScheduledTime && lastAggregationDate !== targetDay && retryReady) {
+          lastAggregationAttemptAt = Date.now();
+          console.log(`[Cron] Запуск агрегации аналитики за ${targetDay}...`);
+          const result = await aggregateDailyStats(targetDay);
+          if (result?.status === 'aggregated') {
+            lastAggregationDate = targetDay;
+            console.log(`[Cron] Агрегация аналитики за ${targetDay} завершена.`);
+          } else {
+            console.warn(`[Cron] Агрегация за ${targetDay} не завершена (${result?.status || 'unknown'}); повтор через 5 минут.`);
+          }
         }
       } catch (e) {
-        console.error('[Cron] Ошибка агрегации аналитики:', e.message);
+        console.error(`[Cron] Ошибка агрегации аналитики; повтор не ранее чем через 5 минут: ${e.message}`);
       }
     }, 60 * 1000); // каждую минуту
 
@@ -2187,6 +2198,7 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
   try {
     const { query } = await import('./db.js');
     const { getAnalyticsExcludedUserIds } = await import('./services/paymentLossAnalyticsService.js');
+    const { getShazamAnalyticsData } = await import('./services/shazamReportService.js');
     const excludedAnalyticsUserIds = getAnalyticsExcludedUserIds();
     
     // 1. Детальная статистика по дням
@@ -2325,6 +2337,12 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
 
     const { getAIRecommendationsData } = await import('./db.js');
     const growthData = await getAIRecommendationsData();
+    const shazam = await getShazamAnalyticsData({
+      query,
+      startDate,
+      endDate,
+      excludedUserIds: excludedAnalyticsUserIds
+    });
 
     res.render('analytics', {
       layout: 'layout',
@@ -2349,6 +2367,7 @@ app.get('/admin/analytics', requireAuth, async (req, res) => {
       churnedAfterLimit,
       lastAggregation,
       growthData,
+      shazam,
       unreadSupportCount: res.locals.unreadSupportCount || 0
     });
   } catch (error) {

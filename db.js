@@ -12,6 +12,15 @@ import { countUndeliverableRecipients } from './services/broadcastAudienceRules.
 import { toFiniteNumber } from './services/revenueNumber.js';
 import { averageAvailable, markActivityAvailability, resolveReportPeriod } from './services/analyticsReportSemantics.js';
 import { isSpotifyCacheRowMatch } from './services/spotifyPolicy.js';
+import { addPromoRates } from './services/promoAnalyticsService.js';
+import {
+  analyticsDayRange,
+  MANUAL_BACKFILL_MAX_DAYS,
+  planStartupAnalyticsBackfill,
+  selectAnalyticsBackfillCandidates,
+  STARTUP_BACKFILL_MAX_DAYS,
+  shiftAnalyticsDay
+} from './services/analyticsBackfillService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2940,8 +2949,41 @@ export async function recordPromoImpression({ campaignId, userId, promoKey, mess
 }
 
 export async function recordPromoClick({ campaignId, userId, promoKey, messageId, placement, urlHash }) {
-  const { rows } = await query(`SELECT record_ad_campaign_click($1,$2,$3,$4,$5,$6) recorded`, [campaignId,userId,promoKey,messageId,placement,urlHash]);
-  return rows[0]?.recorded === true;
+  const client = await pool.connect();
+  const clickDeduplicationKey = `yandex_promo_clicked:${campaignId}:${userId}:${messageId}`;
+  const impressionDeduplicationKey = `yandex_promo_shown:${campaignId}:${userId}:${messageId}`;
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT record_ad_campaign_click($1,$2,$3,$4,$5,$6) recorded`, [campaignId,userId,promoKey,messageId,placement,urlHash]);
+    const recorded = rows[0]?.recorded === true;
+    const enriched = await client.query(`
+      WITH impression AS (
+        SELECT id,event_data
+        FROM analytics_events
+        WHERE deduplication_key=$1 AND event_name='yandex_promo_shown'
+        LIMIT 1
+      )
+      UPDATE analytics_events click
+      SET event_data=click.event_data || jsonb_build_object(
+        'impression_id',impression.id,
+        'creative_variant',impression.event_data->>'creative_variant',
+        'has_media',COALESCE((impression.event_data->>'has_media')::boolean,false),
+        'media_type',impression.event_data->>'media_type',
+        'trigger_type',impression.event_data->>'trigger_type',
+        'trigger_download_count',impression.event_data->'trigger_download_count'
+      )
+      FROM impression
+      WHERE click.deduplication_key=$2 AND click.event_name='yandex_promo_clicked'
+      RETURNING click.id`, [impressionDeduplicationKey,clickDeduplicationKey]);
+    if (recorded && enriched.rowCount !== 1) throw new Error('Recorded promo click could not be linked to its impression');
+    await client.query('COMMIT');
+    return recorded;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function markCustomPromoShown(userId, campaignId) {
@@ -2956,44 +2998,132 @@ export async function markCustomPromoShown(userId, campaignId) {
   return res.rowCount > 0;
 }
 
+const PROMO_ATTRIBUTED_EVENTS_CTE = `
+  WITH promo_bounds AS (
+    SELECT CASE $1::text
+      WHEN '24h' THEN NOW()-INTERVAL '24 hours'
+      WHEN '7d' THEN NOW()-INTERVAL '7 days'
+      WHEN '30d' THEN NOW()-INTERVAL '30 days'
+      WHEN 'today' THEN date_trunc('day',NOW())
+      ELSE NULL::timestamptz
+    END from_at,NOW() to_at
+  ), promo_source_events AS (
+    SELECT id,user_id,event_name,created_at,event_data,
+      COALESCE(campaign_id,CASE WHEN event_data->>'campaign_id' ~ '^[0-9]+$' THEN (event_data->>'campaign_id')::integer END) campaign_id,
+      event_data->>'message_id' message_id
+    FROM analytics_events
+    WHERE event_name IN('yandex_promo_shown','yandex_promo_clicked')
+  ), promo_impressions AS (
+    SELECT * FROM promo_source_events WHERE event_name='yandex_promo_shown'
+  ), promo_period_events AS (
+    SELECT e.* FROM promo_source_events e CROSS JOIN promo_bounds b
+    WHERE (b.from_at IS NULL OR e.created_at>=b.from_at) AND e.created_at<b.to_at
+  ), promo_attributed_events AS (
+    SELECT e.id,e.user_id,e.event_name,e.created_at,e.campaign_id,
+      COALESCE(NULLIF(e.event_data->>'creative_variant',''),'legacy') creative_variant,
+      CASE WHEN e.event_data->>'has_media' IN('true','false') THEN (e.event_data->>'has_media')::boolean ELSE false END has_media,
+      e.event_data->>'media_type' media_type,
+      COALESCE(NULLIF(e.event_data->>'trigger_type',''),'legacy') trigger_type,
+      e.event_data->>'trigger_download_count' trigger_value,
+      e.id impression_id
+    FROM promo_period_events e WHERE e.event_name='yandex_promo_shown'
+    UNION ALL
+    SELECT e.id,e.user_id,e.event_name,e.created_at,e.campaign_id,
+      COALESCE(NULLIF(e.event_data->>'creative_variant',''),NULLIF(i.event_data->>'creative_variant',''),'legacy') creative_variant,
+      CASE
+        WHEN e.event_data->>'has_media' IN('true','false') THEN (e.event_data->>'has_media')::boolean
+        WHEN i.event_data->>'has_media' IN('true','false') THEN (i.event_data->>'has_media')::boolean
+        ELSE false
+      END has_media,
+      COALESCE(e.event_data->>'media_type',i.event_data->>'media_type') media_type,
+      COALESCE(NULLIF(e.event_data->>'trigger_type',''),NULLIF(i.event_data->>'trigger_type',''),'legacy') trigger_type,
+      COALESCE(e.event_data->>'trigger_download_count',i.event_data->>'trigger_download_count') trigger_value,
+      COALESCE(CASE WHEN e.event_data->>'impression_id' ~ '^[0-9]+$' THEN (e.event_data->>'impression_id')::bigint END,i.id) impression_id
+    FROM promo_period_events e
+    LEFT JOIN LATERAL (
+      SELECT candidate.id,candidate.event_data
+      FROM promo_impressions candidate
+      WHERE candidate.user_id=e.user_id AND candidate.campaign_id=e.campaign_id
+        AND e.message_id IS NOT NULL AND candidate.message_id=e.message_id
+        AND candidate.created_at<=e.created_at
+      ORDER BY candidate.created_at DESC,candidate.id DESC LIMIT 1
+    ) i ON true
+    WHERE e.event_name='yandex_promo_clicked'
+  )`;
+
+async function getPromoCampaignStatsForPeriod(period) {
+  const { rows } = await query(`${PROMO_ATTRIBUTED_EVENTS_CTE}
+    , promo_per_user AS (
+      SELECT campaign_id,user_id,
+        count(*) FILTER(WHERE event_name='yandex_promo_shown') shown,
+        count(*) FILTER(WHERE event_name='yandex_promo_clicked') clicked,
+        max(created_at) FILTER(WHERE event_name='yandex_promo_shown') last_show,
+        max(created_at) FILTER(WHERE event_name='yandex_promo_clicked') last_click
+      FROM promo_attributed_events WHERE campaign_id IS NOT NULL GROUP BY campaign_id,user_id
+    )
+    SELECT campaign_id,sum(shown)::bigint impressions,
+      count(*) FILTER(WHERE shown>0)::bigint unique_impressions,
+      sum(clicked)::bigint clicks,
+      count(*) FILTER(WHERE clicked>0)::bigint unique_clicks,
+      count(*) FILTER(WHERE shown>1)::bigint repeat_impressions,
+      max(last_show) last_shown_at,max(last_click) last_clicked_at
+    FROM promo_per_user GROUP BY campaign_id`, [period]);
+  return rows.map(row => addPromoRates(row));
+}
+
 export async function getPromoStats() {
-  const { rows } = await query(`SELECT p.period_key,s.* FROM (VALUES('24h',NOW()-INTERVAL '24 hours'),('7d',NOW()-INTERVAL '7 days'),('30d',NOW()-INTERVAL '30 days'),('total',NULL::timestamptz)) p(period_key,from_at) CROSS JOIN LATERAL get_ad_campaign_stats(p.from_at,NOW()) s`);
+  const periods = ['24h','7d','30d','total'];
+  const periodRows = await Promise.all(periods.map(getPromoCampaignStatsForPeriod));
   const result = {};
-  for (const row of rows) {
-    const target = result[row.campaign_id] ||= {};
-    for (const key of ['impressions','unique_impressions','clicks','unique_clicks','ctr']) target[`${key}_${row.period_key}`] = Number(row[key] || 0);
-    if (row.period_key === 'total') Object.assign(target,{repeat_users:Number(row.repeat_impressions||0),avg_impressions:Number(row.average_impressions_per_user||0),last_shown_at:row.last_shown_at,last_clicked_at:row.last_clicked_at});
+  for (let index=0;index<periods.length;index+=1) {
+    for (const row of periodRows[index]) {
+      const target = result[row.campaign_id] ||= {};
+      for (const key of ['impressions','unique_impressions','clicks','clicks_total','unique_clicks','ctr','unique_ctr','frequency']) target[`${key}_${periods[index]}`] = Number(row[key] || 0);
+      if (periods[index] === 'total') Object.assign(target,{repeat_users:Number(row.repeat_impressions||0),avg_impressions:Number(row.frequency||0),last_shown_at:row.last_shown_at,last_clicked_at:row.last_clicked_at});
+    }
   }
   return result;
 }
 
 export async function getPromoCreativeStats() {
-  const { rows } = await query('SELECT * FROM get_ad_campaign_creative_stats(NULL,NOW()) ORDER BY has_media DESC,creative_variant');
-  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0)}));
+  const { rows } = await query(`${PROMO_ATTRIBUTED_EVENTS_CTE}
+    SELECT has_media,creative_variant,
+      count(*) FILTER(WHERE event_name='yandex_promo_shown') impressions,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_shown') unique_impressions,
+      count(*) FILTER(WHERE event_name='yandex_promo_clicked') clicks,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_clicked') unique_clicks
+    FROM promo_attributed_events GROUP BY has_media,creative_variant ORDER BY has_media DESC,creative_variant`, ['total']);
+  return rows.map(addPromoRates);
 }
 
 export async function getPromoTriggerStats() {
-  const {rows}=await query('SELECT * FROM get_ad_campaign_trigger_stats(NULL,NOW()) ORDER BY trigger_type');
-  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0)}));
+  const {rows}=await query(`${PROMO_ATTRIBUTED_EVENTS_CTE}
+    SELECT trigger_type,trigger_value,
+      count(*) FILTER(WHERE event_name='yandex_promo_shown') impressions,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_shown') unique_impressions,
+      count(*) FILTER(WHERE event_name='yandex_promo_clicked') clicks,
+      count(DISTINCT user_id) FILTER(WHERE event_name='yandex_promo_clicked') unique_clicks
+    FROM promo_attributed_events GROUP BY trigger_type,trigger_value ORDER BY trigger_type,trigger_value`, ['total']);
+  return rows.map(addPromoRates);
 }
 
 export async function getDashboardPromoCampaignStats({period='30d',includeArchived=false}={}) {
-  const periods={today:`date_trunc('day',NOW())`,'7d':`NOW()-INTERVAL '7 days'`,'30d':`NOW()-INTERVAL '30 days'`,all:'NULL::timestamptz'};
-  const fromSql=periods[period]||periods['30d'];
-  const {rows}=await query(`WITH stats AS(SELECT * FROM get_ad_campaign_stats(${fromSql},NOW())), legacy AS(
+  const selectedPeriod = ['today','7d','30d','all'].includes(period) ? period : '30d';
+  const [statRows,{rows}] = await Promise.all([getPromoCampaignStatsForPeriod(selectedPeriod),query(`WITH legacy AS(
     SELECT c.id campaign_id,COUNT(u.id)::bigint legacy_impressions FROM ad_campaigns c LEFT JOIN users u ON
       (c.promo_key='balance300' AND COALESCE(u.yandex_promo_shown,false)=true OR c.promo_key='music' AND COALESCE(u.yandex_music_promo_shown,false)=true)
       AND NOT EXISTS(SELECT 1 FROM analytics_events e WHERE e.user_id=u.id AND e.event_name='yandex_promo_shown' AND COALESCE(e.campaign_id::text,e.event_data->>'campaign_id')=c.id::text)
     WHERE c.promo_key IN('balance300','music') GROUP BY c.id
   ) SELECT c.id campaign_id,c.promo_key,c.name,c.is_active,c.is_archived,
-    COALESCE(s.impressions,0)::bigint impressions,COALESCE(s.unique_impressions,0)::bigint unique_impressions,
-    COALESCE(s.clicks,0)::bigint clicks,COALESCE(s.unique_clicks,0)::bigint unique_clicks,COALESCE(s.ctr,0)::numeric ctr,
     COALESCE(l.legacy_impressions,0)::bigint legacy_impressions
-    FROM ad_campaigns c LEFT JOIN stats s ON s.campaign_id=c.id LEFT JOIN legacy l ON l.campaign_id=c.id
+    FROM ad_campaigns c LEFT JOIN legacy l ON l.campaign_id=c.id
     WHERE c.deleted_at IS NULL AND ($1::boolean OR c.is_archived=false)
-      AND (c.is_active=true OR COALESCE(s.impressions,0)>0 OR COALESCE(l.legacy_impressions,0)>0)
-    ORDER BY c.is_active DESC,c.id`,[Boolean(includeArchived)]);
-  return rows.map(row=>({...row,impressions:Number(row.impressions||0),unique_impressions:Number(row.unique_impressions||0),clicks:Number(row.clicks||0),unique_clicks:Number(row.unique_clicks||0),ctr:Number(row.ctr||0),legacy_impressions:Number(row.legacy_impressions||0)}));
+    ORDER BY c.is_active DESC,c.id`,[Boolean(includeArchived)])]);
+  const statsByCampaign = new Map(statRows.map(row => [Number(row.campaign_id),row]));
+  return rows.map(row => {
+    const stats = statsByCampaign.get(Number(row.campaign_id)) || addPromoRates();
+    return {...row,...stats,campaign_id:Number(row.campaign_id),legacy_impressions:Number(row.legacy_impressions||0)};
+  }).filter(row => row.is_active || row.impressions > 0 || row.clicks_total > 0 || row.legacy_impressions > 0);
 }
 
 export async function getCustomPromoProgressForUser(userId) {
@@ -3381,7 +3511,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
     if (!lockRes.rows[0].locked) {
       console.log(`[Analytics/Aggregate] Пропуск: Агрегация за день ${day} уже выполняется другим процессом.`);
       await client.query('ROLLBACK');
-      return;
+      return { day, status: 'locked' };
     }
 
     console.log(`[Analytics/Aggregate] Запуск агрегации за день (Europe/Moscow): ${day}`);
@@ -3603,6 +3733,7 @@ export async function aggregateDailyStats(targetDayStr = null) {
 
     await client.query('COMMIT');
     console.log(`[Analytics/Aggregate] Успешно завершено за день ${day}.`);
+    return { day, status: 'aggregated' };
   } catch (e) {
     if (client) {
       try {
@@ -3618,25 +3749,119 @@ export async function aggregateDailyStats(targetDayStr = null) {
   }
 }
 
-export async function backfillMissingDays() {
-  const today = new Date();
-  console.log('[Analytics/Backfill] Проверка пропущенных дней агрегации за последние 7 суток...');
-  for (let i = 1; i <= 7; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const dateStr = d.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
-    
+export async function inspectAnalyticsBackfillRange(startDate, endDate, { maxDays = MANUAL_BACKFILL_MAX_DAYS } = {}) {
+  const dates = analyticsDayRange(startDate, endDate, maxDays);
+  const rangeStart = `${dates[0]}T00:00:00+03:00`;
+  const rangeEnd = `${dates[dates.length - 1]}T23:59:59.999+03:00`;
+  const { rows } = await query(
+    `WITH requested_days AS (
+       SELECT generate_series($1::date, $2::date, interval '1 day')::date AS day
+     ), event_counts AS (
+       SELECT (created_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM analytics_events WHERE created_at BETWEEN $3 AND $4 GROUP BY 1
+     ), download_counts AS (
+       SELECT (downloaded_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM downloads_log WHERE downloaded_at BETWEEN $3 AND $4 GROUP BY 1
+     ), payment_counts AS (
+       SELECT (paid_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM payments WHERE paid_at BETWEEN $3 AND $4 GROUP BY 1
+     ), registration_counts AS (
+       SELECT (created_at AT TIME ZONE 'Europe/Moscow')::date AS day, COUNT(*)::bigint AS count
+       FROM users WHERE created_at BETWEEN $3 AND $4 GROUP BY 1
+     )
+     SELECT d.day::text AS day, (a.day IS NOT NULL) AS aggregated,
+            COALESCE(e.count, 0)::bigint AS analytics_events,
+            COALESCE(dl.count, 0)::bigint AS downloads,
+            COALESCE(p.count, 0)::bigint AS payments,
+            COALESCE(r.count, 0)::bigint AS registrations
+     FROM requested_days d
+     LEFT JOIN analytics_daily a ON a.day = d.day
+     LEFT JOIN event_counts e ON e.day = d.day
+     LEFT JOIN download_counts dl ON dl.day = d.day
+     LEFT JOIN payment_counts p ON p.day = d.day
+     LEFT JOIN registration_counts r ON r.day = d.day
+     ORDER BY d.day`,
+    [dates[0], dates[dates.length - 1], rangeStart, rangeEnd]
+  );
+
+  return {
+    startDate: dates[0],
+    endDate: dates[dates.length - 1],
+    totalDays: dates.length,
+    days: rows.map(row => ({
+      ...row,
+      analytics_events: Number(row.analytics_events || 0),
+      downloads: Number(row.downloads || 0),
+      payments: Number(row.payments || 0),
+      registrations: Number(row.registrations || 0)
+    }))
+  };
+}
+
+export async function backfillAnalyticsRange(startDate, endDate, {
+  maxDays = MANUAL_BACKFILL_MAX_DAYS,
+  skipExisting = true,
+  dryRun = false
+} = {}) {
+  const inspection = await inspectAnalyticsBackfillRange(startDate, endDate, { maxDays });
+  const candidates = selectAnalyticsBackfillCandidates(inspection.days, skipExisting);
+  const maxBeforeRes = await query('SELECT MAX(day)::text AS max_day FROM analytics_daily');
+  const maxDayBefore = maxBeforeRes.rows[0]?.max_day || null;
+
+  console.log(`[Analytics/Backfill] Диапазон ${inspection.startDate}..${inspection.endDate}: ${inspection.totalDays} дн., к восстановлению ${candidates.length}, MAX(day) до запуска: ${maxDayBefore || 'NULL'}.`);
+  if (dryRun) {
+    console.log('[Analytics/Backfill] Dry-run: изменения в БД не выполняются.');
+    return { ...inspection, dryRun: true, candidates: candidates.map(day => day.day), restored: [], failed: [], maxDayBefore, maxDayAfter: maxDayBefore };
+  }
+
+  const restored = [];
+  const failed = [];
+  for (const candidate of candidates) {
+    console.log(`[Analytics/Backfill] Агрегация ${candidate.day}...`);
     try {
-      const { rows } = await query('SELECT 1 FROM analytics_daily WHERE day = $1', [dateStr]);
-      if (rows.length === 0) {
-        console.log(`[Startup/Backfill] Обнаружен пропущенный день: ${dateStr}. Запуск агрегации...`);
-        await aggregateDailyStats(dateStr);
+      const result = await aggregateDailyStats(candidate.day);
+      if (result?.status === 'locked') {
+        failed.push({ day: candidate.day, error: 'locked by another process' });
+        console.warn(`[Analytics/Backfill] ${candidate.day}: пропущено, дата обрабатывается другим процессом.`);
+      } else {
+        restored.push(candidate.day);
+        console.log(`[Analytics/Backfill] ${candidate.day}: успешно.`);
       }
-    } catch (e) {
-      console.error(`[Startup/Backfill] Ошибка проверки/агрегации за ${dateStr}:`, e.message);
+    } catch (error) {
+      failed.push({ day: candidate.day, error: error.message });
+      console.error(`[Analytics/Backfill] ${candidate.day}: ошибка: ${error.message}`);
     }
   }
-  console.log('[Analytics/Backfill] Проверка завершена.');
+
+  const maxAfterRes = await query('SELECT MAX(day)::text AS max_day FROM analytics_daily');
+  const maxDayAfter = maxAfterRes.rows[0]?.max_day || null;
+  console.log(`[Analytics/Backfill] Завершено: восстановлено ${restored.length}/${candidates.length}, ошибок ${failed.length}, MAX(day) после запуска: ${maxDayAfter || 'NULL'}.`);
+  return { ...inspection, dryRun: false, candidates: candidates.map(day => day.day), restored, failed, maxDayBefore, maxDayAfter };
+}
+
+export async function backfillMissingDays({ maxDays = STARTUP_BACKFILL_MAX_DAYS } = {}) {
+  const todayMsk = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+  const yesterdayMsk = shiftAnalyticsDay(todayMsk, -1);
+  const maxRes = await query('SELECT MAX(day)::text AS max_day FROM analytics_daily');
+  const maxDayBefore = maxRes.rows[0]?.max_day || null;
+  const plan = planStartupAnalyticsBackfill(maxDayBefore, yesterdayMsk, maxDays);
+
+  console.log(`[Startup/Backfill] MAX(day) до проверки: ${maxDayBefore || 'NULL'}; последний завершённый день: ${yesterdayMsk}.`);
+  if (plan.status === 'empty') {
+    console.warn('[Startup/Backfill] analytics_daily пуста: автоматическая начальная дата не определяется. Используйте ручной dry-run с явным диапазоном.');
+    return { ...plan, restored: [], failed: [], maxDayAfter: maxDayBefore };
+  }
+  if (plan.status === 'current') {
+    console.log('[Startup/Backfill] Пропущенных дней после MAX(day) нет.');
+    return { ...plan, restored: [], failed: [], maxDayAfter: maxDayBefore };
+  }
+  if (plan.status === 'limit_exceeded') {
+    console.error(`[Startup/Backfill] Требуется восстановить ${plan.totalDays} дн., что превышает безопасный автоматический предел ${maxDays}. Автоматические изменения не выполнены; используйте ручной backfill диапазонами.`);
+    return { ...plan, restored: [], failed: [], maxDayAfter: maxDayBefore };
+  }
+
+  console.log(`[Startup/Backfill] Найдено ${plan.totalDays} дн. для восстановления: ${plan.startDate}..${plan.endDate}.`);
+  return backfillAnalyticsRange(plan.startDate, plan.endDate, { maxDays, skipExisting: true, dryRun: false });
 }
 
 export async function getLanguageDistribution() {
@@ -4069,6 +4294,15 @@ export async function getExcelAnalyticsData(startDate, endDate) {
   usage[0].count = activeUsersRes.rows[0]?.count || 0;
   usage[2].count = directLinkUsersRes.rows[0]?.count || 0;
 
+  const { getShazamAnalyticsData } = await import('./services/shazamReportService.js');
+  const shazam = await getShazamAnalyticsData({
+    query,
+    startDate,
+    endDate,
+    excludedUserIds: excludedAnalyticsUserIds
+  });
+  usage.splice(3, 0, { metric: 'Shazam users', count: shazam.summary?.users ?? null });
+
   // Read-only payment-loss analytics uses the same period and attribution contract
   // as the admin tab. Dynamic import avoids a module-initialization cycle because
   // the service itself uses this module's parameterized query helper.
@@ -4104,6 +4338,7 @@ export async function getExcelAnalyticsData(startDate, endDate) {
     campaigns,
     languages,
     daily_stats: dailyStats,
+    shazam,
     payment_loss: paymentLoss
   };
 }

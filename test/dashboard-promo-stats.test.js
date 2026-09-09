@@ -13,23 +13,25 @@ test('Dashboard promo table is dynamic and contains no fixed campaign rows',()=>
   assert.doesNotMatch(block,/Яндекс 300₽ — показов|Яндекс Музыка — показов|3\+ скачивания в акции/);
 });
 
-test('Dashboard campaigns and ad management use the same analytics stats RPC',()=>{
+test('Dashboard campaigns and ad management use the same attributed event query',()=>{
   const dashboardFn=db.slice(db.indexOf('export async function getDashboardPromoCampaignStats'),db.indexOf('export async function getCustomPromoProgressForUser'));
   const managementFn=db.slice(db.indexOf('export async function getPromoStats'),db.indexOf('export async function getPromoCreativeStats'));
-  assert.match(dashboardFn,/get_ad_campaign_stats/);assert.match(managementFn,/get_ad_campaign_stats/);
-  for(const metric of ['impressions','unique_impressions','clicks','unique_clicks','ctr'])assert.match(dashboard,new RegExp(`c\.${metric}`));
+  assert.match(dashboardFn,/getPromoCampaignStatsForPeriod/);assert.match(managementFn,/getPromoCampaignStatsForPeriod/);
+  for(const metric of ['impressions','unique_impressions','clicks','unique_clicks','ctr','unique_ctr','frequency'])assert.match(dashboard,new RegExp(`c\.${metric}`));
 });
 
 test('active zero-impression custom campaigns appear immediately and archived campaigns are optional',()=>{
   const fn=db.slice(db.indexOf('export async function getDashboardPromoCampaignStats'),db.indexOf('export async function getCustomPromoProgressForUser'));
-  assert.match(fn,/c\.is_active=true OR COALESCE\(s\.impressions,0\)>0/);
+  assert.match(fn,/row\.is_active \|\| row\.impressions > 0 \|\| row\.clicks_total > 0 \|\| row\.legacy_impressions > 0/);
   assert.match(fn,/\$1::boolean OR c\.is_archived=false/);
   assert.match(index,/showArchivedPromos/);
 });
 
-test('shown and clicked events drive counts and unique-viewer CTR',()=>{
-  assert.match(db,/get_ad_campaign_stats/);
-  assert.match(dashboard,/c\.unique_impressions \? c\.ctr\.toFixed\(1\)/);
+test('shown and clicked events drive separate total CTR, unique CTR and frequency',()=>{
+  assert.match(db,/promo_attributed_events/);
+  assert.match(dashboard,/c\.impressions \? c\.ctr\.toFixed\(1\)/);
+  assert.match(dashboard,/c\.unique_impressions \? c\.unique_ctr\.toFixed\(1\)/);
+  assert.match(dashboard,/c\.unique_impressions \? c\.frequency\.toFixed\(2\)/);
   assert.doesNotMatch(dashboard,/yandex_promo_count|yandex_music_promo_count/);
 });
 

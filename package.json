@@ -10,6 +10,7 @@
     "migrate:insights:twice": "node scripts/migrate-user-insights.js",
     "check:schema": "node scripts/schema-preflight.js",
     "smoke:analytics": "node scripts/smoke-analytics.js",
+    "backfill:analytics": "node scripts/backfill-analytics.js",
     "test:broadcast:integration": "node scripts/run-broadcast-integration.js",
     "test:payments:integration": "node scripts/run-payment-integration.js",
     "test:insights:integration": "node scripts/run-user-insights-integration.js",

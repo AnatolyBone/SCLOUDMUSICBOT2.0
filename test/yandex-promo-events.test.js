@@ -18,7 +18,7 @@ test('impression event and operational state update are one database operation',
   assert.match(fn, /INSERT INTO public\.analytics_events/);
   assert.match(fn, /UPDATE public\.ad_campaign_user_state/);
   assert.match(fn, /yandex_promo_shown/);
-  for (const field of ['campaign_id','promo_key','message_id','placement','url_hash','trigger_download_count','impression_number']) assert.match(fn,new RegExp(`'${field}'`));
+  for (const field of ['campaign_id','promo_key','message_id','placement','url_hash','trigger_download_count','impression_number','creative_variant','trigger_type','has_media','media_type','user_session_id']) assert.match(fn,new RegExp(`'${field}'`));
 });
 
 test('callback click is deduplicated per campaign, user and message before exposing URL', async () => {
