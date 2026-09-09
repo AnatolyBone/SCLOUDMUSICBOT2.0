@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {
   createTelegramApiController,
   installTelegramApiResilience,
+  isExpectedTelegramTransientError,
   isExpiredInlineQueryError,
+  isTelegramInlineAudioTitleEmptyError,
   withTelegramRetry
 } from '../services/telegramApiResilience.js';
 
@@ -96,4 +98,24 @@ test('inline expiry classifier recognizes Telegram variants', () => {
   assert.equal(isExpiredInlineQueryError(new Error('query is too old and response timeout expired')), true);
   assert.equal(isExpiredInlineQueryError(new Error('Bad Request: query ID is invalid')), true);
   assert.equal(isExpiredInlineQueryError(new Error('Bad Request: message is not modified')), false);
+});
+
+test('inline audio title classifier recognizes supported Telegram error shapes', () => {
+  const byMessage = new Error('400: Bad Request: AUDIO_TITLE_EMPTY');
+  const byDescription = { description: 'Bad Request: AUDIO_TITLE_EMPTY' };
+  const byResponse = { response: { description: 'Bad Request: AUDIO_TITLE_EMPTY' } };
+
+  assert.equal(isTelegramInlineAudioTitleEmptyError(byMessage), true);
+  assert.equal(isTelegramInlineAudioTitleEmptyError(byDescription), true);
+  assert.equal(isTelegramInlineAudioTitleEmptyError(byResponse), true);
+  assert.equal(isExpectedTelegramTransientError(byMessage), true);
+});
+
+test('inline audio title classifier does not mask other Telegram validation errors', () => {
+  assert.equal(isTelegramInlineAudioTitleEmptyError(
+    new Error('400: Bad Request: BUTTON_DATA_INVALID')
+  ), false);
+  assert.equal(isExpectedTelegramTransientError(
+    new Error('400: Bad Request: BUTTON_DATA_INVALID')
+  ), false);
 });

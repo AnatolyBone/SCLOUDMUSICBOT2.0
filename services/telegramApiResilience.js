@@ -48,8 +48,22 @@ export function isExpiredInlineQueryError(error) {
   return /query is too old|response timeout expired|query id is invalid/i.test(description);
 }
 
+export function isTelegramInlineAudioTitleEmptyError(error) {
+  const descriptions = [
+    error?.response?.description,
+    error?.description,
+    error?.message
+  ];
+
+  return descriptions.some(description =>
+    /(?:^|[^a-z0-9_])AUDIO_TITLE_EMPTY(?:$|[^a-z0-9_])/i.test(String(description || ''))
+  );
+}
+
 export function isExpectedTelegramTransientError(error) {
-  return isTelegramRateLimitError(error) || isExpiredInlineQueryError(error);
+  return isTelegramRateLimitError(error) ||
+    isExpiredInlineQueryError(error) ||
+    isTelegramInlineAudioTitleEmptyError(error);
 }
 
 export async function withTelegramRetry(operation, options = {}) {

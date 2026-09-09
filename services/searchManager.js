@@ -21,6 +21,10 @@ async function ytdlWithFallback(url, flags) {
 }
 import { searchTracksInCache, logSearchQuery, logFailedSearch } from '../db.js';
 import redisService from './redisClient.js';
+import {
+    formatInlineCachedAudioResults,
+    isUsableInlineCachedTrack
+} from './inlineCachedAudioResults.js';
 
 // ========================= CONFIGURATION =========================
 
@@ -140,6 +144,7 @@ async function searchInCache(query) {
 export async function performInlineSearch(query, userId, options = {}) {
     const liveTimeoutMs = Number(options.liveTimeoutMs) || SEARCH_TIMEOUT_MS;
     const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
+    const skipCache = options.skipCache === true;
     // Санитизация
     query = sanitizeQuery(query);
     
@@ -154,18 +159,25 @@ export async function performInlineSearch(query, userId, options = {}) {
     let foundInCache = false;
     
     // --- 1. Поиск в кэше ---
-    const cachedTracks = await searchInCache(query);
+    const cachedTracks = skipCache ? [] : await searchInCache(query);
+    const usableCachedTracks = cachedTracks.filter(isUsableInlineCachedTrack);
+
+    if (usableCachedTracks.length !== cachedTracks.length) {
+        log('WARN', `Пропущено некорректных cached audio: ${cachedTracks.length - usableCachedTracks.length}`);
+    }
     
-    if (cachedTracks.length > 0) {
-        log('OK', `Найдено ${cachedTracks.length} треков в кэше`);
-        results = cachedTracks;
+    if (usableCachedTracks.length > 0) {
+        log('OK', `Найдено ${usableCachedTracks.length} треков в кэше`);
+        results = usableCachedTracks;
         foundInCache = true;
     } else {
         // Inline handler can invalidate a request while Redis/DB is being checked.
         // Avoid starting an expensive yt-dlp process for an already superseded query.
         if (!isCurrent()) return [];
         // --- 2. Живой поиск ---
-        log('INFO', `Кэш пуст, переключаюсь на живой поиск`);
+        log('INFO', skipCache
+            ? 'Кэш отключён, выполняю живой поиск'
+            : 'Кэш пуст, переключаюсь на живой поиск');
         results = await searchLiveOnSoundCloud(query, liveTimeoutMs);
         foundInCache = false;
     }
@@ -185,27 +197,7 @@ export async function performInlineSearch(query, userId, options = {}) {
     
 // --- 4. Форматирование результата ---
 if (foundInCache) {
-  return results.map(track => {
-    // Убедись, что юзернейм твоего бота здесь указан правильно (без @)
-    const botUsername = 'SCloudMusicBot'; 
-    const captionText = `Скачано с помощью @${botUsername}`;
-
-    return {
-      type: 'audio',
-      id: `cache_${crypto.randomBytes(8).toString('hex')}`,
-      audio_file_id: track.file_id,
-      
-      // Добавляем кликабельную подпись
-      caption: captionText,
-      caption_entities: [
-        {
-          type: 'mention', // Указывает, что это упоминание
-          offset: captionText.indexOf('@'), // Позиция символа @ в тексте
-          length: botUsername.length + 1 // Длина упоминания (@ + username)
-        }
-      ]
-    };
-  });
+  return formatInlineCachedAudioResults(results);
 } else {
     return results;
 }

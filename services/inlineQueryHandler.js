@@ -1,4 +1,7 @@
-import { isExpiredInlineQueryError } from './telegramApiResilience.js';
+import {
+  isExpiredInlineQueryError,
+  isTelegramInlineAudioTitleEmptyError
+} from './telegramApiResilience.js';
 
 export function createInlineQueryHandler(options) {
   const {
@@ -63,7 +66,36 @@ export function createInlineQueryHandler(options) {
       }
 
       if (!isCurrent()) return;
-      const delivered = await answer(ctx, results, { cache_time: 60 }, metadata);
+
+      let delivered;
+      try {
+        delivered = await answer(ctx, results, { cache_time: 60 }, metadata);
+      } catch (error) {
+        if (!isTelegramInlineAudioTitleEmptyError(error)) throw error;
+
+        logger.warn('[InlineQuery] Cached audio has empty title; using live fallback', metadata);
+        if (!isCurrent()) return;
+
+        try {
+          results = await performSearch(query, userId, {
+            liveTimeoutMs: liveSearchTimeoutMs,
+            isCurrent,
+            skipCache: true
+          });
+        } catch (fallbackSearchError) {
+          logger.error('[InlineQuery] Live fallback search failed', fallbackSearchError);
+          return;
+        }
+        if (!isCurrent()) return;
+
+        try {
+          delivered = await answer(ctx, results, { cache_time: 60 }, metadata);
+        } catch (fallbackError) {
+          if (!isTelegramInlineAudioTitleEmptyError(fallbackError)) throw fallbackError;
+          logger.warn('[InlineQuery] Live fallback rejected with AUDIO_TITLE_EMPTY', metadata);
+          return;
+        }
+      }
       if (!delivered) return;
 
       await onSearchCompleted({ ctx, query, userId, results });
