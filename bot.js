@@ -43,7 +43,8 @@ import { notifyAdminAboutConfirmedStarsPayment } from './services/starsPaymentNo
 import {
     installTelegramApiResilience,
     isExpectedTelegramTransientError,
-    isTelegramRateLimitError
+    isTelegramRateLimitError,
+    shouldSuppressTelegramErrorInGlobalHandler
 } from './services/telegramApiResilience.js';
 import { createKeyedTaskQueue } from './services/keyedTaskQueue.js';
 import { createInlineQueryHandler } from './services/inlineQueryHandler.js';
@@ -396,12 +397,13 @@ registerSpotifyCallbacks(bot);
 // ЗАМЕНИ СТАРЫЙ БЛОК bot.catch НА ЭТОТ В ФАЙЛЕ bot.js
 
 bot.catch(async (err, ctx) => {
-    // Expected Telegram transport limits are operational warnings, not bot failures.
-    if (isExpectedTelegramTransientError(err)) {
-        console.warn('[Telegram] Transient error suppressed by global handler', {
+    // Expected Telegram errors are operational warnings, not bot failures.
+    if (shouldSuppressTelegramErrorInGlobalHandler(err, ctx)) {
+        console.warn('[Telegram] Expected error suppressed by global handler', {
             userId: ctx.from?.id,
             updateId: ctx.update?.update_id,
-            rateLimited: isTelegramRateLimitError(err)
+            rateLimited: isTelegramRateLimitError(err),
+            inlineQuery: Boolean(ctx.inlineQuery)
         });
         return;
     }

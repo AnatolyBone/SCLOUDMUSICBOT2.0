@@ -61,9 +61,12 @@ export function isTelegramInlineAudioTitleEmptyError(error) {
 }
 
 export function isExpectedTelegramTransientError(error) {
-  return isTelegramRateLimitError(error) ||
-    isExpiredInlineQueryError(error) ||
-    isTelegramInlineAudioTitleEmptyError(error);
+  return isTelegramRateLimitError(error) || isExpiredInlineQueryError(error);
+}
+
+export function shouldSuppressTelegramErrorInGlobalHandler(error, ctx) {
+  return isExpectedTelegramTransientError(error) ||
+    (Boolean(ctx?.inlineQuery) && isTelegramInlineAudioTitleEmptyError(error));
 }
 
 export async function withTelegramRetry(operation, options = {}) {

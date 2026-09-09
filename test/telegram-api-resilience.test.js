@@ -7,6 +7,7 @@ import {
   isExpectedTelegramTransientError,
   isExpiredInlineQueryError,
   isTelegramInlineAudioTitleEmptyError,
+  shouldSuppressTelegramErrorInGlobalHandler,
   withTelegramRetry
 } from '../services/telegramApiResilience.js';
 
@@ -108,14 +109,32 @@ test('inline audio title classifier recognizes supported Telegram error shapes',
   assert.equal(isTelegramInlineAudioTitleEmptyError(byMessage), true);
   assert.equal(isTelegramInlineAudioTitleEmptyError(byDescription), true);
   assert.equal(isTelegramInlineAudioTitleEmptyError(byResponse), true);
-  assert.equal(isExpectedTelegramTransientError(byMessage), true);
 });
 
-test('inline audio title classifier does not mask other Telegram validation errors', () => {
-  assert.equal(isTelegramInlineAudioTitleEmptyError(
-    new Error('400: Bad Request: BUTTON_DATA_INVALID')
-  ), false);
-  assert.equal(isExpectedTelegramTransientError(
-    new Error('400: Bad Request: BUTTON_DATA_INVALID')
-  ), false);
+test('AUDIO_TITLE_EMPTY is not a general expected Telegram transient error', () => {
+  const error = new Error('400: Bad Request: AUDIO_TITLE_EMPTY');
+  assert.equal(isExpectedTelegramTransientError(error), false);
+});
+
+test('global guard suppresses AUDIO_TITLE_EMPTY for an inline query update', () => {
+  const error = new Error('400: Bad Request: AUDIO_TITLE_EMPTY');
+  assert.equal(shouldSuppressTelegramErrorInGlobalHandler(error, {
+    inlineQuery: { id: 'inline-query-id', query: 'unstoppable' }
+  }), true);
+});
+
+test('global guard does not suppress AUDIO_TITLE_EMPTY for a message update', () => {
+  const error = new Error('400: Bad Request: AUDIO_TITLE_EMPTY');
+  assert.equal(shouldSuppressTelegramErrorInGlobalHandler(error, {
+    message: { text: 'unstoppable' }
+  }), false);
+});
+
+test('BUTTON_DATA_INVALID remains outside the inline validation suppression', () => {
+  const error = new Error('400: Bad Request: BUTTON_DATA_INVALID');
+  assert.equal(isTelegramInlineAudioTitleEmptyError(error), false);
+  assert.equal(isExpectedTelegramTransientError(error), false);
+  assert.equal(shouldSuppressTelegramErrorInGlobalHandler(error, {
+    inlineQuery: { id: 'inline-query-id', query: 'unstoppable' }
+  }), false);
 });
