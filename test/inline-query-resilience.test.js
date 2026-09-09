@@ -23,6 +23,7 @@ function deferred() {
 
 test('valid cached results are answered once without fallback', async () => {
   const searchCalls = [];
+  const answerExtras = [];
   let answerCalls = 0;
   const cached = [{ type: 'audio', id: 'cached', audio_file_id: 'file-id' }];
   const handler = createInlineQueryHandler({
@@ -37,15 +38,41 @@ test('valid cached results are answered once without fallback', async () => {
   await handler(makeContext({
     id: 'q1',
     query: 'unstoppable',
-    answer: async results => {
+    answer: async (results, extra) => {
       answerCalls += 1;
       assert.equal(results, cached);
+      answerExtras.push(extra);
     }
   }));
 
   assert.equal(answerCalls, 1);
   assert.equal(searchCalls.length, 1);
   assert.equal(searchCalls[0][2].skipCache, undefined);
+  assert.deepEqual(answerExtras, [{ cache_time: 60 }]);
+});
+
+test('empty search results show a non-sendable empty state', async () => {
+  const answers = [];
+  const handler = createInlineQueryHandler({
+    performSearch: async () => [],
+    sleep: async () => {},
+    logger: { warn() {}, error() {} }
+  });
+
+  await handler(makeContext({
+    id: 'q1',
+    query: 'missing track',
+    answer: async (results, extra) => answers.push({ results, extra })
+  }));
+
+  assert.deepEqual(answers, [{
+    results: [],
+    extra: {
+      cache_time: 60,
+      switch_pm_text: '😕 Трек не найден ни в базе бота, ни в SoundCloud',
+      switch_pm_parameter: 'start'
+    }
+  }]);
 });
 
 test('AUDIO_TITLE_EMPTY retries once with a skip-cache live search', async () => {
@@ -75,6 +102,69 @@ test('AUDIO_TITLE_EMPTY retries once with a skip-cache live search', async () =>
   assert.equal(searchOptions.length, 2);
   assert.equal(searchOptions[0].skipCache, undefined);
   assert.equal(searchOptions[1].skipCache, true);
+});
+
+test('empty live fallback shows the same empty state once', async () => {
+  const answers = [];
+  let searchCalls = 0;
+  const cached = [{ type: 'audio', id: 'cached' }];
+  const handler = createInlineQueryHandler({
+    performSearch: async (_query, _userId, options) => {
+      searchCalls += 1;
+      return options.skipCache ? [] : cached;
+    },
+    sleep: async () => {},
+    logger: { warn() {}, error() {} }
+  });
+
+  await handler(makeContext({
+    id: 'q1',
+    query: 'unstoppable',
+    answer: async (results, extra) => {
+      answers.push({ results, extra });
+      if (answers.length === 1) throw new Error('400: Bad Request: AUDIO_TITLE_EMPTY');
+    }
+  }));
+
+  assert.equal(searchCalls, 2);
+  assert.deepEqual(answers, [
+    { results: cached, extra: { cache_time: 60 } },
+    {
+      results: [],
+      extra: {
+        cache_time: 60,
+        switch_pm_text: '😕 Трек не найден ни в базе бота, ни в SoundCloud',
+        switch_pm_parameter: 'start'
+      }
+    }
+  ]);
+});
+
+test('search exception shows temporary unavailable state and remains server-logged', async () => {
+  const expected = new Error('search backend unavailable');
+  const logged = [];
+  const answers = [];
+  const handler = createInlineQueryHandler({
+    performSearch: async () => { throw expected; },
+    sleep: async () => {},
+    logger: { warn() {}, error: (...args) => logged.push(args) }
+  });
+
+  await handler(makeContext({
+    id: 'q1',
+    query: 'unstoppable',
+    answer: async (results, extra) => answers.push({ results, extra })
+  }));
+
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0][1], expected);
+  assert.deepEqual(answers, [{
+    results: [],
+    extra: {
+      switch_pm_text: '⚠️ Поиск временно недоступен',
+      switch_pm_parameter: 'start'
+    }
+  }]);
 });
 
 test('superseded query does not start live fallback after AUDIO_TITLE_EMPTY', async () => {
@@ -184,6 +274,40 @@ test('a newer inline query prevents the old search result from answering', async
   await oldRun;
 
   assert.deepEqual(answers, [['new', [{ type: 'article', id: 'new' }]]]);
+});
+
+test('superseded empty search does not show an empty state', async () => {
+  const oldSearch = deferred();
+  const answers = [];
+  const handler = createInlineQueryHandler({
+    performSearch: async query => {
+      if (query === 'missing track') return oldSearch.promise;
+      return [{ type: 'article', id: 'new' }];
+    },
+    sleep: async () => {},
+    logger: { warn() {}, error() {} }
+  });
+
+  const oldRun = handler(makeContext({
+    id: 'q1',
+    query: 'missing track',
+    answer: async (results, extra) => answers.push({ query: 'old', results, extra })
+  }));
+  await Promise.resolve();
+
+  await handler(makeContext({
+    id: 'q2',
+    query: 'new track',
+    answer: async (results, extra) => answers.push({ query: 'new', results, extra })
+  }));
+  oldSearch.resolve([]);
+  await oldRun;
+
+  assert.deepEqual(answers, [{
+    query: 'new',
+    results: [{ type: 'article', id: 'new' }],
+    extra: { cache_time: 60 }
+  }]);
 });
 
 test('unknown Telegram errors from inline answers still propagate', async () => {

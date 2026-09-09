@@ -3,6 +3,21 @@ import {
   isTelegramInlineAudioTitleEmptyError
 } from './telegramApiResilience.js';
 
+const EMPTY_RESULTS_EXTRA = Object.freeze({
+  cache_time: 60,
+  switch_pm_text: '😕 Трек не найден ни в базе бота, ни в SoundCloud',
+  switch_pm_parameter: 'start'
+});
+
+const SEARCH_UNAVAILABLE_EXTRA = Object.freeze({
+  switch_pm_text: '⚠️ Поиск временно недоступен',
+  switch_pm_parameter: 'start'
+});
+
+function getSearchResultsExtra(results) {
+  return results.length === 0 ? EMPTY_RESULTS_EXTRA : { cache_time: 60 };
+}
+
 export function createInlineQueryHandler(options) {
   const {
     performSearch,
@@ -61,7 +76,7 @@ export function createInlineQueryHandler(options) {
       } catch (error) {
         logger.error('[InlineQuery] Search failed', error);
         if (!isCurrent()) return;
-        await answer(ctx, [], undefined, metadata);
+        await answer(ctx, [], SEARCH_UNAVAILABLE_EXTRA, metadata);
         return;
       }
 
@@ -69,7 +84,7 @@ export function createInlineQueryHandler(options) {
 
       let delivered;
       try {
-        delivered = await answer(ctx, results, { cache_time: 60 }, metadata);
+        delivered = await answer(ctx, results, getSearchResultsExtra(results), metadata);
       } catch (error) {
         if (!isTelegramInlineAudioTitleEmptyError(error)) throw error;
 
@@ -84,12 +99,14 @@ export function createInlineQueryHandler(options) {
           });
         } catch (fallbackSearchError) {
           logger.error('[InlineQuery] Live fallback search failed', fallbackSearchError);
+          if (!isCurrent()) return;
+          await answer(ctx, [], SEARCH_UNAVAILABLE_EXTRA, metadata);
           return;
         }
         if (!isCurrent()) return;
 
         try {
-          delivered = await answer(ctx, results, { cache_time: 60 }, metadata);
+          delivered = await answer(ctx, results, getSearchResultsExtra(results), metadata);
         } catch (fallbackError) {
           if (!isTelegramInlineAudioTitleEmptyError(fallbackError)) throw fallbackError;
           logger.warn('[InlineQuery] Live fallback rejected with AUDIO_TITLE_EMPTY', metadata);
